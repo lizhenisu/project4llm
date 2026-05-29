@@ -1,0 +1,7 @@
+Large language models predict the next token.
+A tokenizer maps text into token ids.
+Causal language modeling uses a mask to block future tokens.
+Transformer attention computes queries keys and values.
+LoRA fine tuning trains small low rank adapters.
+大模型通过预测下一个 token 学习语言模式。
+数据清洗和 tokenizer 会影响训练效率。

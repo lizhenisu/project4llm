@@ -1,0 +1,11 @@
+torch
+transformers
+datasets
+accelerate
+peft
+trl
+tokenizers
+sentencepiece
+evaluate
+scikit-learn
+tensorboard

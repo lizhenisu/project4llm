@@ -1,0 +1,2 @@
+{"messages_text": "<|user|>\n解释 causal mask 的作用。\n<|assistant|>\ncausal mask 会阻止当前位置看到未来 token，使模型只能基于历史上下文预测下一个 token。\n", "token_count": 69, "instruction": "解释 causal mask 的作用。", "input": "", "output": "causal mask 会阻止当前位置看到未来 token，使模型只能基于历史上下文预测下一个 token。"}
+{"messages_text": "<|user|>\nLoRA 为什么省显存？\n<|assistant|>\nLoRA 只训练低秩增量矩阵，减少可训练参数、梯度和优化器状态。\n", "token_count": 55, "instruction": "LoRA 为什么省显存？", "input": "", "output": "LoRA 只训练低秩增量矩阵，减少可训练参数、梯度和优化器状态。"}

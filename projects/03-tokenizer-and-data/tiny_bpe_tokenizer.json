@@ -1,0 +1,411 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 0,
+      "content": "[PAD]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 1,
+      "content": "[UNK]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 2,
+      "content": "[BOS]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 3,
+      "content": "[EOS]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "BPE",
+    "dropout": null,
+    "unk_token": "[UNK]",
+    "continuing_subword_prefix": null,
+    "end_of_word_suffix": null,
+    "fuse_unk": false,
+    "byte_fallback": false,
+    "ignore_merges": false,
+    "vocab": {
+      "[PAD]": 0,
+      "[UNK]": 1,
+      "[BOS]": 2,
+      "[EOS]": 3,
+      ".": 4,
+      "A": 5,
+      "C": 6,
+      "L": 7,
+      "R": 8,
+      "T": 9,
+      "a": 10,
+      "b": 11,
+      "c": 12,
+      "d": 13,
+      "e": 14,
+      "f": 15,
+      "g": 16,
+      "h": 17,
+      "i": 18,
+      "k": 19,
+      "l": 20,
+      "m": 21,
+      "n": 22,
+      "o": 23,
+      "p": 24,
+      "q": 25,
+      "r": 26,
+      "s": 27,
+      "t": 28,
+      "u": 29,
+      "v": 30,
+      "w": 31,
+      "x": 32,
+      "y": 33,
+      "z": 34,
+      "。": 35,
+      "一": 36,
+      "下": 37,
+      "个": 38,
+      "习": 39,
+      "会": 40,
+      "和": 41,
+      "响": 42,
+      "型": 43,
+      "大": 44,
+      "学": 45,
+      "式": 46,
+      "影": 47,
+      "据": 48,
+      "效": 49,
+      "数": 50,
+      "模": 51,
+      "洗": 52,
+      "测": 53,
+      "清": 54,
+      "率": 55,
+      "练": 56,
+      "言": 57,
+      "训": 58,
+      "语": 59,
+      "过": 60,
+      "通": 61,
+      "预": 62,
+      "to": 63,
+      "en": 64,
+      "ken": 65,
+      "token": 66,
+      "an": 67,
+      "er": 68,
+      "in": 69,
+      "es": 70,
+      "al": 71,
+      "ge": 72,
+      "ap": 73,
+      "age": 74,
+      "de": 75,
+      "ex": 76,
+      "gu": 77,
+      "iz": 78,
+      "lo": 79,
+      "lan": 80,
+      "mo": 81,
+      "re": 82,
+      "ran": 83,
+      "tu": 84,
+      "us": 85,
+      "tokeniz": 86,
+      "ing": 87,
+      "del": 88,
+      "ext": 89,
+      "guage": 90,
+      "language": 91,
+      "model": 92,
+      "tokenizer": 93,
+      "Ca": 94,
+      "La": 95,
+      "Lo": 96,
+      "RA": 97,
+      "Tran": 98,
+      "ad": 99,
+      "as": 100,
+      "at": 101,
+      "ain": 102,
+      "blo": 103,
+      "ck": 104,
+      "co": 105,
+      "ct": 106,
+      "di": 107,
+      "ds": 108,
+      "ey": 109,
+      "fo": 110,
+      "fu": 111,
+      "fin": 112,
+      "he": 113,
+      "io": 114,
+      "ies": 115,
+      "ids": 116,
+      "key": 117,
+      "mp": 118,
+      "mer": 119
+    },
+    "merges": [
+      [
+        "t",
+        "o"
+      ],
+      [
+        "e",
+        "n"
+      ],
+      [
+        "k",
+        "en"
+      ],
+      [
+        "to",
+        "ken"
+      ],
+      [
+        "a",
+        "n"
+      ],
+      [
+        "e",
+        "r"
+      ],
+      [
+        "i",
+        "n"
+      ],
+      [
+        "e",
+        "s"
+      ],
+      [
+        "a",
+        "l"
+      ],
+      [
+        "g",
+        "e"
+      ],
+      [
+        "a",
+        "p"
+      ],
+      [
+        "a",
+        "ge"
+      ],
+      [
+        "d",
+        "e"
+      ],
+      [
+        "e",
+        "x"
+      ],
+      [
+        "g",
+        "u"
+      ],
+      [
+        "i",
+        "z"
+      ],
+      [
+        "l",
+        "o"
+      ],
+      [
+        "l",
+        "an"
+      ],
+      [
+        "m",
+        "o"
+      ],
+      [
+        "r",
+        "e"
+      ],
+      [
+        "r",
+        "an"
+      ],
+      [
+        "t",
+        "u"
+      ],
+      [
+        "u",
+        "s"
+      ],
+      [
+        "token",
+        "iz"
+      ],
+      [
+        "in",
+        "g"
+      ],
+      [
+        "de",
+        "l"
+      ],
+      [
+        "ex",
+        "t"
+      ],
+      [
+        "gu",
+        "age"
+      ],
+      [
+        "lan",
+        "guage"
+      ],
+      [
+        "mo",
+        "del"
+      ],
+      [
+        "tokeniz",
+        "er"
+      ],
+      [
+        "C",
+        "a"
+      ],
+      [
+        "L",
+        "a"
+      ],
+      [
+        "L",
+        "o"
+      ],
+      [
+        "R",
+        "A"
+      ],
+      [
+        "T",
+        "ran"
+      ],
+      [
+        "a",
+        "d"
+      ],
+      [
+        "a",
+        "s"
+      ],
+      [
+        "a",
+        "t"
+      ],
+      [
+        "a",
+        "in"
+      ],
+      [
+        "b",
+        "lo"
+      ],
+      [
+        "c",
+        "k"
+      ],
+      [
+        "c",
+        "o"
+      ],
+      [
+        "c",
+        "t"
+      ],
+      [
+        "d",
+        "i"
+      ],
+      [
+        "d",
+        "s"
+      ],
+      [
+        "e",
+        "y"
+      ],
+      [
+        "f",
+        "o"
+      ],
+      [
+        "f",
+        "u"
+      ],
+      [
+        "f",
+        "in"
+      ],
+      [
+        "h",
+        "e"
+      ],
+      [
+        "i",
+        "o"
+      ],
+      [
+        "i",
+        "es"
+      ],
+      [
+        "i",
+        "ds"
+      ],
+      [
+        "k",
+        "ey"
+      ],
+      [
+        "m",
+        "p"
+      ],
+      [
+        "m",
+        "er"
+      ]
+    ]
+  }
+}
