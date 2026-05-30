@@ -90,3 +90,13 @@ MoE 的优势是总参数量大但每个 token 的激活参数较少，难点包
 2. 你能解释 attention head 数和 KV head 数不一致意味着什么吗？
 3. 你能说明 RoPE、RMSNorm、SwiGLU 分别替代或改进了什么吗？
 4. 你能解释 MoE 为什么不是“所有参数每次都参与计算”吗？
+
+## 参考答案
+
+1. 在 Hugging Face config 里，常见字段包括 `vocab_size`、`hidden_size`、`num_hidden_layers`、`num_attention_heads`、`num_key_value_heads`、`intermediate_size`、`max_position_embeddings`、`rope_theta` 等。`vocab_size` 决定 embedding 和 lm head 的词表维度；`hidden_size` 是每个 token 表示的宽度；`num_hidden_layers` 是 decoder block 层数；`num_attention_heads` 决定 query head 数。读 config 时要能把这些字段和参数量、显存、KV cache、上下文长度联系起来。
+
+2. attention head 数和 KV head 数不一致通常表示使用了 MQA 或 GQA。query head 仍然很多，用来保持表达能力；key/value head 更少，被多个 query head 共享，从而减少推理时 KV cache 的大小和带宽开销。如果 `num_attention_heads=32`、`num_key_value_heads=8`，可以理解为每 4 个 query head 共享一组 K/V。代价是 K/V 表达被共享，理论上自由度低于完整 MHA，但工程上常能在效果和推理效率之间取得好平衡。
+
+3. RoPE 改进的是位置信息注入方式：它不再简单给 token embedding 加绝对位置向量，而是在 Q/K 上做旋转，使 attention 分数天然包含相对位置信息，更适合长度外推和现代 decoder-only 模型。RMSNorm 简化 LayerNorm，主要按均方根缩放，不减均值，计算更简洁，训练大模型时常见。SwiGLU 改进传统 FFN 的激活结构，用门控分支增强非线性表达，通常比普通 GELU FFN 有更好的效果/参数效率。
+
+4. MoE 的核心是稀疏激活：模型有很多 expert，但每个 token 经过 router 选择 top-k 个 expert 参与计算，而不是所有 expert 都跑一遍。例如 64 个 expert 中每个 token 只激活 2 个，则总参数量很大，但单 token 的计算量接近少数 expert 的成本。它的优势是扩大模型容量同时控制计算量，难点是 router 负载均衡、expert 间通信、训练稳定性、推理部署和小 batch 下的硬件利用率。

@@ -10,12 +10,16 @@ def main() -> None:
 
     input_ids = torch.randint(0, config.vocab_size, (2, 8))
     logits, loss = model(input_ids, labels=input_ids)
-    generated = model.generate(input_ids[:, :4], max_new_tokens=4)
+    prompt = input_ids[:, :4]
+    generated = model.generate(prompt, max_new_tokens=4)
+    generated_cached = model.generate_with_cache(prompt, max_new_tokens=4)
 
     print(f"input_ids shape: {tuple(input_ids.shape)}")
     print(f"logits shape: {tuple(logits.shape)}")
     print(f"loss: {loss.item():.4f}")
     print(f"generated shape: {tuple(generated.shape)}")
+    print(f"generated_cached shape: {tuple(generated_cached.shape)}")
+    print(f"cache matches no-cache: {torch.equal(generated, generated_cached)}")
     print(f"generated ids[0]: {generated[0].tolist()}")
 
 

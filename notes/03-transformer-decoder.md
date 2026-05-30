@@ -66,3 +66,17 @@ KV cache 主要提升推理，不改变训练目标。
 ## 面试口述版
 
 Decoder-only 模型通过 causal mask 做自回归建模，每个位置预测下一个 token。核心模块是 masked multi-head self-attention 和 MLP，配合残差连接和归一化稳定训练。推理时使用 KV cache 复用历史 K/V，降低逐 token 生成的计算开销。
+
+## 关键追问参考答案
+
+1. Q、K、V 的 shape 怎么变化？
+
+输入 hidden state 通常是 `[batch, seq_len, hidden]`。经过线性层投影后得到 Q/K/V，仍可看成 `[batch, seq_len, hidden]`，随后按 head 拆分成 `[batch, seq_len, n_head, head_dim]`，再转置为 `[batch, n_head, seq_len, head_dim]`。attention score 是 `q @ k.transpose(-2, -1)`，shape 为 `[batch, n_head, seq_len, seq_len]`。最后 `attn @ v` 得到每个 head 的输出，再拼回 `[batch, seq_len, hidden]`。
+
+2. causal mask 为什么训练时仍能并行？
+
+训练时整段序列一次性输入模型，GPU 可以同时计算所有位置的 Q/K/V 和 attention score。causal mask 只是在 score 上把未来位置置为 `-inf`，softmax 后未来位置概率为 0。因此每个位置的信息约束仍满足自回归，但计算不需要像推理一样逐 token 循环。
+
+3. KV cache 为什么主要用于推理？
+
+推理时每一步只新增一个 token，如果每步都重新前向完整上下文，历史 token 的 K/V 会反复计算。KV cache 把每层历史 K/V 存下来，新一步只算新 token 的 K/V 并追加到 cache。训练时 teacher forcing 一次处理完整序列，历史 K/V 没有跨 step 重复计算，所以标准训练中收益不明显。

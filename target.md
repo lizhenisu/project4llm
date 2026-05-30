@@ -383,6 +383,114 @@ LLM 结构类：
 - 如何评估一个微调模型是否变好？
 - 如何读一个大模型训练开源项目？
 
+## 面试必会问题参考答案
+
+### 基础类
+
+1. 交叉熵和 KL 散度有什么关系？
+
+交叉熵可以写成 `H(P, Q) = H(P) + KL(P || Q)`。监督学习里真实分布 `P` 固定时，`H(P)` 是常数，最小化交叉熵等价于最小化真实分布和模型分布之间的 KL 散度。分类任务中使用 cross entropy，本质是在提高正确类别的预测概率；语言模型中对每个位置做 vocabulary 上的交叉熵，就是让模型分布靠近真实下一个 token 的 one-hot 分布。
+
+2. Adam 和 SGD 的区别是什么？
+
+SGD 直接使用当前 batch 的梯度更新参数，形式简单，对学习率较敏感，但泛化表现常不错。Adam 会维护梯度的一阶矩和二阶矩估计，相当于给不同参数使用自适应学习率，通常收敛更快、调参更容易，是 LLM 训练和微调中常见选择。工程上还会使用 AdamW，把 weight decay 从梯度更新中解耦，避免普通 Adam 中 L2 正则和自适应学习率耦合带来的问题。
+
+3. 过拟合如何判断和处理？
+
+典型现象是训练 loss 持续下降，但验证 loss 上升或验证指标变差，模型在训练集上表现很好，在未见数据上泛化差。处理方法包括增加或清洗数据、早停、减小模型容量、增大 weight decay、加入 dropout、数据增强、降低训练 epoch、检查 train/valid 分布是否一致。对 LLM 微调还要警惕训练数据太少、学习率太大、只记住模板、验证集泄漏等问题。
+
+4. BatchNorm、LayerNorm、RMSNorm 的区别是什么？
+
+BatchNorm 通常沿 batch 维统计均值和方差，常用于 CNN，但在变长序列、小 batch 或自回归推理中不方便。LayerNorm 对单个样本的 hidden 维做归一化，不依赖 batch size，因此更适合 Transformer。RMSNorm 进一步简化 LayerNorm，不减均值，只用均方根做缩放，计算更轻，Llama 等现代 LLM 常用 RMSNorm。
+
+### Transformer 类
+
+1. Self-Attention 的计算复杂度是多少？
+
+标准 self-attention 需要计算所有 query 和 key 的两两相似度，时间复杂度约为 `O(seq_len^2 * hidden)`，attention matrix 的显存复杂度约为 `O(seq_len^2)`。这也是长上下文训练和推理昂贵的主要原因之一。FFN 通常也很耗计算，但 attention 的二次复杂度会随着序列长度增长迅速放大。
+
+2. Multi-Head Attention 为什么有效？
+
+多头注意力把 hidden 分成多个 head，每个 head 在不同子空间里学习注意力模式。有的 head 可能关注局部邻近 token，有的关注长距离依赖，有的关注格式、括号、实体或语法关系。多个 head 的输出拼接后再线性投影，使模型能同时表达多种关系，比单个大 head 更灵活。
+
+3. causal mask 是什么？
+
+causal mask 是下三角 mask，用于禁止当前位置关注未来 token。对第 `t` 个位置，attention 只能看 `0..t` 的 token，不能看 `t+1` 之后的信息。这样训练时虽然整段序列并行输入模型，目标仍然符合自回归生成：每个位置只能根据历史预测下一个 token。
+
+4. RoPE 相比绝对位置编码有什么优势？
+
+绝对位置编码通常把 position embedding 加到 token embedding 上，模型直接记住每个绝对位置。RoPE 在 Q/K 上做旋转变换，使 attention score 自然包含相对位置信息，更适合 decoder-only 语言模型，也更利于长度外推和长上下文扩展。现代 Llama/Qwen 等模型普遍采用 RoPE 或它的变体。
+
+5. KV cache 的原理是什么？
+
+自回归推理每次只生成一个新 token。没有 KV cache 时，每一步都会把完整上下文重新送入模型，重复计算历史 token 的 key/value。KV cache 会在每层保存历史 K/V，下一个 step 只计算新 token 的 Q/K/V，再让新 token 的 Q attend 到缓存的历史 K/V 和当前 K/V。它减少重复计算和显存带宽开销，主要提升推理，不改变训练目标。
+
+6. MHA、MQA、GQA 有什么区别？
+
+MHA 中每个 query head 都有自己的 key/value head，表达能力强但 KV cache 大。MQA 中多个 query head 共享同一组 K/V，KV cache 很小但共享更强。GQA 把 query head 分组，每组共享一组 K/V，是 MHA 和 MQA 的折中。面试中可以用 `num_attention_heads` 和 `num_key_value_heads` 的关系解释：二者相等是 MHA，KV head 为 1 接近 MQA，介于中间是 GQA。
+
+### LLM 结构类
+
+1. Decoder-only 模型为什么能做聊天？
+
+Decoder-only 模型本质是 causal LM，只会根据已有 token 预测下一个 token。聊天能力来自数据格式和对齐训练：把 system/user/assistant 多轮对话序列化成 token，通过 SFT 学会在 user 后生成 assistant，通过 RLHF/DPO 等偏好优化让回答更符合人类偏好。也就是说，模型不是结构上专门有“聊天模块”，而是把聊天建模成条件续写。
+
+2. Llama 和原始 Transformer 有哪些结构差异？
+
+Llama 仍是 decoder-only Transformer，但采用了现代 LLM 常见改造：RoPE 替代绝对位置编码，RMSNorm 替代 LayerNorm，SwiGLU/门控 FFN 替代普通 FFN，部分版本使用 GQA/MQA 降低 KV cache 成本，并通常采用 Pre-Norm 结构。这些变化主要服务于大规模训练稳定性、推理效率和长上下文能力。
+
+3. Qwen/Llama/DeepSeek 的核心特点是什么？
+
+Llama 代表主流开源 decoder-only 架构路线，重点是 RoPE、RMSNorm、SwiGLU、GQA/MQA 和生态复现。Qwen 强调中文/多语言、代码能力、chat template、长上下文和 Transformers 生态适配。DeepSeek 的重点包括 MoE、MLA/KV 优化、推理模型训练、蒸馏和强化学习路线。面试时最好结合具体 config 和源码字段说明，不要只背品牌名。
+
+4. MoE 的优势和问题是什么？
+
+MoE 通过 router 为每个 token 选择少数 expert，做到总参数量很大但单 token 激活参数较少。优势是提升模型容量和专业化能力，同时控制每 token 计算量。问题包括 expert load balancing、跨设备通信、router 稳定性、训练不均衡、部署复杂、小 batch 推理利用率低，以及某些 expert 被过度或不足使用。
+
+### 训练类
+
+1. Pre-training、SFT、RLHF、DPO 的区别是什么？
+
+Pre-training 用海量无标注文本做 next-token prediction，学习通用语言和知识。SFT 用高质量指令数据训练模型按用户需求回答。RLHF 通常包含 SFT、Reward Model、PPO，用人类偏好奖励进一步优化策略。DPO 直接用 chosen/rejected 偏好对优化模型，不单独训练 reward model，也不需要 PPO 在线采样流程，工程链路更短。
+
+2. LoRA 为什么能减少训练参数？
+
+LoRA 冻结原模型权重，只在部分线性层上训练低秩增量 `BA`。因为 rank `r` 远小于原矩阵维度，所以新增可训练参数很少，梯度和优化器状态显存也大幅降低。它适合微调大模型，因为基座能力保留在冻结权重中，adapter 学任务增量。
+
+3. QLoRA 的 4-bit 量化会带来什么影响？
+
+QLoRA 把基座权重量化到 4-bit，显著降低权重显存，使单卡训练更大模型成为可能。代价是量化误差、反量化计算开销、对 dtype/硬件/bitsandbytes 配置敏感，训练速度和稳定性可能受影响。通常 LoRA adapter 仍以较高精度训练，目标是在显存和效果之间折中。
+
+4. gradient accumulation 解决什么问题？
+
+gradient accumulation 用多个小 micro-batch 累加梯度，再执行一次 optimizer step，模拟更大的 effective batch size。它解决单卡显存放不下大 batch 的问题。需要注意 loss 通常要按累计步数缩放，学习率、日志 step、梯度裁剪和 scheduler step 都要按实际 optimizer step 理解。
+
+5. loss 不下降可能是什么原因？
+
+常见原因包括学习率过大或过小、数据 labels 构造错误、attention mask/causal mask 错误、tokenizer 和模型词表不匹配、没有正确训练参数、梯度被截断或为 NaN、batch 太小噪声大、数据质量差、loss mask 把有效 token 全忽略、模型处于 eval/no_grad、优化器没有 step。排查时先在极小数据上 overfit，确认模型能记住小 batch，再扩大数据。
+
+6. 大模型数据清洗有哪些步骤？
+
+常见流程包括格式解析、字段校验、去空样本、去重、语言/长度过滤、质量打分、PII/敏感信息过滤、脏词和乱码过滤、指令和回答格式统一、chat template 渲染、tokenize、截断、packing、train/eval split。SFT 还要确认 user/assistant 角色正确、回答有帮助且不胡编；DPO 要确认 chosen/rejected 在同一 prompt 下有明确偏好差异。
+
+### 工程类
+
+1. 如何处理 OOM？
+
+先确认 OOM 发生在加载、前向、反向还是 optimizer step。常用手段包括减小 batch size/seq_len、增加 gradient accumulation、开启 gradient checkpointing、使用 fp16/bf16、使用 LoRA/QLoRA、减少 LoRA target modules、使用更小模型、开启 FlashAttention 或更省显存 attention、清理无用张量、避免保存过多 logits。LLM 中 seq_len 对显存影响很大，优先检查最大长度和 packing。
+
+2. 如何设计一次微调实验？
+
+先定义目标和评价标准，再固定基座模型、数据版本、训练/验证划分和 prompt 格式。选择少量关键变量，例如 learning rate、LoRA rank、batch size、epoch、max length，每次只改一两个变量。记录命令、环境、随机种子、显存、耗时、loss 曲线、验证指标和样例输出。实验结束要能回答：解决了什么问题、效果如何、代价是什么、下一步怎么改。
+
+3. 如何评估一个微调模型是否变好？
+
+不能只看训练 loss。应同时看验证 loss、固定评测集、人工样例对比、指令遵循、事实性、安全性、格式稳定性和拒答边界。对任务型模型可以设计小型 gold set；对聊天模型可以用固定 prompts 做 before/after 对比；对 DPO 要看 chosen 风格是否泛化到未见问题。还要检查是否退化：输出变短、模板化、胡编增多、过度拒答或忘记基座能力。
+
+4. 如何读一个大模型训练开源项目？
+
+先跑最小示例，再从入口命令追踪参数解析、配置加载、数据集读取、tokenize/collator、模型构建、forward、loss、backward、optimizer/scheduler、checkpoint 和 eval。不要一开始读所有文件，先画主调用链，再深入关键模块。读完要改一个小参数或模块并复现实验现象，这样才能确认自己理解了真实执行路径。
+
 ## 第一阶段立即执行任务
 
 从今天开始，先完成以下 5 个任务：

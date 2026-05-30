@@ -59,17 +59,16 @@ projects/05-dpo-preference/train_dpo.py
 
 ### 3. 给 TinyGPT 增加 KV cache 版本
 
-`target.md` 明确要求加入 KV cache 并比较推理速度。当前 `TinyGPT.generate` 没有 KV cache。下一步可以增加：
+`target.md` 明确要求加入 KV cache 并比较推理速度。当前已经在 `TinyGPT` 中增加 `generate_with_cache`，并补充了对比脚本：
 
 ```text
-projects/02-transformer-from-scratch/model_kv_cache.py
 projects/02-transformer-from-scratch/benchmark_kv_cache.py
 ```
 
-要求：
+已覆盖：
 
 - 对比无 cache 和有 cache 的生成耗时。
-- 打印每步 K/V shape。
+- 打印每层 K/V shape。
 - 解释为什么训练阶段收益不明显。
 
 ### 4. 补 Hugging Face `datasets` 练习
