@@ -14,12 +14,13 @@ class TinyGPTConfig:
     n_head: int = 4
     n_embd: int = 64
     dropout: float = 0.1
+    eos_token_id: int | None = None
 
 
 LayerKVCache = tuple[torch.Tensor, torch.Tensor]
 KVCache = list[LayerKVCache]
 
-
+# RMS: root mean square 均方根
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6) -> None:
         super().__init__()
@@ -215,8 +216,19 @@ class TinyGPT(nn.Module):
         max_new_tokens: int,
         temperature: float = 1.0,
         do_sample: bool = False,
+        eos_token_id: int | None = None,
     ) -> torch.Tensor:
         self.eval()
+        if temperature <= 0:
+            raise ValueError("temperature must be positive")
+
+        stop_id = self.config.eos_token_id if eos_token_id is None else eos_token_id
+        finished = None
+        if stop_id is not None:
+            finished = input_ids[:, -1] == stop_id
+            if finished.all():
+                return input_ids
+
         for _ in range(max_new_tokens):
             context = input_ids[:, -self.config.block_size :]
             logits, _ = self(context)
@@ -226,7 +238,12 @@ class TinyGPT(nn.Module):
                 next_id = torch.multinomial(probs, num_samples=1)
             else:
                 next_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+            if finished is not None:
+                next_id = torch.where(finished[:, None], torch.full_like(next_id, stop_id), next_id)
+                finished = finished | (next_id[:, 0] == stop_id)
             input_ids = torch.cat([input_ids, next_id], dim=1)
+            if finished is not None and finished.all():
+                break
         return input_ids
 
     @torch.no_grad()
@@ -236,10 +253,20 @@ class TinyGPT(nn.Module):
         max_new_tokens: int,
         temperature: float = 1.0,
         do_sample: bool = False,
+        eos_token_id: int | None = None,
     ) -> torch.Tensor:
         self.eval()
+        if temperature <= 0:
+            raise ValueError("temperature must be positive")
         if input_ids.size(1) + max_new_tokens > self.config.block_size:
             raise ValueError("generate_with_cache requires prompt length + new tokens <= block_size")
+
+        stop_id = self.config.eos_token_id if eos_token_id is None else eos_token_id
+        finished = None
+        if stop_id is not None:
+            finished = input_ids[:, -1] == stop_id
+            if finished.all():
+                return input_ids
 
         logits, _loss, past_kvs = self(input_ids, use_cache=True)
         for step in range(max_new_tokens):
@@ -249,7 +276,12 @@ class TinyGPT(nn.Module):
                 next_id = torch.multinomial(probs, num_samples=1)
             else:
                 next_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+            if finished is not None:
+                next_id = torch.where(finished[:, None], torch.full_like(next_id, stop_id), next_id)
+                finished = finished | (next_id[:, 0] == stop_id)
             input_ids = torch.cat([input_ids, next_id], dim=1)
+            if finished is not None and finished.all():
+                break
             if step < max_new_tokens - 1:
                 logits, _loss, past_kvs = self(next_id, past_kvs=past_kvs, use_cache=True)
         return input_ids
