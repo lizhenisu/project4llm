@@ -20,11 +20,37 @@ LayerKVCache = tuple[torch.Tensor, torch.Tensor]
 KVCache = list[LayerKVCache]
 
 
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rms = x.pow(2).mean(dim=-1, keepdim=True)
+        return x * torch.rsqrt(rms + self.eps) * self.weight
+
+
+def apply_rope(x: torch.Tensor, inv_freq: torch.Tensor, start_pos: int) -> torch.Tensor:
+    seq_len = x.size(-2)
+    positions = torch.arange(start_pos, start_pos + seq_len, device=x.device, dtype=inv_freq.dtype)
+    freqs = torch.outer(positions, inv_freq)
+    cos = freqs.cos()[None, None, :, :].to(dtype=x.dtype)
+    sin = freqs.sin()[None, None, :, :].to(dtype=x.dtype)
+
+    x_even = x[..., ::2]
+    x_odd = x[..., 1::2]
+    x_rotated = torch.stack((x_even * cos - x_odd * sin, x_even * sin + x_odd * cos), dim=-1)
+    return x_rotated.flatten(-2)
+
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, config: TinyGPTConfig) -> None:
         super().__init__()
         if config.n_embd % config.n_head != 0:
             raise ValueError("n_embd must be divisible by n_head")
+        if (config.n_embd // config.n_head) % 2 != 0:
+            raise ValueError("head_dim must be even to use RoPE")
 
         self.n_head = config.n_head
         self.head_dim = config.n_embd // config.n_head
@@ -35,6 +61,8 @@ class CausalSelfAttention(nn.Module):
 
         mask = torch.tril(torch.ones(config.block_size, config.block_size))
         self.register_buffer("causal_mask", mask.view(1, 1, config.block_size, config.block_size))
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, self.head_dim, 2).float() / self.head_dim))
+        self.register_buffer("rope_inv_freq", inv_freq)
 
     def forward(
         self,
@@ -53,6 +81,11 @@ class CausalSelfAttention(nn.Module):
         if past_kv is not None:
             past_k, past_v = past_kv
             past_len = past_k.size(-2)
+
+        q = apply_rope(q, self.rope_inv_freq, past_len)
+        k = apply_rope(k, self.rope_inv_freq, past_len)
+
+        if past_kv is not None:
             k = torch.cat([past_k, k], dim=-2)
             v = torch.cat([past_v, v], dim=-2)
 
@@ -77,23 +110,24 @@ class CausalSelfAttention(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, config: TinyGPTConfig) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(config.n_embd, 4 * config.n_embd),
-            nn.GELU(),
-            nn.Linear(4 * config.n_embd, config.n_embd),
-            nn.Dropout(config.dropout),
-        )
+        hidden_dim = 4 * config.n_embd
+        self.gate = nn.Linear(config.n_embd, hidden_dim)
+        self.up = nn.Linear(config.n_embd, hidden_dim)
+        self.down = nn.Linear(hidden_dim, config.n_embd)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        x = F.silu(self.gate(x)) * self.up(x)
+        x = self.down(x)
+        return self.dropout(x)
 
 
 class Block(nn.Module):
     def __init__(self, config: TinyGPTConfig) -> None:
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd)
+        self.ln_1 = RMSNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
-        self.ln_2 = nn.LayerNorm(config.n_embd)
+        self.ln_2 = RMSNorm(config.n_embd)
         self.mlp = FeedForward(config)
 
     def forward(
@@ -118,10 +152,9 @@ class TinyGPT(nn.Module):
         super().__init__()
         self.config = config
         self.token_embedding = nn.Embedding(config.vocab_size, config.n_embd)
-        self.position_embedding = nn.Embedding(config.block_size, config.n_embd)
         self.drop = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
-        self.ln_f = nn.LayerNorm(config.n_embd)
+        self.ln_f = RMSNorm(config.n_embd)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         self.token_embedding.weight = self.lm_head.weight
@@ -151,8 +184,7 @@ class TinyGPT(nn.Module):
         if labels is not None and use_cache:
             raise ValueError("labels are only supported when use_cache=False")
 
-        positions = torch.arange(past_len, past_len + seq_len, device=input_ids.device)
-        x = self.token_embedding(input_ids) + self.position_embedding(positions)[None, :, :]
+        x = self.token_embedding(input_ids)
         x = self.drop(x)
         present_kvs = []
         if past_kvs is None:
