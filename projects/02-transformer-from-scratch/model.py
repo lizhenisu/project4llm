@@ -217,19 +217,22 @@ class TinyGPT(nn.Module):
         temperature: float = 1.0,
         do_sample: bool = False,
         eos_token_id: int | None = None,
+        min_new_tokens: int = 0,
     ) -> torch.Tensor:
         self.eval()
         if temperature <= 0:
             raise ValueError("temperature must be positive")
+        if min_new_tokens < 0:
+            raise ValueError("min_new_tokens must be non-negative")
+        if min_new_tokens > max_new_tokens:
+            raise ValueError("min_new_tokens must be less than or equal to max_new_tokens")
 
         stop_id = self.config.eos_token_id if eos_token_id is None else eos_token_id
         finished = None
         if stop_id is not None:
-            finished = input_ids[:, -1] == stop_id
-            if finished.all():
-                return input_ids
+            finished = torch.zeros(input_ids.size(0), device=input_ids.device, dtype=torch.bool)
 
-        for _ in range(max_new_tokens):
+        for step in range(max_new_tokens):
             context = input_ids[:, -self.config.block_size :]
             logits, _ = self(context)
             next_token_logits = logits[:, -1, :] / temperature
@@ -239,8 +242,11 @@ class TinyGPT(nn.Module):
             else:
                 next_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
             if finished is not None:
-                next_id = torch.where(finished[:, None], torch.full_like(next_id, stop_id), next_id)
-                finished = finished | (next_id[:, 0] == stop_id)
+                finished_mask = finished[:, None]
+                eos_ids = torch.full_like(next_id, stop_id)
+                next_id = torch.where(finished_mask, eos_ids, next_id)
+                if step + 1 >= min_new_tokens:
+                    finished = finished | (next_id[:, 0] == stop_id)
             input_ids = torch.cat([input_ids, next_id], dim=1)
             if finished is not None and finished.all():
                 break
@@ -254,19 +260,22 @@ class TinyGPT(nn.Module):
         temperature: float = 1.0,
         do_sample: bool = False,
         eos_token_id: int | None = None,
+        min_new_tokens: int = 0,
     ) -> torch.Tensor:
         self.eval()
         if temperature <= 0:
             raise ValueError("temperature must be positive")
+        if min_new_tokens < 0:
+            raise ValueError("min_new_tokens must be non-negative")
+        if min_new_tokens > max_new_tokens:
+            raise ValueError("min_new_tokens must be less than or equal to max_new_tokens")
         if input_ids.size(1) + max_new_tokens > self.config.block_size:
             raise ValueError("generate_with_cache requires prompt length + new tokens <= block_size")
 
         stop_id = self.config.eos_token_id if eos_token_id is None else eos_token_id
         finished = None
         if stop_id is not None:
-            finished = input_ids[:, -1] == stop_id
-            if finished.all():
-                return input_ids
+            finished = torch.zeros(input_ids.size(0), device=input_ids.device, dtype=torch.bool)
 
         logits, _loss, past_kvs = self(input_ids, use_cache=True)
         for step in range(max_new_tokens):
@@ -277,8 +286,11 @@ class TinyGPT(nn.Module):
             else:
                 next_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
             if finished is not None:
-                next_id = torch.where(finished[:, None], torch.full_like(next_id, stop_id), next_id)
-                finished = finished | (next_id[:, 0] == stop_id)
+                finished_mask = finished[:, None]
+                eos_ids = torch.full_like(next_id, stop_id)
+                next_id = torch.where(finished_mask, eos_ids, next_id)
+                if step + 1 >= min_new_tokens:
+                    finished = finished | (next_id[:, 0] == stop_id)
             input_ids = torch.cat([input_ids, next_id], dim=1)
             if finished is not None and finished.all():
                 break
