@@ -38,7 +38,9 @@ python projects/05-dpo-preference/build_preference_dataset.py
 10. [projects/05-dpo-preference](projects/05-dpo-preference)：DPO 偏好数据准备。
 11. [notes/05-model-architecture-comparison.md](notes/05-model-architecture-comparison.md)：主流大模型结构对比。
 12. [notes/06-experiment-report-template.md](notes/06-experiment-report-template.md)：实验报告模板。
-13. [notes/00-weekly-checklist.md](notes/00-weekly-checklist.md)：12 周执行检查表。
+13. [notes/08-milvus-vector-retrieval-for-rag.md](notes/08-milvus-vector-retrieval-for-rag.md)：Milvus 向量检索与 RAG 面试教程。
+14. [projects/07-milvus-rag](projects/07-milvus-rag)：Milvus Lite 检索链路实践。
+15. [notes/00-weekly-checklist.md](notes/00-weekly-checklist.md)：12 周执行检查表。
 
 ## 每个项目的验收方式
 

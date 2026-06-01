@@ -9,3 +9,4 @@ sentencepiece
 evaluate
 scikit-learn
 tensorboard
+pymilvus[milvus_lite]
