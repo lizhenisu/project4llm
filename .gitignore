@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+.vscode
 
 # Local Milvus Lite data
 projects/07-milvus-rag/milvus_lite_demo.db/
