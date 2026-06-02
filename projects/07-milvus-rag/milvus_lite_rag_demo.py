@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 try:
-    from pymilvus import MilvusClient
+    from pymilvus import DataType, MilvusClient
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
         "Missing dependency: pymilvus. Run `pip install pymilvus` inside the activated venv."
@@ -16,6 +16,10 @@ except ImportError as exc:  # pragma: no cover
 DIM = 64
 COLLECTION_NAME = "rag_chunks_demo"
 DB_PATH = Path(__file__).with_name("milvus_lite_demo.db")
+TENANT_ID_MAX_LENGTH = 32
+SOURCE_MAX_LENGTH = 32
+DOC_ID_MAX_LENGTH = 64
+TEXT_MAX_LENGTH = 512
 
 
 DOCUMENTS = [
@@ -128,9 +132,44 @@ def reset_collection(client: MilvusClient) -> None:
     if client.has_collection(COLLECTION_NAME):
         client.drop_collection(COLLECTION_NAME)
 
+    schema = MilvusClient.create_schema(
+        auto_id=False,
+        enable_dynamic_field=False,
+    )
+    schema.add_field(
+        field_name="id",
+        datatype=DataType.INT64,
+        is_primary=True,
+    )
+    schema.add_field(
+        field_name="vector",
+        datatype=DataType.FLOAT_VECTOR,
+        dim=DIM,
+    )
+    schema.add_field(
+        field_name="tenant_id",
+        datatype=DataType.VARCHAR,
+        max_length=TENANT_ID_MAX_LENGTH,
+    )
+    schema.add_field(
+        field_name="source",
+        datatype=DataType.VARCHAR,
+        max_length=SOURCE_MAX_LENGTH,
+    )
+    schema.add_field(
+        field_name="doc_id",
+        datatype=DataType.VARCHAR,
+        max_length=DOC_ID_MAX_LENGTH,
+    )
+    schema.add_field(
+        field_name="text",
+        datatype=DataType.VARCHAR,
+        max_length=TEXT_MAX_LENGTH,
+    )
+
     client.create_collection(
         collection_name=COLLECTION_NAME,
-        dimension=DIM,
+        schema=schema,
         metric_type="COSINE",
     )
 
