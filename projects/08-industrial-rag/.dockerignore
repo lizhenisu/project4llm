@@ -1,0 +1,11 @@
+.venv
+__pycache__/
+*.pyc
+industrial_rag_demo.db/
+runtime/
+volumes/
+.env
+.git
+checkpoints/
+experiments/
+

@@ -4,6 +4,201 @@
 
 本项目不是“最小 demo”。它要回答的是：如果要把 RAG 做到生产环境，schema、metadata、hybrid search、rerank、权限、评估、部署和运维应该怎么设计。
 
+## 0. 当前实现状态
+
+当前目录已经包含一条可运行的工业 RAG 骨架：
+
+| 文件 | 作用 |
+| --- | --- |
+| `schema.py` | 显式创建 Milvus collection、dense/sparse 向量索引和 metadata 字段 |
+| `ingest_text.py` | 读取 JSONL 文本文档，chunk、embedding、sparse 特征并 upsert 到 Milvus |
+| `ingest_markdown.py` | 读取 Markdown 目录，生成文档 metadata 并入库 |
+| `ingest_image.py` | 读取图片 OCR/caption 元数据，写入文本向量和图片向量字段 |
+| `delete_document.py` | 按 `tenant_id/doc_id/doc_version` 删除文档 chunk |
+| `search_dense.py` | metadata filter + dense search |
+| `search_hybrid.py` | Milvus hybrid search，融合 dense 和 sparse/BM25-like 向量 |
+| `search_image.py` | 使用 `image_dense_vector` 做图片向量检索 |
+| `rerank.py` | 对 hybrid 候选做二阶段 rerank |
+| `answer.py` | 检索、rerank、组 prompt，并通过 OpenAI-compatible API 生成答案 |
+| `eval_retrieval.py` | 输出 recall、MRR、nDCG、latency 和权限泄露检查 |
+| `eval_answer.py` | 输出 citation accuracy、evidence hit rate、refusal quality |
+| `benchmark_latency.py` | 分段统计 embedding、Milvus search、rerank、answer 延迟 |
+| `scan_pii.py` | 扫描 JSONL 知识源中的邮箱、手机号、身份证号、API key 形态 |
+| `smoke_security.py` | 验证 PII 工具和 tenant/ACL 防泄露行为 |
+| `smoke_context.py` | 验证 context packing 和低置信拒答 |
+| `smoke_rewrite.py` | 验证 query rewrite 和 trace 记录 |
+| `smoke_answer_eval.py` | 验证 citation 解析和拒答识别 |
+| `smoke_e2e.py` | 重建库、入库、hybrid rerank、图片检索的一键验收 |
+| `smoke_api.py` | 直接调用 FastAPI app，验证 `/health`、`/search`、`/query`、`/feedback` |
+| `smoke_deploy.py` | 对已启动 HTTP API 做部署 smoke |
+| `smoke_llm.py` | 使用 OpenAI-compatible 配置做 LLM 网关连通性测试 |
+| `smoke_milvus.py` | 验证当前 `MILVUS_URI` 可连接且 collection 可 load |
+| `smoke_models.py` | 可选加载 BGE/reranker/CLIP 后端做真实模型 smoke |
+| `check_config.py` | 打印脱敏配置并检查 Milvus 连接 |
+| `serve.py` | FastAPI `/search`、`/query`、`/feedback` 和 `/health` 服务入口 |
+| `docker-compose.yml` | Milvus Standalone 最小部署参考 |
+| `Dockerfile` | RAG API/ingest 容器镜像 |
+| `.env.example` | 本地和生产配置模板，不包含真实密钥 |
+| `RELEASE_CHECKLIST.md` | 从教学 smoke 到上线前验收的检查清单 |
+
+本地默认使用 `RAG_EMBEDDING_BACKEND=hash` 和 `RAG_RERANK_BACKEND=lexical`，目的是让教学烟测不下载大模型也能稳定跑通链路。上线或真实评估时应切换为：
+
+```bash
+export RAG_EMBEDDING_BACKEND=bge
+export RAG_RERANK_BACKEND=bge
+export EMBEDDING_MODEL=BAAI/bge-m3
+export RERANK_MODEL=BAAI/bge-reranker-v2-m3
+```
+
+PII 策略：
+
+```bash
+export RAG_PII_POLICY=warn    # 默认：发现 PII 打印警告，仍允许入库
+export RAG_PII_POLICY=redact  # 入库前脱敏
+export RAG_PII_POLICY=fail    # 发现 PII 直接失败
+```
+
+Context packing 和拒答阈值：
+
+```bash
+export RAG_MAX_CONTEXT_CHARS=6000
+export RAG_MAX_CHUNKS_PER_DOC=2
+export RAG_MIN_RERANK_SCORE=       # 空值表示不启用最低分阈值
+```
+
+Query rewrite：
+
+```bash
+export RAG_QUERY_REWRITE_BACKEND=none       # 默认，不改写
+export RAG_QUERY_REWRITE_BACKEND=heuristic  # 短问题结合最近 history
+export RAG_QUERY_REWRITE_BACKEND=llm        # 使用 OpenAI-compatible LLM 改写
+```
+
+图片向量可以继续使用教学 hash 后端，也可以切换 CLIP 后端：
+
+```bash
+export RAG_IMAGE_EMBEDDING_BACKEND=clip
+export IMAGE_EMBEDDING_MODEL=openai/clip-vit-base-patch32
+export IMAGE_EMBEDDING_DIM=512
+```
+
+如果 Hugging Face 下载受限，可以配置镜像：
+
+```bash
+export HF_ENDPOINT="https://hf-mirror.com"
+```
+
+### 本地快速运行
+
+从仓库根目录执行：
+
+```bash
+source .venv/bin/activate
+python projects/08-industrial-rag/schema.py --reset
+python projects/08-industrial-rag/check_config.py
+python projects/08-industrial-rag/ingest_text.py
+python projects/08-industrial-rag/ingest_image.py
+python projects/08-industrial-rag/search_hybrid.py "为什么 hybrid search 要用 BM25" --tenant-id team_a
+python projects/08-industrial-rag/search_image.py "RAG Dashboard latency recall" --tenant-id team_a --acl-group ops
+python projects/08-industrial-rag/rerank.py "退款需要提交什么材料" --tenant-id team_a
+python projects/08-industrial-rag/answer.py "RAG 检索变慢时应该排查什么" --tenant-id team_a
+python projects/08-industrial-rag/eval_retrieval.py --mode dense
+python projects/08-industrial-rag/eval_retrieval.py --mode hybrid
+python projects/08-industrial-rag/eval_retrieval.py --mode rerank
+python projects/08-industrial-rag/eval_answer.py
+python projects/08-industrial-rag/benchmark_latency.py
+python projects/08-industrial-rag/scan_pii.py projects/08-industrial-rag/data/sample_docs.jsonl projects/08-industrial-rag/data/sample_images.jsonl --fail
+python projects/08-industrial-rag/smoke_e2e.py
+python projects/08-industrial-rag/smoke_api.py
+python projects/08-industrial-rag/smoke_security.py
+python projects/08-industrial-rag/smoke_context.py
+python projects/08-industrial-rag/smoke_rewrite.py
+python projects/08-industrial-rag/smoke_answer_eval.py
+python projects/08-industrial-rag/smoke_deploy.py
+python projects/08-industrial-rag/smoke_llm.py
+python projects/08-industrial-rag/smoke_milvus.py
+python projects/08-industrial-rag/smoke_models.py
+```
+
+也可以进入项目目录使用 Makefile：
+
+```bash
+cd projects/08-industrial-rag
+make schema
+make ingest
+make smoke
+make api-smoke
+make security-smoke
+make context-smoke
+make rewrite-smoke
+make answer-eval-smoke
+make eval
+make answer-eval
+make benchmark
+```
+
+### Docker Compose 部署
+
+从 `projects/08-industrial-rag` 目录执行：
+
+```bash
+docker compose up -d milvus rag-api
+docker compose --profile ingest run --rm rag-ingest
+RAG_API_URL=http://127.0.0.1:8008 python smoke_deploy.py
+```
+
+`rag-api` 默认连接 compose 内的 `http://milvus:19530`，并使用 hash/lexical 教学后端。真实模型和 LLM 网关仍通过环境变量注入，不要写入 compose 文件。
+
+入库 Markdown 目录：
+
+```bash
+python projects/08-industrial-rag/ingest_markdown.py \
+  --input-dir notes \
+  --tenant-id team_a \
+  --acl-group support \
+  --acl-group engineering
+```
+
+删除某篇文档的 chunk：
+
+```bash
+python projects/08-industrial-rag/delete_document.py \
+  --tenant-id team_a \
+  --doc-id refund-policy \
+  --yes
+```
+
+启动 API：
+
+```bash
+source .venv/bin/activate
+cd projects/08-industrial-rag
+uvicorn serve:app --host 127.0.0.1 --port 8008
+```
+
+API 端点：
+
+- `GET /health`：健康检查。
+- `POST /search`：只返回检索和 rerank 后的证据，以及 trace。
+- `POST /query`：返回答案和 citations。
+- `POST /feedback`：接收用户反馈；当前教学实现只返回 accepted，生产中应写入事件表或消息队列。
+
+`/search` 和 `/query` 请求都支持 `history: list[str]`，用于 query rewrite。trace 会返回 `original_query`、`rewritten_query` 和 `rewrite_backend`。
+
+如果 query 显式提到请求租户之外的 `team_xxx`，pipeline 会触发 `blocked_cross_tenant_query`，不返回任何检索上下文，避免用本租户无关证据回答跨租户问题。
+
+当前实现会把审计事件写入 `projects/08-industrial-rag/runtime/`：
+
+- `retrieval_events.jsonl`
+- `answer_events.jsonl`
+- `feedback_events.jsonl`
+
+这些运行时文件已被 `.gitignore` 忽略。生产中应替换为 Kafka、数据库事件表或对象存储。
+
+Milvus Lite 使用本地数据库文件，不适合多个 Python 进程同时打开同一个 `industrial_rag_demo.db`。本地调试建议串行运行脚本；服务化或多人开发请使用 `docker-compose.yml` 启动 Milvus Standalone，并设置 `MILVUS_URI=http://127.0.0.1:19530`。
+
+本地教学默认让 `IMAGE_EMBEDDING_DIM` 跟 `EMBEDDING_DIM` 一致，保证 Milvus Lite 的多向量索引可跑。生产中如果视觉模型维度不同，可以设置 `IMAGE_EMBEDDING_DIM` 并使用 Milvus Standalone/Cluster 验证多向量索引。
+
 ## 1. 系统目标
 
 ### 必须具备
@@ -140,7 +335,7 @@ rag_chunks_v1
 | --- | --- | --- |
 | `id` | `VARCHAR` primary key | 稳定 chunk 主键，建议由 `tenant_id/doc_id/version/chunk_index` hash 得到 |
 | `tenant_id` | `VARCHAR` | 租户隔离 |
-| `acl_groups` | `ARRAY<VARCHAR>` 或 `JSON` | 权限组，生产中也可拆到权限服务 |
+| `acl_groups` | `ARRAY<VARCHAR>` | 权限组，查询时使用 `ARRAY_CONTAINS_ANY` 在检索阶段过滤 |
 | `doc_id` | `VARCHAR` | 文档 ID |
 | `doc_version` | `INT64` | 文档版本 |
 | `chunk_index` | `INT64` | chunk 在文档内的位置 |
@@ -180,6 +375,13 @@ schema.add_field("source_uri", DataType.VARCHAR, max_length=512)
 schema.add_field("title", DataType.VARCHAR, max_length=512)
 schema.add_field("text", DataType.VARCHAR, max_length=8192, enable_analyzer=True)
 schema.add_field("language", DataType.VARCHAR, max_length=16)
+schema.add_field(
+    "acl_groups",
+    DataType.ARRAY,
+    element_type=DataType.VARCHAR,
+    max_capacity=32,
+    max_length=64,
+)
 schema.add_field("created_at", DataType.INT64)
 schema.add_field("updated_at", DataType.INT64)
 schema.add_field("is_active", DataType.BOOL)
@@ -188,7 +390,7 @@ schema.add_field("embedding_dim", DataType.INT64)
 schema.add_field("content_hash", DataType.VARCHAR, max_length=64)
 schema.add_field("text_dense_vector", DataType.FLOAT_VECTOR, dim=1024)
 schema.add_field("bm25_sparse_vector", DataType.SPARSE_FLOAT_VECTOR)
-schema.add_field("image_dense_vector", DataType.FLOAT_VECTOR, dim=768)
+schema.add_field("image_dense_vector", DataType.FLOAT_VECTOR, dim=1024)
 schema.add_field("metadata", DataType.JSON)
 ```
 

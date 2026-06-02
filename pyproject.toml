@@ -8,6 +8,8 @@ dependencies = [
     "accelerate>=1.13.0",
     "datasets>=4.8.5",
     "evaluate>=0.4.6",
+    "fastapi>=0.136.3",
+    "openai>=2.40.0",
     "peft>=0.19.1",
     "pymilvus[milvus-lite]>=3.0.0",
     "scikit-learn>=1.8.0",
@@ -17,4 +19,5 @@ dependencies = [
     "torch>=2.12.0",
     "transformers>=5.9.0",
     "trl>=1.5.1",
+    "uvicorn>=0.48.0",
 ]
