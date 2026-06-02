@@ -72,6 +72,9 @@ class TraceInfo:
     tenant_id: str
     acl_groups: list[str]
     doc_version: int | None
+    current_versions: dict[str, int]
+    embedding_model: str
+    source_types: list[str]
     filter_expr: str
     retrieval_mode: str
     candidate_count: int
@@ -80,6 +83,7 @@ class TraceInfo:
     dropped_by_score: int
     dropped_by_doc_limit: int
     dropped_by_budget: int
+    stage_latency_ms: dict[str, float]
 
 
 @dataclass(frozen=True)

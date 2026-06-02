@@ -8,6 +8,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_DIR / "data"
 RUNTIME_DIR = PROJECT_DIR / "runtime"
+OBJECT_STORE_DIR = PROJECT_DIR / "object_store"
 DEFAULT_MILVUS_DB = PROJECT_DIR / "industrial_rag_demo.db"
 
 
@@ -52,11 +53,14 @@ class RagConfig:
     chunk_overlap: int
     reset_collection: bool
     runtime_dir: Path
+    object_store_dir: Path
     pii_policy: str
     max_context_chars: int
     max_chunks_per_doc: int
     min_rerank_score: float | None
     query_rewrite_backend: str
+    require_auth_context: bool
+    api_token: str | None
 
 
 def load_config() -> RagConfig:
@@ -85,9 +89,14 @@ def load_config() -> RagConfig:
         chunk_overlap=_env_int("RAG_CHUNK_OVERLAP", 100),
         reset_collection=_env_bool("RAG_RESET_COLLECTION", False),
         runtime_dir=Path(os.environ.get("RAG_RUNTIME_DIR", str(RUNTIME_DIR))),
+        object_store_dir=Path(
+            os.environ.get("RAG_OBJECT_STORE_DIR", str(OBJECT_STORE_DIR))
+        ),
         pii_policy=os.environ.get("RAG_PII_POLICY", "warn").lower(),
         max_context_chars=_env_int("RAG_MAX_CONTEXT_CHARS", 6000),
         max_chunks_per_doc=_env_int("RAG_MAX_CHUNKS_PER_DOC", 2),
         min_rerank_score=_env_float_or_none("RAG_MIN_RERANK_SCORE"),
         query_rewrite_backend=os.environ.get("RAG_QUERY_REWRITE_BACKEND", "none").lower(),
+        require_auth_context=_env_bool("RAG_REQUIRE_AUTH_CONTEXT", False),
+        api_token=os.environ.get("RAG_API_TOKEN") or None,
     )

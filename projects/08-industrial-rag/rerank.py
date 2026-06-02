@@ -17,6 +17,13 @@ def main() -> None:
         default=[],
         help="Allowed ACL group. Repeat to allow multiple groups.",
     )
+    parser.add_argument("--doc-version", type=int)
+    parser.add_argument(
+        "--source-type",
+        action="append",
+        default=[],
+        help="Restrict retrieval to a source type. Repeat for multiple types.",
+    )
     parser.add_argument("--candidate-limit", type=int, default=20)
     parser.add_argument("--limit", type=int, default=5)
     args = parser.parse_args()
@@ -27,6 +34,8 @@ def main() -> None:
         tenant_id=args.tenant_id,
         limit=args.candidate_limit,
         acl_groups=args.acl_group or None,
+        doc_version=args.doc_version,
+        source_types=args.source_type or None,
     )
     reranker = build_reranker(config)
     reranked = reranker.rerank(args.query, hits, limit=args.limit)

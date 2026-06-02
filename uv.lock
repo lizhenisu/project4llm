@@ -1097,6 +1097,7 @@ dependencies = [
     { name = "openai" },
     { name = "peft" },
     { name = "pymilvus", extra = ["milvus-lite"] },
+    { name = "pypdf" },
     { name = "scikit-learn" },
     { name = "sentencepiece" },
     { name = "tensorboard" },
@@ -1116,6 +1117,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.40.0" },
     { name = "peft", specifier = ">=0.19.1" },
     { name = "pymilvus", extras = ["milvus-lite"], specifier = ">=3.0.0" },
+    { name = "pypdf", specifier = ">=6.12.2" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "sentencepiece", specifier = ">=0.2.1" },
     { name = "tensorboard", specifier = ">=2.20.0" },
@@ -1314,6 +1316,15 @@ wheels = [
 [package.optional-dependencies]
 milvus-lite = [
     { name = "milvus-lite", marker = "sys_platform != 'win32'" },
+]
+
+[[package]]
+name = "pypdf"
+version = "6.12.2"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/0a/6d/20879428577c1e57ecd41b69dc86beabf43db9287ad2e702207f8b48c751/pypdf-6.12.2.tar.gz", hash = "sha256:111669eb6680c04495ae0c113a1476e3bf93a95761d23c7406b591c80a6490b1", size = 6468184, upload-time = "2026-05-26T13:31:26.911Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/9e/44/fee070a16639d9869bb6a7e0f3a1b3946da1d66f32b9260b4d19cb90d7b2/pypdf-6.12.2-py3-none-any.whl", hash = "sha256:67b2699357a1f3f4c945940ea80826349ee507c9e2577724a14b4941982c104d", size = 343865, upload-time = "2026-05-26T13:31:25.068Z" },
 ]
 
 [[package]]

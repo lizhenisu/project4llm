@@ -7,8 +7,10 @@ from rag_core.config import DATA_DIR, load_config
 from rag_core.embeddings import build_embedding_model, build_image_embedding_model
 from rag_core.io import load_image_documents
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
+from rag_core.object_store import archive_source_documents
 from rag_core.pii import apply_pii_policy
-from rag_core.types import Chunk
+from rag_core.types import Chunk, SourceDocument
+from rag_core.versioning import publish_current_versions
 
 
 def main() -> None:
@@ -20,6 +22,11 @@ def main() -> None:
         type=Path,
         default=DATA_DIR / "sample_images.jsonl",
         help="JSONL file of ImageDocument rows.",
+    )
+    parser.add_argument(
+        "--no-publish-current",
+        action="store_true",
+        help="Archive and index documents without changing current-version registry.",
     )
     args = parser.parse_args()
 
@@ -70,8 +77,32 @@ def main() -> None:
         )
     ]
     count = upsert_entities(client, collection_name=config.collection_name, entities=entities)
+    canonical_docs = [
+        SourceDocument(
+            tenant_id=chunk.tenant_id,
+            doc_id=chunk.doc_id,
+            doc_version=chunk.doc_version,
+            source_type=chunk.source_type,
+            source_uri=chunk.source_uri,
+            title=chunk.title,
+            text=chunk.text,
+            language=chunk.language,
+            acl_groups=chunk.acl_groups,
+            metadata=chunk.metadata,
+        )
+        for chunk in chunks
+    ]
+    archived = archive_source_documents(config.object_store_dir, canonical_docs)
+    current_versions = (
+        {}
+        if args.no_publish_current
+        else publish_current_versions(config.object_store_dir, canonical_docs)
+    )
     print(f"Loaded image docs: {len(image_docs)}")
     print(f"Upserted image chunks: {count}")
+    print(f"Archived canonical docs: {archived}")
+    if not args.no_publish_current:
+        print(f"Published current versions: {current_versions}")
 
 
 if __name__ == "__main__":

@@ -117,18 +117,28 @@ def build_filter_expr(
     source_types: list[str] | None = None,
     active_only: bool = True,
     doc_version: int | None = None,
+    current_doc_versions: dict[str, int] | None = None,
+    embedding_model: str | None = None,
 ) -> str:
     clauses = [f'tenant_id == "{tenant_id}"']
     if active_only:
         clauses.append("is_active == true")
     if doc_version is not None:
         clauses.append(f"doc_version == {doc_version}")
+    elif current_doc_versions:
+        version_clauses = [
+            f'(doc_id == "{doc_id}" and doc_version == {version})'
+            for doc_id, version in sorted(current_doc_versions.items())
+        ]
+        clauses.append("(" + " or ".join(version_clauses) + ")")
     if source_types:
         quoted = ", ".join(f'"{item}"' for item in source_types)
         clauses.append(f"source_type in [{quoted}]")
     if allowed_acl_groups:
         quoted = ", ".join(f'"{group}"' for group in allowed_acl_groups)
         clauses.append(f"ARRAY_CONTAINS_ANY(acl_groups, [{quoted}])")
+    if embedding_model:
+        clauses.append(f'embedding_model == "{embedding_model}"')
     return " and ".join(clauses)
 
 

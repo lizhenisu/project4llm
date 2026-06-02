@@ -14,5 +14,6 @@ wheels/
 # Local Milvus Lite data
 projects/07-milvus-rag/milvus_lite_demo.db/
 projects/08-industrial-rag/industrial_rag_demo.db/
+projects/08-industrial-rag/object_store/
 projects/08-industrial-rag/volumes/
 projects/08-industrial-rag/runtime/

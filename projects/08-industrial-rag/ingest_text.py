@@ -7,9 +7,11 @@ from rag_core.config import DATA_DIR, load_config
 from rag_core.embeddings import build_embedding_model, build_image_embedding_model
 from rag_core.io import load_source_documents
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
+from rag_core.object_store import archive_source_documents
 from rag_core.pii import apply_pii_policy
 from rag_core.text_utils import chunk_document
 from rag_core.types import SourceDocument
+from rag_core.versioning import publish_current_versions
 
 
 def main() -> None:
@@ -19,6 +21,11 @@ def main() -> None:
         type=Path,
         default=DATA_DIR / "sample_docs.jsonl",
         help="JSONL file of SourceDocument rows.",
+    )
+    parser.add_argument(
+        "--no-publish-current",
+        action="store_true",
+        help="Archive and index documents without changing current-version registry.",
     )
     parser.add_argument("--reset", action="store_true", help="Drop and recreate collection first.")
     args = parser.parse_args()
@@ -71,8 +78,17 @@ def main() -> None:
         collection_name=config.collection_name,
         entities=entities,
     )
+    archived = archive_source_documents(config.object_store_dir, docs)
+    current_versions = (
+        {}
+        if args.no_publish_current
+        else publish_current_versions(config.object_store_dir, docs)
+    )
     print(f"Loaded documents: {len(docs)}")
     print(f"Upserted chunks: {count}")
+    print(f"Archived canonical docs: {archived}")
+    if not args.no_publish_current:
+        print(f"Published current versions: {current_versions}")
     print(f"Collection: {config.collection_name}")
 
 

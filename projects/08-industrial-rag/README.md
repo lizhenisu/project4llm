@@ -13,8 +13,12 @@
 | `schema.py` | 显式创建 Milvus collection、dense/sparse 向量索引和 metadata 字段 |
 | `ingest_text.py` | 读取 JSONL 文本文档，chunk、embedding、sparse 特征并 upsert 到 Milvus |
 | `ingest_markdown.py` | 读取 Markdown 目录，生成文档 metadata 并入库 |
+| `ingest_files.py` | 读取 PDF、HTML、Markdown、TXT 目录，统一转换为 `SourceDocument` 后入库 |
 | `ingest_image.py` | 读取图片 OCR/caption 元数据，写入文本向量和图片向量字段 |
+| `rebuild_from_object_store.py` | 从归档的 canonical 文档重建 Milvus 索引 |
 | `delete_document.py` | 按 `tenant_id/doc_id/doc_version` 删除文档 chunk |
+| `list_documents.py` | 按租户查看已发布文档版本、chunk 数和 ACL |
+| `collection_stats.py` | 输出 collection 行数、文档数、租户数和 source 类型分布 |
 | `search_dense.py` | metadata filter + dense search |
 | `search_hybrid.py` | Milvus hybrid search，融合 dense 和 sparse/BM25-like 向量 |
 | `search_image.py` | 使用 `image_dense_vector` 做图片向量检索 |
@@ -22,14 +26,28 @@
 | `answer.py` | 检索、rerank、组 prompt，并通过 OpenAI-compatible API 生成答案 |
 | `eval_retrieval.py` | 输出 recall、MRR、nDCG、latency 和权限泄露检查 |
 | `eval_answer.py` | 输出 citation accuracy、evidence hit rate、refusal quality |
+| `release_gate.py` | 按上线阈值检查 retrieval/answer 指标，不达标时非零退出 |
 | `benchmark_latency.py` | 分段统计 embedding、Milvus search、rerank、answer 延迟 |
+| `monitor_events.py` | 汇总 runtime 事件，输出 p50/p95/p99、检索模式、context 命中和反馈分布 |
 | `scan_pii.py` | 扫描 JSONL 知识源中的邮箱、手机号、身份证号、API key 形态 |
 | `smoke_security.py` | 验证 PII 工具和 tenant/ACL 防泄露行为 |
+| `smoke_event_redaction.py` | 验证 runtime 事件会脱敏 query、feedback 和证据 preview 中的 PII |
+| `smoke_auth_context.py` | 验证 API 从服务端请求头读取 tenant/ACL，并拒绝缺失 token/context |
 | `smoke_context.py` | 验证 context packing 和低置信拒答 |
 | `smoke_rewrite.py` | 验证 query rewrite 和 trace 记录 |
 | `smoke_answer_eval.py` | 验证 citation 解析和拒答识别 |
+| `smoke_file_ingest.py` | 验证 HTML/TXT 文件解析、chunk、入库和检索 |
+| `smoke_lifecycle.py` | 验证 `doc_version` 版本过滤和不存在版本不返回 |
+| `smoke_current_version.py` | 验证默认查询只检索 current-version registry 中的发布版本 |
+| `smoke_embedding_model_filter.py` | 验证查询不会混用旧 embedding 模型写入的向量 |
+| `smoke_source_filter.py` | 验证 query/API 的 `source_types` metadata filter |
+| `smoke_object_store_rebuild.py` | 验证 canonical text 归档后可重建 Milvus 索引 |
+| `smoke_observability.py` | 验证 runtime 事件包含 raw hits、rerank hits、final context 和 LLM 延迟 |
+| `smoke_monitoring.py` | 验证 runtime 事件可聚合成线上监控指标 |
+| `smoke_release_gate.py` | 验证 release gate 阈值判断逻辑 |
 | `smoke_e2e.py` | 重建库、入库、hybrid rerank、图片检索的一键验收 |
 | `smoke_api.py` | 直接调用 FastAPI app，验证 `/health`、`/search`、`/query`、`/feedback` |
+| `smoke_readiness.py` | 验证 `/ready` 会检查 Milvus collection、schema 字段和向量维度 |
 | `smoke_deploy.py` | 对已启动 HTTP API 做部署 smoke |
 | `smoke_llm.py` | 使用 OpenAI-compatible 配置做 LLM 网关连通性测试 |
 | `smoke_milvus.py` | 验证当前 `MILVUS_URI` 可连接且 collection 可 load |
@@ -64,6 +82,7 @@ Context packing 和拒答阈值：
 export RAG_MAX_CONTEXT_CHARS=6000
 export RAG_MAX_CHUNKS_PER_DOC=2
 export RAG_MIN_RERANK_SCORE=       # 空值表示不启用最低分阈值
+export RAG_OBJECT_STORE_DIR=projects/08-industrial-rag/object_store
 ```
 
 Query rewrite：
@@ -73,6 +92,23 @@ export RAG_QUERY_REWRITE_BACKEND=none       # 默认，不改写
 export RAG_QUERY_REWRITE_BACKEND=heuristic  # 短问题结合最近 history
 export RAG_QUERY_REWRITE_BACKEND=llm        # 使用 OpenAI-compatible LLM 改写
 ```
+
+API auth context：
+
+```bash
+export RAG_REQUIRE_AUTH_CONTEXT=1
+export RAG_API_TOKEN="dev-only-token"
+```
+
+启用后，`/search` 和 `/query` 需要：
+
+```text
+Authorization: Bearer dev-only-token
+X-RAG-Tenant-ID: team_a
+X-RAG-ACL-Groups: support,ops
+```
+
+生产中 `tenant_id` 和 `acl_groups` 应来自认证服务或 API 网关注入的服务端可信上下文；请求 body 里的同名字段只保留给教学兼容模式。
 
 图片向量可以继续使用教学 hash 后端，也可以切换 CLIP 后端：
 
@@ -97,7 +133,11 @@ source .venv/bin/activate
 python projects/08-industrial-rag/schema.py --reset
 python projects/08-industrial-rag/check_config.py
 python projects/08-industrial-rag/ingest_text.py
+python projects/08-industrial-rag/ingest_files.py --input-dir notes --tenant-id team_a --acl-group engineering
 python projects/08-industrial-rag/ingest_image.py
+python projects/08-industrial-rag/list_documents.py --tenant-id team_a
+python projects/08-industrial-rag/collection_stats.py --tenant-id team_a
+python projects/08-industrial-rag/rebuild_from_object_store.py --reset
 python projects/08-industrial-rag/search_hybrid.py "为什么 hybrid search 要用 BM25" --tenant-id team_a
 python projects/08-industrial-rag/search_image.py "RAG Dashboard latency recall" --tenant-id team_a --acl-group ops
 python projects/08-industrial-rag/rerank.py "退款需要提交什么材料" --tenant-id team_a
@@ -106,14 +146,28 @@ python projects/08-industrial-rag/eval_retrieval.py --mode dense
 python projects/08-industrial-rag/eval_retrieval.py --mode hybrid
 python projects/08-industrial-rag/eval_retrieval.py --mode rerank
 python projects/08-industrial-rag/eval_answer.py
+python projects/08-industrial-rag/release_gate.py
 python projects/08-industrial-rag/benchmark_latency.py
+python projects/08-industrial-rag/monitor_events.py
 python projects/08-industrial-rag/scan_pii.py projects/08-industrial-rag/data/sample_docs.jsonl projects/08-industrial-rag/data/sample_images.jsonl --fail
 python projects/08-industrial-rag/smoke_e2e.py
 python projects/08-industrial-rag/smoke_api.py
+python projects/08-industrial-rag/smoke_readiness.py
 python projects/08-industrial-rag/smoke_security.py
+python projects/08-industrial-rag/smoke_event_redaction.py
+python projects/08-industrial-rag/smoke_auth_context.py
 python projects/08-industrial-rag/smoke_context.py
 python projects/08-industrial-rag/smoke_rewrite.py
 python projects/08-industrial-rag/smoke_answer_eval.py
+python projects/08-industrial-rag/smoke_file_ingest.py
+python projects/08-industrial-rag/smoke_lifecycle.py
+python projects/08-industrial-rag/smoke_current_version.py
+python projects/08-industrial-rag/smoke_embedding_model_filter.py
+python projects/08-industrial-rag/smoke_source_filter.py
+python projects/08-industrial-rag/smoke_object_store_rebuild.py
+python projects/08-industrial-rag/smoke_observability.py
+python projects/08-industrial-rag/smoke_monitoring.py
+python projects/08-industrial-rag/smoke_release_gate.py
 python projects/08-industrial-rag/smoke_deploy.py
 python projects/08-industrial-rag/smoke_llm.py
 python projects/08-industrial-rag/smoke_milvus.py
@@ -128,13 +182,26 @@ make schema
 make ingest
 make smoke
 make api-smoke
+make readiness-smoke
 make security-smoke
+make event-redaction-smoke
+make auth-smoke
 make context-smoke
 make rewrite-smoke
 make answer-eval-smoke
+make file-ingest-smoke
+make lifecycle-smoke
+make current-version-smoke
+make embedding-model-smoke
+make source-filter-smoke
+make object-store-smoke
+make observability-smoke
+make monitoring-smoke
 make eval
 make answer-eval
+make release-gate
 make benchmark
+make monitor
 ```
 
 ### Docker Compose 部署
@@ -159,6 +226,24 @@ python projects/08-industrial-rag/ingest_markdown.py \
   --acl-group engineering
 ```
 
+入库 PDF、HTML、Markdown、TXT 混合目录：
+
+```bash
+python projects/08-industrial-rag/ingest_files.py \
+  --input-dir knowledge_base \
+  --tenant-id team_a \
+  --doc-version 2 \
+  --acl-group support \
+  --acl-group engineering
+```
+
+查看当前 collection 文档版本：
+
+```bash
+python projects/08-industrial-rag/list_documents.py --tenant-id team_a
+python projects/08-industrial-rag/collection_stats.py --tenant-id team_a
+```
+
 删除某篇文档的 chunk：
 
 ```bash
@@ -178,12 +263,15 @@ uvicorn serve:app --host 127.0.0.1 --port 8008
 
 API 端点：
 
-- `GET /health`：健康检查。
+- `GET /health`：轻量 liveness，只返回进程是否存活。
+- `GET /ready`：readiness，检查 Milvus 是否可连接、collection 是否存在、schema 关键字段和向量维度是否匹配当前配置；失败返回 503。
 - `POST /search`：只返回检索和 rerank 后的证据，以及 trace。
 - `POST /query`：返回答案和 citations。
 - `POST /feedback`：接收用户反馈；当前教学实现只返回 accepted，生产中应写入事件表或消息队列。
 
-`/search` 和 `/query` 请求都支持 `history: list[str]`，用于 query rewrite。trace 会返回 `original_query`、`rewritten_query` 和 `rewrite_backend`。
+`/search` 和 `/query` 请求都支持 `history: list[str]`，用于 query rewrite；也支持 `doc_version`，用于只检索某个已发布版本；还支持 `source_types: list[str]`，用于限制 `pdf/md/html/image/api` 等来源类型。trace 会返回 `original_query`、`rewritten_query`、`rewrite_backend`、`doc_version` 和 `source_types`。
+
+默认教学模式下，API 仍接受 body 中的 `tenant_id` 和 `acl_groups`，便于脚本和 smoke 直接调用。设置 `RAG_REQUIRE_AUTH_CONTEXT=1` 后，API 会忽略 body 中的租户和 ACL，改用 `X-RAG-Tenant-ID`、`X-RAG-ACL-Groups` 和可选 Bearer token 构造服务端 metadata filter。
 
 如果 query 显式提到请求租户之外的 `team_xxx`，pipeline 会触发 `blocked_cross_tenant_query`，不返回任何检索上下文，避免用本租户无关证据回答跨租户问题。
 
@@ -193,7 +281,44 @@ API 端点：
 - `answer_events.jsonl`
 - `feedback_events.jsonl`
 
-这些运行时文件已被 `.gitignore` 忽略。生产中应替换为 Kafka、数据库事件表或对象存储。
+`retrieval_events` 和 `answer_events` 包含：
+
+- `auth_context` 摘要。
+- `trace`：query rewrite、filter、计数、context packing 丢弃原因、分段 latency。
+- `raw_hits`：Milvus hybrid 原始候选摘要。
+- `rerank_hits`：二阶段排序后的候选摘要。
+- `final_context`：最终进入 prompt 的证据摘要。
+- `llm`：回答生成模型、后端、延迟和 token usage；仅 `answer_events`。
+
+这些运行时文件已被 `.gitignore` 忽略。生产中应替换为 Kafka、数据库事件表或对象存储。事件日志只保存短 `text_preview`，并在写入前递归脱敏邮箱、手机号、身份证号和 API key 形态；不要记录完整 API key、未脱敏隐私或长篇用户原文。
+
+可以用 `monitor_events.py` 汇总本地 runtime 事件，得到 retrieval/answer/feedback 数量、retrieval mode 分布、context 命中、分段 latency 的 p50/p95/p99、LLM latency、top context docs 和反馈 rating 分布：
+
+```bash
+python projects/08-industrial-rag/monitor_events.py
+```
+
+`eval_retrieval.py` 和 `eval_answer.py` 支持 `--json-output` 写出机器可读指标；`release_gate.py` 会直接运行两类评估并按阈值失败退出，适合接入 CI 或上线前 checklist：
+
+```bash
+python projects/08-industrial-rag/release_gate.py \
+  --min-recall 0.90 \
+  --min-evidence-hit-rate 0.80 \
+  --max-leakage-failures 0 \
+  --max-p95-retrieval-ms 800
+```
+
+入库脚本会把 PII 策略处理后的 canonical `SourceDocument` 归档到 `RAG_OBJECT_STORE_DIR/canonical/source_documents.jsonl`。Milvus 只作为检索索引；如果索引损坏或 embedding 模型升级，可以先重建 schema，再执行：
+
+```bash
+python projects/08-industrial-rag/rebuild_from_object_store.py --reset
+```
+
+本地 `object_store/` 已被 `.gitignore` 忽略。生产中应替换为 S3、MinIO 或企业对象存储，并保存原始文件、解析文本和处理版本。
+
+入库和重建脚本默认会更新 `RAG_OBJECT_STORE_DIR/current_versions.json`。当请求没有显式传 `doc_version` 时，查询链路会读取这个 registry，并把 filter 切到每篇文档的当前发布版本；显式传 `doc_version` 时仍可以检索历史版本。需要只入库不发布时，可以给入库脚本传 `--no-publish-current`。
+
+查询链路也会把当前 `embedding_model` 加入 Milvus filter，避免同一 collection 中残留的旧模型同维度向量被混查。模型升级的推荐方式仍是新建 collection 或新字段；这个 filter 是防止迁移期误召回旧向量的护栏。
 
 Milvus Lite 使用本地数据库文件，不适合多个 Python 进程同时打开同一个 `industrial_rag_demo.db`。本地调试建议串行运行脚本；服务化或多人开发请使用 `docker-compose.yml` 启动 Milvus Standalone，并设置 `MILVUS_URI=http://127.0.0.1:19530`。
 
@@ -507,9 +632,9 @@ content_hash = sha256(normalized_text)
 更新策略：
 
 - 同版本重复写入：upsert。
-- 新版本发布：写入 `doc_version=N+1`，查询 filter 切到新版本。
+- 新版本发布：写入 `doc_version=N+1`，更新 `current_versions.json`，查询 filter 默认切到新版本。
 - 删除文档：按 `doc_id` 批量 delete，或 `is_active=false` 软删除。
-- embedding 模型升级：新建 collection 或新字段，不要混用不同向量空间。
+- embedding 模型升级：新建 collection 或新字段，不要混用不同向量空间；查询 filter 会限制当前 `embedding_model`，避免迁移期混查旧模型向量。
 
 ## 7. 查询链路设计
 
@@ -791,6 +916,9 @@ object-store
 MILVUS_URI
 MILVUS_TOKEN
 RAG_COLLECTION
+RAG_OBJECT_STORE_DIR
+RAG_REQUIRE_AUTH_CONTEXT
+RAG_API_TOKEN
 EMBEDDING_MODEL=BAAI/bge-m3
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
 OPENAI_BASE_URL
@@ -832,7 +960,7 @@ HF_ENDPOINT
 必须做到：
 
 - 服务端生成 metadata filter。
-- 不信任用户输入的 `tenant_id`、`doc_id`、`acl`。
+- 不信任用户输入的 `tenant_id`、`doc_id`、`acl`；生产 API 使用请求头或网关注入的 auth context。
 - API key 只通过环境变量或 secret manager 注入。
 - 日志脱敏。
 - 每次回答保留 citation，便于审计。

@@ -1,27 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import asdict
-
 from rag_core.config import load_config
-from rag_core.milvus_store import connect
-
-
-SECRET_KEYS = {"milvus_token", "llm_api_key"}
+from rag_core.readiness import readiness_report, redacted_config
 
 
 def main() -> None:
     config = load_config()
     print("RAG config:")
-    for key, value in asdict(config).items():
-        if key in SECRET_KEYS and value:
-            value = "***"
+    for key, value in redacted_config(config).items():
         print(f"- {key}: {value}")
 
-    client = connect(config)
-    print(f"Milvus connected: {config.milvus_uri}")
-    print(f"Collection exists: {client.has_collection(config.collection_name)}")
+    report = readiness_report(config)
+    print("Readiness:")
+    for name, check in report["checks"].items():
+        print(f"- {name}: {check}")
+    if report["status"] != "ok":
+        raise SystemExit("RAG readiness check failed")
 
 
 if __name__ == "__main__":
     main()
-

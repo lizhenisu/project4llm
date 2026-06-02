@@ -29,7 +29,10 @@ def main() -> None:
     ensure_collection(client, config, reset=False)
     embedding_model = build_embedding_model(config)
     reranker = build_reranker(config)
-    filter_expr = build_filter_expr(tenant_id=args.tenant_id)
+    filter_expr = build_filter_expr(
+        tenant_id=args.tenant_id,
+        embedding_model=embedding_model.model_name,
+    )
 
     totals = {
         "embedding_ms": [],
@@ -93,4 +96,3 @@ def percentile(values: list[float], p: float) -> float:
 
 if __name__ == "__main__":
     main()
-

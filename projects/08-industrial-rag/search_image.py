@@ -26,6 +26,7 @@ def main() -> None:
         default=[],
         help="Allowed ACL group. Repeat to allow multiple groups.",
     )
+    parser.add_argument("--doc-version", type=int)
     parser.add_argument("--limit", type=int, default=5)
     args = parser.parse_args()
 
@@ -42,6 +43,7 @@ def main() -> None:
         tenant_id=args.tenant_id,
         allowed_acl_groups=args.acl_group or None,
         source_types=["image"],
+        doc_version=args.doc_version,
     )
     hits = image_search(
         client,

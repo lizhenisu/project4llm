@@ -12,6 +12,7 @@ dependencies = [
     "openai>=2.40.0",
     "peft>=0.19.1",
     "pymilvus[milvus-lite]>=3.0.0",
+    "pypdf>=6.12.2",
     "scikit-learn>=1.8.0",
     "sentencepiece>=0.2.1",
     "tensorboard>=2.20.0",

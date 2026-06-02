@@ -5,6 +5,7 @@ from collections import defaultdict
 
 from rag_core.config import load_config
 from rag_core.milvus_store import connect, ensure_collection
+from rag_core.versioning import load_current_versions
 
 
 def main() -> None:
@@ -16,6 +17,7 @@ def main() -> None:
     config = load_config()
     client = connect(config)
     ensure_collection(client, config, reset=False)
+    current_versions = load_current_versions(config.object_store_dir, tenant_id=args.tenant_id)
 
     filter_expr = f'tenant_id == "{args.tenant_id}" and is_active == true'
     if args.doc_version is not None:
@@ -55,6 +57,7 @@ def main() -> None:
     for item in sorted(docs.values(), key=lambda doc: (doc["doc_id"], doc["doc_version"])):
         print(
             f"doc_id={item['doc_id']} version={item['doc_version']} "
+            f"current={current_versions.get(item['doc_id']) == item['doc_version']} "
             f"chunks={item['chunks']} source={item['source_type']} "
             f"acl={','.join(item['acl_groups'])} title={item['title']}"
         )
@@ -62,4 +65,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

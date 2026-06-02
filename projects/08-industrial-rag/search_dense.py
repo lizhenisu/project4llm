@@ -17,6 +17,13 @@ def main() -> None:
         default=[],
         help="Allowed ACL group. Repeat to allow multiple groups.",
     )
+    parser.add_argument("--doc-version", type=int)
+    parser.add_argument(
+        "--source-type",
+        action="append",
+        default=[],
+        help="Restrict retrieval to a source type. Repeat for multiple types.",
+    )
     parser.add_argument("--limit", type=int, default=5)
     args = parser.parse_args()
 
@@ -28,6 +35,9 @@ def main() -> None:
     filter_expr = build_filter_expr(
         tenant_id=args.tenant_id,
         allowed_acl_groups=args.acl_group or None,
+        doc_version=args.doc_version,
+        embedding_model=model.model_name,
+        source_types=args.source_type or None,
     )
     hits = dense_search(
         client,

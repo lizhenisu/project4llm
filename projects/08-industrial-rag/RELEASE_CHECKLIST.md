@@ -10,14 +10,28 @@ make schema
 make ingest
 make smoke
 make api-smoke
+make readiness-smoke
 make security-smoke
+make event-redaction-smoke
+make auth-smoke
 make context-smoke
 make rewrite-smoke
 make answer-eval-smoke
+make file-ingest-smoke
+make lifecycle-smoke
+make current-version-smoke
+make embedding-model-smoke
+make source-filter-smoke
+make object-store-smoke
+make observability-smoke
+make monitoring-smoke
+make release-gate-smoke
 make pii-scan
 make eval
 make answer-eval
+make release-gate
 make benchmark
+make monitor
 make check
 make milvus-smoke
 ```
@@ -26,17 +40,38 @@ make milvus-smoke
 
 - `smoke_e2e=ok`
 - `smoke_api=ok`
+- `smoke_readiness=ok`
+- `smoke_event_redaction=ok`
 - `recall@5 >= 1.000`，样例集权限泄露为 0
 - `ndcg@5`、`mrr@5` 输出正常
 - `citation_accuracy`、`evidence_hit_rate`、`refusal_quality` 输出正常
 - `benchmark_latency.py` 输出 embedding/search/rerank/answer 分段延迟
 - `runtime/*.jsonl` 生成 retrieval、answer、feedback 事件
 - `smoke_security=ok`
+- `smoke_auth_context=ok`
 - `smoke_context=ok`
 - `smoke_rewrite=ok`
 - `smoke_answer_eval=ok`
+- `smoke_file_ingest=ok`
+- `smoke_lifecycle=ok`
+- `smoke_current_version=ok`
+- `smoke_embedding_model_filter=ok`
+- `smoke_source_filter=ok`
+- `smoke_object_store_rebuild=ok`
+- `smoke_observability=ok`
+- `smoke_monitoring=ok`
+- `smoke_release_gate=ok`
 - 跨租户 query 的 trace 为 `blocked_cross_tenant_query`
 - `scan_pii.py --fail` 在样例数据上通过
+- PDF/HTML/Markdown/TXT 目录可通过 `ingest_files.py` 统一入库
+- `doc_version` 过滤能命中指定版本，并且不存在版本不返回证据
+- 无显式 `doc_version` 时默认只检索 current-version registry 中的发布版本；显式 `doc_version` 可查历史版本
+- 查询 filter 包含当前 `embedding_model`，迁移期间不会召回旧模型写入的同维度向量
+- `source_types` metadata filter 能在 API 和 pipeline 中限制 `md/html/pdf/image/api` 等来源类型
+- 入库后的 canonical text 归档到 object store，`rebuild_from_object_store.py --reset` 可重建 Milvus 索引
+- runtime 事件包含 `raw_hits`、`rerank_hits`、`final_context`、`trace.stage_latency_ms` 和 `llm.latency_ms`
+- `monitor_events.py` 能输出 runtime 事件的 p50/p95/p99 latency、retrieval mode、context、top docs 和 feedback rating 分布
+- `release_gate.py` 能按 recall、MRR、nDCG、权限泄露、p95 retrieval、citation、evidence hit、refusal quality 阈值失败退出
 
 ## 2. Milvus Standalone 验收
 
@@ -62,6 +97,7 @@ RAG_API_URL=http://127.0.0.1:8008 make deploy-smoke
 
 - `smoke_milvus=ok`
 - `rag_chunks_v1` collection 存在
+- `/ready` 返回 `status=ok`，schema 字段和向量维度与当前配置一致
 - hybrid search、ACL filter、image search 均能返回预期结果
 - `smoke_deploy=ok`
 
@@ -121,7 +157,9 @@ git status --ignored --short runtime industrial_rag_demo.db volumes
 - 真实 API key、内网地址不在仓库文件中
 - runtime、Milvus Lite DB、Docker volumes 被 git 忽略
 - API 返回 citations，但不返回密钥或用户隐私字段
+- runtime 事件会脱敏 query、feedback comment、metadata 和 `text_preview` 中的 PII/API key 形态
 - 生产入库使用 `RAG_PII_POLICY=redact` 或 `RAG_PII_POLICY=fail`
+- 生产 API 设置 `RAG_REQUIRE_AUTH_CONTEXT=1`，并由网关或认证服务注入 `X-RAG-Tenant-ID` / `X-RAG-ACL-Groups`
 
 ## 6. 上线前仍需确认
 

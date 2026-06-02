@@ -14,6 +14,8 @@ def run_hybrid(
     tenant_id: str,
     limit: int,
     acl_groups: list[str] | None = None,
+    doc_version: int | None = None,
+    source_types: list[str] | None = None,
 ):
     config = load_config()
     client = connect(config)
@@ -24,6 +26,9 @@ def run_hybrid(
     filter_expr = build_filter_expr(
         tenant_id=tenant_id,
         allowed_acl_groups=acl_groups,
+        doc_version=doc_version,
+        embedding_model=model.model_name,
+        source_types=source_types,
     )
     return hybrid_search(
         client,
@@ -45,6 +50,13 @@ def main() -> None:
         default=[],
         help="Allowed ACL group. Repeat to allow multiple groups.",
     )
+    parser.add_argument("--doc-version", type=int)
+    parser.add_argument(
+        "--source-type",
+        action="append",
+        default=[],
+        help="Restrict retrieval to a source type. Repeat for multiple types.",
+    )
     parser.add_argument("--limit", type=int, default=5)
     args = parser.parse_args()
 
@@ -53,6 +65,8 @@ def main() -> None:
         tenant_id=args.tenant_id,
         limit=args.limit,
         acl_groups=args.acl_group or None,
+        doc_version=args.doc_version,
+        source_types=args.source_type or None,
     )
     for rank, hit in enumerate(hits, start=1):
         print(
