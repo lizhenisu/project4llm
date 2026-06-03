@@ -4,6 +4,8 @@ import argparse
 
 from rag_core.config import load_config
 from rag_core.milvus_store import connect, ensure_collection
+from rag_core.object_store import archive_delete_tombstone
+from rag_core.versioning import unpublish_current_version
 
 
 def main() -> None:
@@ -15,6 +17,16 @@ def main() -> None:
         "--yes",
         action="store_true",
         help="Confirm deletion. Required to avoid accidental deletes.",
+    )
+    parser.add_argument(
+        "--keep-current-version",
+        action="store_true",
+        help="Do not update current_versions.json after deleting chunks.",
+    )
+    parser.add_argument(
+        "--skip-object-store-tombstone",
+        action="store_true",
+        help="Do not write a delete tombstone to the archived canonical object store.",
     )
     args = parser.parse_args()
 
@@ -33,10 +45,27 @@ def main() -> None:
         collection_name=config.collection_name,
         filter=filter_expr,
     )
+    unpublished = False
+    if not args.keep_current_version:
+        unpublished = unpublish_current_version(
+            config.object_store_dir,
+            tenant_id=args.tenant_id,
+            doc_id=args.doc_id,
+            doc_version=args.doc_version,
+        )
+    tombstoned = 0
+    if not args.skip_object_store_tombstone:
+        tombstoned = archive_delete_tombstone(
+            config.object_store_dir,
+            tenant_id=args.tenant_id,
+            doc_id=args.doc_id,
+            doc_version=args.doc_version,
+        )
     print(f"delete_filter: {filter_expr}")
+    print(f"unpublished_current_version: {unpublished}")
+    print(f"archived_delete_tombstones: {tombstoned}")
     print(result)
 
 
 if __name__ == "__main__":
     main()
-

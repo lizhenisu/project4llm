@@ -29,6 +29,27 @@ def load_current_versions(object_store_dir: Path, *, tenant_id: str) -> dict[str
     return load_all_current_versions(object_store_dir).get(tenant_id, {})
 
 
+def unpublish_current_version(
+    object_store_dir: Path,
+    *,
+    tenant_id: str,
+    doc_id: str,
+    doc_version: int | None = None,
+) -> bool:
+    current = load_all_current_versions(object_store_dir)
+    tenant_versions = current.get(tenant_id)
+    if not tenant_versions or doc_id not in tenant_versions:
+        return False
+    if doc_version is not None and int(tenant_versions[doc_id]) != int(doc_version):
+        return False
+
+    del tenant_versions[doc_id]
+    if not tenant_versions:
+        del current[tenant_id]
+    save_current_versions(object_store_dir, current)
+    return True
+
+
 def load_all_current_versions(object_store_dir: Path) -> dict[str, dict[str, int]]:
     path = object_store_dir / CURRENT_VERSIONS_PATH
     if not path.exists():

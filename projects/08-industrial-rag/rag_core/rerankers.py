@@ -4,6 +4,7 @@ from dataclasses import replace
 from typing import Protocol
 
 from rag_core.config import RagConfig
+from rag_core.embeddings import resolve_device, resolve_torch_dtype
 from rag_core.text_utils import lexical_overlap_score
 from rag_core.types import SearchHit
 
@@ -28,14 +29,31 @@ class LexicalReranker:
 
 
 class TransformersBGEReranker:
-    def __init__(self, model_name: str, device: str | None = None) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        batch_size: int,
+        max_length: int,
+        device: str,
+        dtype: str,
+    ) -> None:
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
         self._torch = torch
-        self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._batch_size = max(1, batch_size)
+        self._max_length = max(1, max_length)
+        self._device = resolve_device(torch, device)
         self._tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self._model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        model_kwargs = {}
+        torch_dtype = resolve_torch_dtype(torch, device=self._device, dtype=dtype)
+        if torch_dtype is not None:
+            model_kwargs["torch_dtype"] = torch_dtype
+        self._model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            **model_kwargs,
+        )
         self._model.to(self._device)
         self._model.eval()
 
@@ -44,19 +62,23 @@ class TransformersBGEReranker:
             return []
 
         pairs = [(query, hit.text) for hit in hits]
+        scores: list[float] = []
         with self._torch.no_grad():
-            batch = self._tokenizer(
-                pairs,
-                padding=True,
-                truncation=True,
-                max_length=1024,
-                return_tensors="pt",
-            )
-            batch = {key: value.to(self._device) for key, value in batch.items()}
-            logits = self._model(**batch).logits.squeeze(-1)
-            scores = logits.detach().cpu().tolist()
-            if isinstance(scores, float):
-                scores = [scores]
+            for start in range(0, len(pairs), self._batch_size):
+                batch_pairs = pairs[start : start + self._batch_size]
+                batch = self._tokenizer(
+                    batch_pairs,
+                    padding=True,
+                    truncation=True,
+                    max_length=self._max_length,
+                    return_tensors="pt",
+                )
+                batch = {key: value.to(self._device) for key, value in batch.items()}
+                logits = self._model(**batch).logits.squeeze(-1)
+                batch_scores = logits.detach().cpu().tolist()
+                if isinstance(batch_scores, float):
+                    batch_scores = [batch_scores]
+                scores.extend(float(score) for score in batch_scores)
 
         reranked = [
             replace(hit, rerank_score=float(score))
@@ -69,8 +91,13 @@ class TransformersBGEReranker:
 
 def build_reranker(config: RagConfig) -> Reranker:
     if config.rerank_backend == "bge":
-        return TransformersBGEReranker(config.rerank_model)
+        return TransformersBGEReranker(
+            config.rerank_model,
+            batch_size=config.rerank_batch_size,
+            max_length=config.rerank_max_length,
+            device=config.model_device,
+            dtype=config.model_dtype,
+        )
     if config.rerank_backend == "lexical":
         return LexicalReranker()
     raise ValueError(f"Unsupported RAG_RERANK_BACKEND={config.rerank_backend!r}")
-

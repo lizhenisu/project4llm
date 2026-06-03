@@ -4,6 +4,56 @@
 
 本项目不是“最小 demo”。它要回答的是：如果要把 RAG 做到生产环境，schema、metadata、hybrid search、rerank、权限、评估、部署和运维应该怎么设计。
 
+## 0.1 学习主线
+
+如果你当前目标是“先学会 RAG”，不要一上来就看部署、鉴权、监控。
+
+先只看这一条主线：
+
+1. `walkthrough_core_rag.py`：先一口气看完整条链路发生了什么。
+2. `schema.py`：Milvus 里为什么要显式 schema，而不是随手塞 JSON。
+3. `ingest_text.py` + `rag_core/text_utils.py`：文档怎么切 chunk，chunk 里保留哪些 metadata。
+4. `search_dense.py` / `search_sparse.py` / `search_hybrid.py`：dense、sparse、hybrid 各解决什么问题。
+5. `rerank.py`：为什么召回以后还要二阶段排序。
+6. `answer.py` + `rag_core/context.py`：证据怎么选、怎么拼 prompt、什么时候该拒答。
+7. `eval_retrieval.py` / `eval_answer.py`：怎么评估“检索好不好”“回答靠不靠谱”。
+
+建议先按这个顺序跑：
+
+```bash
+python projects/08-industrial-rag/walkthrough_core_rag.py
+python projects/08-industrial-rag/schema.py --reset --explain
+python projects/08-industrial-rag/ingest_text.py --explain
+python projects/08-industrial-rag/search_dense.py "RAG 检索变慢时应该排查哪些环节？" --acl-group support --explain
+python projects/08-industrial-rag/search_sparse.py "RAG 检索变慢时应该排查哪些环节？" --acl-group support --explain
+python projects/08-industrial-rag/search_hybrid.py "RAG 检索变慢时应该排查哪些环节？" --acl-group support --explain
+python projects/08-industrial-rag/rerank.py "RAG 检索变慢时应该排查哪些环节？" --acl-group support --show-candidates
+python projects/08-industrial-rag/answer.py "RAG 检索变慢时应该排查哪些环节？" --acl-group support --show-trace --show-prompt-chars 400
+python projects/08-industrial-rag/eval_retrieval.py
+python projects/08-industrial-rag/eval_answer.py
+```
+
+学完这条主线，再进入第二层：
+
+- 多模态 RAG：`walkthrough_multimodal_rag.py`、`ingest_image.py`、`search_multimodal.py`、`answer_multimodal.py`
+- 工业化护栏：`serve.py`、`smoke_*`、`monitor_events.py`、`release_gate.py`
+- 部署专题：`docker-compose.yml`、`Dockerfile`、`smoke_deploy.py`
+
+## 0.2 V1 / V2 定义
+
+为了避免“v2 到底指什么”这种歧义，当前 README 里的版本语义明确写成：
+
+- `V1`：文本工业 RAG。
+  包含 schema、chunk、dense/sparse/hybrid、rerank、answer、eval、serve、release gate。
+- `V2`：多模态工业 RAG。
+  在 V1 基础上加入 OCR/caption、`image_dense_vector`、multimodal retrieval、multimodal answer、multimodal eval、multimodal monitoring/release gate。
+
+当前仓库状态：
+
+- `V1`：已完成，可教学，也具备上线所需主链路。
+- `V2`：主链路已完成，已经有 `search_multimodal.py`、`answer_multimodal.py`、`eval_* --mode multimodal` 和 API/monitoring/release gate 接入。
+- `V2` 尚未专门落地的项：BGE visualized / VISTA 这类专用视觉 embedding backend；当前 `image_dense_vector` 走的是 `clip`/`hash` backend。
+
 ## 0. 当前实现状态
 
 当前目录已经包含一条可运行的工业 RAG 骨架：
@@ -14,44 +64,78 @@
 | `ingest_text.py` | 读取 JSONL 文本文档，chunk、embedding、sparse 特征并 upsert 到 Milvus |
 | `ingest_markdown.py` | 读取 Markdown 目录，生成文档 metadata 并入库 |
 | `ingest_files.py` | 读取 PDF、HTML、Markdown、TXT 目录，统一转换为 `SourceDocument` 后入库 |
+| `ingest_tables.py` | 读取 CSV/TSV 表格，转 compact markdown table 并保留列、行范围等 metadata 后入库 |
 | `ingest_image.py` | 读取图片 OCR/caption 元数据，写入文本向量和图片向量字段 |
 | `rebuild_from_object_store.py` | 从归档的 canonical 文档重建 Milvus 索引 |
 | `delete_document.py` | 按 `tenant_id/doc_id/doc_version` 删除文档 chunk |
 | `list_documents.py` | 按租户查看已发布文档版本、chunk 数和 ACL |
 | `collection_stats.py` | 输出 collection 行数、文档数、租户数和 source 类型分布 |
+| `walkthrough_core_rag.py` | 用临时 Milvus Lite 串起 schema、chunk、dense/sparse/hybrid、rerank、prompt、answer、eval 的教学 walkthrough |
+| `walkthrough_multimodal_rag.py` | 用临时 Milvus Lite 串起 OCR/caption、image vector、multimodal retrieval、answer、eval 的教学 walkthrough |
 | `search_dense.py` | metadata filter + dense search |
+| `search_sparse.py` | metadata filter + sparse/BM25-like search，便于关键词召回 ablation |
 | `search_hybrid.py` | Milvus hybrid search，融合 dense 和 sparse/BM25-like 向量 |
 | `search_image.py` | 使用 `image_dense_vector` 做图片向量检索 |
+| `search_multimodal.py` | 融合 OCR/caption 文本 hybrid 检索和 `image_dense_vector` 图片检索 |
 | `rerank.py` | 对 hybrid 候选做二阶段 rerank |
+| `diagnose_retrieval.py` | 展开 dense/sparse/hybrid/rerank 的候选 rank 和 score，排查召回与 rerank 问题 |
+| `diagnose_context.py` | 展开 context packing 的逐候选选择/丢弃原因，排查 prompt 证据构造 |
+| `sweep_chunking.py` | 用临时 collection 对多组 chunk_size/overlap 做检索指标和延迟 sweep |
 | `answer.py` | 检索、rerank、组 prompt，并通过 OpenAI-compatible API 生成答案 |
+| `answer_multimodal.py` | 多模态检索、context packing、图片 OCR/caption prompt 和答案生成 |
 | `eval_retrieval.py` | 输出 recall、MRR、nDCG、latency 和权限泄露检查 |
 | `eval_answer.py` | 输出 citation accuracy、evidence hit rate、refusal quality |
+| `build_eval_from_feedback.py` | 把 runtime feedback 与检索/回答事件合并，导出可回放 eval JSONL |
 | `release_gate.py` | 按上线阈值检查 retrieval/answer 指标，不达标时非零退出 |
-| `benchmark_latency.py` | 分段统计 embedding、Milvus search、rerank、answer 延迟 |
+| `benchmark_latency.py` | 回放真实 answer pipeline，汇总 rewrite/search/rerank/context/answer 分段延迟 |
+| `smoke_benchmark.py` | 验证 benchmark 会走真实 text / multimodal answer pipeline，并输出对应 stage latency |
 | `monitor_events.py` | 汇总 runtime 事件，输出 p50/p95/p99、检索模式、context 命中和反馈分布 |
 | `scan_pii.py` | 扫描 JSONL 知识源中的邮箱、手机号、身份证号、API key 形态 |
 | `smoke_security.py` | 验证 PII 工具和 tenant/ACL 防泄露行为 |
 | `smoke_event_redaction.py` | 验证 runtime 事件会脱敏 query、feedback 和证据 preview 中的 PII |
 | `smoke_auth_context.py` | 验证 API 从服务端请求头读取 tenant/ACL，并拒绝缺失 token/context |
 | `smoke_context.py` | 验证 context packing 和低置信拒答 |
+| `smoke_context_diagnosis.py` | 验证 context packing 诊断能输出逐候选 drop/select 原因 |
+| `smoke_context_backfill.py` | 验证后续候选会在 context packing 时补位，不会因提前截断丢失 |
 | `smoke_rewrite.py` | 验证 query rewrite 和 trace 记录 |
 | `smoke_answer_eval.py` | 验证 citation 解析和拒答识别 |
+| `smoke_answer_quality_eval.py` | 验证 answer correctness 和 faithfulness 规则评估 |
 | `smoke_file_ingest.py` | 验证 HTML/TXT 文件解析、chunk、入库和检索 |
+| `smoke_table_ingest.py` | 验证 CSV 表格转 markdown table、metadata、chunk、入库和检索 |
+| `smoke_chunk_structure.py` | 验证 chunk 时不会拆断 markdown table 和 fenced code block |
+| `smoke_chunk_sweep.py` | 验证 chunk 参数 sweep 能输出 chunk 数、召回和延迟 |
+| `smoke_search_params.py` | 验证 HNSW `ef` 和 sparse drop ratio 等检索调参会传入 Milvus search |
+| `smoke_multimodal_search.py` | 验证图片 OCR/caption 文本通道和 image vector 通道会被融合召回 |
+| `smoke_multimodal_prompt.py` | 验证图片证据进入 prompt 时保留 image URI、bbox、linked doc 和 OCR/caption 限制提示 |
+| `smoke_multimodal_eval.py` | 验证 `eval_retrieval.py --mode multimodal` 可评估图文检索 recall/MRR/latency |
+| `smoke_multimodal_answer.py` | 验证多模态检索证据可进入回答链路并生成 citation answer |
+| `smoke_multimodal_answer_eval.py` | 验证 `eval_answer.py --mode multimodal` 可评估图片证据回答质量 |
+| `smoke_pdf_page_metadata.py` | 验证 PDF 按页入库，并在 metadata/prompt 中保留页码 citation 信息 |
+| `smoke_heading_metadata.py` | 验证 Markdown/HTML heading path 会进入 metadata 和 chunk 标题路径 |
+| `smoke_feedback_eval_export.py` | 验证线上 feedback 事件可导出为离线 eval set |
+| `smoke_eval_filters.py` | 验证 eval 样本中的 ACL、版本、source type 和 chunk 级期望会被回放 |
+| `smoke_sparse_ablation.py` | 验证 sparse-only 检索和 `eval_retrieval.py --mode sparse` |
+| `smoke_retrieval_diagnosis.py` | 验证检索诊断工具能输出 rank/score 并导出 JSONL |
 | `smoke_lifecycle.py` | 验证 `doc_version` 版本过滤和不存在版本不返回 |
 | `smoke_current_version.py` | 验证默认查询只检索 current-version registry 中的发布版本 |
+| `smoke_current_version_unpublish.py` | 验证删除当前版本时会从 current-version registry 取消发布 |
 | `smoke_embedding_model_filter.py` | 验证查询不会混用旧 embedding 模型写入的向量 |
 | `smoke_source_filter.py` | 验证 query/API 的 `source_types` metadata filter |
 | `smoke_object_store_rebuild.py` | 验证 canonical text 归档后可重建 Milvus 索引 |
+| `smoke_object_store_delete_tombstone.py` | 验证删除 tombstone 会阻止 object store 重建时复活已删除文档 |
 | `smoke_observability.py` | 验证 runtime 事件包含 raw hits、rerank hits、final context 和 LLM 延迟 |
 | `smoke_monitoring.py` | 验证 runtime 事件可聚合成线上监控指标 |
-| `smoke_release_gate.py` | 验证 release gate 阈值判断逻辑 |
+| `smoke_release_gate.py` | 验证 release gate 会调用 eval、输出 report，并按阈值失败退出 |
+| `smoke_container_config.py` | 验证 `.env.example`、Dockerfile 和 `docker-compose.yml` 的部署约定对齐 |
 | `smoke_e2e.py` | 重建库、入库、hybrid rerank、图片检索的一键验收 |
 | `smoke_api.py` | 直接调用 FastAPI app，验证 `/health`、`/search`、`/query`、`/feedback` |
+| `smoke_api_multimodal.py` | 直接调用 FastAPI app，验证 `/search`、`/query` 的多模态分支 |
 | `smoke_readiness.py` | 验证 `/ready` 会检查 Milvus collection、schema 字段和向量维度 |
-| `smoke_deploy.py` | 对已启动 HTTP API 做部署 smoke |
+| `smoke_deploy.py` | 默认自起临时 HTTP API 做部署 smoke；设置 `RAG_API_URL` 时可改为验证外部已部署服务 |
+| `smoke_deploy_contract.py` | 验证部署 smoke 的 auth header 和反馈 selected docs 构造 |
 | `smoke_llm.py` | 使用 OpenAI-compatible 配置做 LLM 网关连通性测试 |
 | `smoke_milvus.py` | 验证当前 `MILVUS_URI` 可连接且 collection 可 load |
-| `smoke_models.py` | 可选加载 BGE/reranker/CLIP 后端做真实模型 smoke |
+| `smoke_models.py` | 可选加载 BGE/reranker/CLIP 后端，并在临时 Milvus 上做一次真实 ingest -> retrieve -> rerank smoke |
 | `check_config.py` | 打印脱敏配置并检查 Milvus 连接 |
 | `serve.py` | FastAPI `/search`、`/query`、`/feedback` 和 `/health` 服务入口 |
 | `docker-compose.yml` | Milvus Standalone 最小部署参考 |
@@ -66,7 +150,22 @@ export RAG_EMBEDDING_BACKEND=bge
 export RAG_RERANK_BACKEND=bge
 export EMBEDDING_MODEL=BAAI/bge-m3
 export RERANK_MODEL=BAAI/bge-reranker-v2-m3
+export RAG_MODEL_DEVICE=cpu          # 或 cuda
+export RAG_MODEL_DTYPE=fp32          # 或 fp16/bf16/auto
+export RAG_EMBED_BATCH_SIZE=8
+export RAG_RERANK_BATCH_SIZE=8
 ```
+
+如果模型下载慢，可以再加：
+
+```bash
+export HF_ENDPOINT="https://hf-mirror.com"
+export HF_HUB_DISABLE_XET=1
+export HF_ENABLE_PARALLEL_LOADING=true
+export HF_PARALLEL_LOADING_WORKERS=4
+```
+
+`HF_HUB_DISABLE_XET` 和 `HF_ENABLE_PARALLEL_LOADING` 都是 Hugging Face 官方支持的环境变量，用于在部分网络环境下绕开 `hf-xet` 或加快模型权重加载。
 
 PII 策略：
 
@@ -92,6 +191,21 @@ export RAG_QUERY_REWRITE_BACKEND=none       # 默认，不改写
 export RAG_QUERY_REWRITE_BACKEND=heuristic  # 短问题结合最近 history
 export RAG_QUERY_REWRITE_BACKEND=llm        # 使用 OpenAI-compatible LLM 改写
 ```
+
+Milvus index/search 调参：
+
+```bash
+export RAG_DENSE_HNSW_M=16
+export RAG_DENSE_HNSW_EF_CONSTRUCTION=100
+export RAG_DENSE_SEARCH_EF=128
+export RAG_IMAGE_HNSW_M=16
+export RAG_IMAGE_HNSW_EF_CONSTRUCTION=100
+export RAG_IMAGE_SEARCH_EF=128
+export RAG_SPARSE_DROP_RATIO_BUILD=0.2
+export RAG_SPARSE_DROP_RATIO_SEARCH=0.0
+```
+
+`RAG_*_HNSW_*` 和 `RAG_SPARSE_DROP_RATIO_BUILD` 是建索引参数，修改后需要重建 collection 或重建索引才会生效；`RAG_DENSE_SEARCH_EF`、`RAG_IMAGE_SEARCH_EF` 和 `RAG_SPARSE_DROP_RATIO_SEARCH` 是查询参数，每次 search 会读取当前配置。
 
 API auth context：
 
@@ -134,87 +248,165 @@ python projects/08-industrial-rag/schema.py --reset
 python projects/08-industrial-rag/check_config.py
 python projects/08-industrial-rag/ingest_text.py
 python projects/08-industrial-rag/ingest_files.py --input-dir notes --tenant-id team_a --acl-group engineering
+python projects/08-industrial-rag/ingest_tables.py --input-dir knowledge_base --tenant-id team_a --acl-group ops
 python projects/08-industrial-rag/ingest_image.py
 python projects/08-industrial-rag/list_documents.py --tenant-id team_a
 python projects/08-industrial-rag/collection_stats.py --tenant-id team_a
 python projects/08-industrial-rag/rebuild_from_object_store.py --reset
+python projects/08-industrial-rag/search_sparse.py "ECOM_7741 webhook 签名" --tenant-id team_a
 python projects/08-industrial-rag/search_hybrid.py "为什么 hybrid search 要用 BM25" --tenant-id team_a
 python projects/08-industrial-rag/search_image.py "RAG Dashboard latency recall" --tenant-id team_a --acl-group ops
+python projects/08-industrial-rag/search_multimodal.py "RAG Dashboard latency recall" --tenant-id team_a --acl-group ops
 python projects/08-industrial-rag/rerank.py "退款需要提交什么材料" --tenant-id team_a
+python projects/08-industrial-rag/diagnose_retrieval.py "RAG 检索变慢时应该排查什么" --tenant-id team_a --acl-group ops
+python projects/08-industrial-rag/diagnose_context.py "RAG 检索变慢时应该排查什么" --tenant-id team_a --acl-group ops --max-context-chars 1200
+python projects/08-industrial-rag/sweep_chunking.py --mode hybrid --spec 400:80 --spec 700:100
 python projects/08-industrial-rag/answer.py "RAG 检索变慢时应该排查什么" --tenant-id team_a
+python projects/08-industrial-rag/answer_multimodal.py "RAG Dashboard latency recall" --tenant-id team_a --acl-group ops
 python projects/08-industrial-rag/eval_retrieval.py --mode dense
+python projects/08-industrial-rag/eval_retrieval.py --mode sparse
 python projects/08-industrial-rag/eval_retrieval.py --mode hybrid
 python projects/08-industrial-rag/eval_retrieval.py --mode rerank
+python projects/08-industrial-rag/eval_retrieval.py --mode multimodal
 python projects/08-industrial-rag/eval_answer.py
+python projects/08-industrial-rag/eval_answer.py --mode multimodal --input projects/08-industrial-rag/data/multimodal_eval_queries.jsonl
+python projects/08-industrial-rag/build_eval_from_feedback.py --include-negative
 python projects/08-industrial-rag/release_gate.py
 python projects/08-industrial-rag/benchmark_latency.py
+python projects/08-industrial-rag/benchmark_latency.py --query-mode multimodal --query "RAG Dashboard latency recall" --tenant-id team_a --acl-group ops --source-type image
 python projects/08-industrial-rag/monitor_events.py
 python projects/08-industrial-rag/scan_pii.py projects/08-industrial-rag/data/sample_docs.jsonl projects/08-industrial-rag/data/sample_images.jsonl --fail
 python projects/08-industrial-rag/smoke_e2e.py
 python projects/08-industrial-rag/smoke_api.py
+python projects/08-industrial-rag/smoke_api_multimodal.py
 python projects/08-industrial-rag/smoke_readiness.py
 python projects/08-industrial-rag/smoke_security.py
 python projects/08-industrial-rag/smoke_event_redaction.py
 python projects/08-industrial-rag/smoke_auth_context.py
 python projects/08-industrial-rag/smoke_context.py
+python projects/08-industrial-rag/smoke_context_diagnosis.py
+python projects/08-industrial-rag/smoke_context_backfill.py
 python projects/08-industrial-rag/smoke_rewrite.py
 python projects/08-industrial-rag/smoke_answer_eval.py
+python projects/08-industrial-rag/smoke_answer_quality_eval.py
 python projects/08-industrial-rag/smoke_file_ingest.py
+python projects/08-industrial-rag/smoke_table_ingest.py
+python projects/08-industrial-rag/smoke_chunk_structure.py
+python projects/08-industrial-rag/smoke_chunk_sweep.py
+python projects/08-industrial-rag/smoke_search_params.py
+python projects/08-industrial-rag/smoke_multimodal_search.py
+python projects/08-industrial-rag/smoke_multimodal_prompt.py
+python projects/08-industrial-rag/smoke_multimodal_eval.py
+python projects/08-industrial-rag/smoke_multimodal_answer.py
+python projects/08-industrial-rag/smoke_multimodal_answer_eval.py
+python projects/08-industrial-rag/smoke_pdf_page_metadata.py
+python projects/08-industrial-rag/smoke_heading_metadata.py
+python projects/08-industrial-rag/smoke_feedback_eval_export.py
+python projects/08-industrial-rag/smoke_eval_filters.py
+python projects/08-industrial-rag/smoke_sparse_ablation.py
+python projects/08-industrial-rag/smoke_retrieval_diagnosis.py
 python projects/08-industrial-rag/smoke_lifecycle.py
 python projects/08-industrial-rag/smoke_current_version.py
+python projects/08-industrial-rag/smoke_current_version_unpublish.py
 python projects/08-industrial-rag/smoke_embedding_model_filter.py
 python projects/08-industrial-rag/smoke_source_filter.py
 python projects/08-industrial-rag/smoke_object_store_rebuild.py
+python projects/08-industrial-rag/smoke_object_store_delete_tombstone.py
+python projects/08-industrial-rag/smoke_benchmark.py
 python projects/08-industrial-rag/smoke_observability.py
 python projects/08-industrial-rag/smoke_monitoring.py
 python projects/08-industrial-rag/smoke_release_gate.py
+python projects/08-industrial-rag/smoke_container_config.py
+python projects/08-industrial-rag/smoke_deploy_contract.py
 python projects/08-industrial-rag/smoke_deploy.py
 python projects/08-industrial-rag/smoke_llm.py
 python projects/08-industrial-rag/smoke_milvus.py
 python projects/08-industrial-rag/smoke_models.py
 ```
 
+`benchmark_latency.py` 现在直接回放 `answer.py` / `answer_multimodal.py` 的真实链路，而不是单独拼一套简化检索逻辑；text 模式会输出 `rewrite`、`embedding`、`milvus_search`、`rerank`、`context_pack`、`answer`、`total`，multimodal 模式会额外输出 `text_search`、`image_search`、`fusion` 等阶段。
+
 也可以进入项目目录使用 Makefile：
 
 ```bash
 cd projects/08-industrial-rag
+make walkthrough
+make walkthrough-multimodal
 make schema
 make ingest
 make smoke
 make api-smoke
+make api-multimodal-smoke
 make readiness-smoke
 make security-smoke
 make event-redaction-smoke
 make auth-smoke
 make context-smoke
+make context-diagnosis-smoke
+make context-backfill-smoke
 make rewrite-smoke
 make answer-eval-smoke
+make answer-quality-smoke
 make file-ingest-smoke
+make table-ingest-smoke
+make chunk-structure-smoke
+make chunk-sweep-smoke
+make search-param-smoke
+make multimodal-search-smoke
+make multimodal-prompt-smoke
+make multimodal-eval-smoke
+make multimodal-answer-smoke
+make multimodal-answer-eval-smoke
+make pdf-page-smoke
+make heading-metadata-smoke
+make feedback-eval-smoke
+make eval-filter-smoke
+make sparse-ablation-smoke
+make retrieval-diagnosis-smoke
 make lifecycle-smoke
 make current-version-smoke
+make current-version-unpublish-smoke
 make embedding-model-smoke
 make source-filter-smoke
 make object-store-smoke
+make object-store-delete-smoke
+make benchmark-smoke
 make observability-smoke
 make monitoring-smoke
+make container-config-smoke
 make eval
 make answer-eval
 make release-gate
 make benchmark
 make monitor
+make export-feedback-eval
+make deploy-smoke
 ```
+
+如果没有设置 `RAG_API_URL`，`smoke_deploy.py` / `make deploy-smoke` 会自动起一个临时本地 uvicorn 服务、灌入教学样例数据并覆盖 `/ready`、`/search`、`/query`、`/feedback`；这条本地自启链路会使用 `RAG_MILVUS_URI` 指向独立的 Milvus Lite 文件，避免和外部 `MILVUS_URI` 冲突。如果设置了 `RAG_API_URL`，则会改为验证外部已部署服务。`smoke_container_config.py` 会额外检查 `.env.example`、Dockerfile 和 `docker-compose.yml` 中的 object store/runtime 路径、MinIO root 凭据变量和 compose service 约定是否仍和文档一致。
 
 ### Docker Compose 部署
 
 从 `projects/08-industrial-rag` 目录执行：
 
 ```bash
+cp .env.example .env
 docker compose up -d milvus rag-api
 docker compose --profile ingest run --rm rag-ingest
 RAG_API_URL=http://127.0.0.1:8008 python smoke_deploy.py
 ```
 
-`rag-api` 默认连接 compose 内的 `http://milvus:19530`，并使用 hash/lexical 教学后端。真实模型和 LLM 网关仍通过环境变量注入，不要写入 compose 文件。
+如果 API 启用了服务端 auth context，同时传入部署 smoke 所需的鉴权环境变量：
+
+```bash
+export RAG_REQUIRE_AUTH_CONTEXT=1
+export RAG_API_TOKEN=dev-only-token
+export RAG_DEPLOY_TENANT_ID=team_a
+export RAG_DEPLOY_ACL_GROUPS=ops,support
+RAG_API_URL=http://127.0.0.1:8008 python smoke_deploy.py
+```
+
+`rag-api` 默认连接 compose 内的 `http://milvus:19530`，并使用 hash/lexical 教学后端。`./object_store` 会同时挂载到 `rag-api` 和 `rag-ingest`，用于持久化 canonical 文档、删除 tombstone 和 `current_versions.json`；`./runtime` 会挂载到 `rag-api`，用于保留 retrieval/answer/feedback 事件。真实模型和 LLM 网关仍通过环境变量注入，不要写入 compose 文件。
 
 入库 Markdown 目录：
 
@@ -237,6 +429,17 @@ python projects/08-industrial-rag/ingest_files.py \
   --acl-group engineering
 ```
 
+入库 CSV/TSV 表格目录。脚本会把每个表格转成 compact markdown table，大表按 `--rows-per-document` 拆分，并在 metadata 中保留列名、总行数、当前行范围、原始路径和格式：
+
+```bash
+python projects/08-industrial-rag/ingest_tables.py \
+  --input-dir business_tables \
+  --tenant-id team_a \
+  --doc-version 2 \
+  --rows-per-document 200 \
+  --acl-group ops
+```
+
 查看当前 collection 文档版本：
 
 ```bash
@@ -253,6 +456,10 @@ python projects/08-industrial-rag/delete_document.py \
   --yes
 ```
 
+默认情况下，如果删除的是当前发布版本，脚本会同步从 `current_versions.json` 中取消发布该文档，避免默认查询继续带着已删除文档的版本过滤。删除历史版本且不是当前版本时 registry 不变；确实只想清理 Milvus chunk 而不动发布状态时，传 `--keep-current-version`。
+
+删除脚本默认还会在 object store 写入 `canonical/deleted_documents.jsonl` tombstone。`rebuild_from_object_store.py` 读取归档 canonical 文档时会跳过 tombstone 命中的文档版本，避免索引重建把已删除文档重新写回 Milvus。canonical 原文仍可用 `include_deleted=True` 的内部加载方式做审计；重新入库同一文档版本会清理对应 tombstone，相当于显式恢复。
+
 启动 API：
 
 ```bash
@@ -265,11 +472,11 @@ API 端点：
 
 - `GET /health`：轻量 liveness，只返回进程是否存活。
 - `GET /ready`：readiness，检查 Milvus 是否可连接、collection 是否存在、schema 关键字段和向量维度是否匹配当前配置；失败返回 503。
-- `POST /search`：只返回检索和 rerank 后的证据，以及 trace。
-- `POST /query`：返回答案和 citations。
-- `POST /feedback`：接收用户反馈；当前教学实现只返回 accepted，生产中应写入事件表或消息队列。
+- `POST /search`：只返回检索和 rerank 后的证据，以及 trace；每条 hit 保留原始 `metadata`。
+- `POST /query`：返回答案和 citations；每条 citation 同样保留原始 `metadata`。
+- `POST /feedback`：接收用户反馈，写入 runtime feedback 事件；本地可用 `build_eval_from_feedback.py` 合并检索/回答事件，导出可回放 eval set。生产中应替换为事件表、消息队列或对象存储。
 
-`/search` 和 `/query` 请求都支持 `history: list[str]`，用于 query rewrite；也支持 `doc_version`，用于只检索某个已发布版本；还支持 `source_types: list[str]`，用于限制 `pdf/md/html/image/api` 等来源类型。trace 会返回 `original_query`、`rewritten_query`、`rewrite_backend`、`doc_version` 和 `source_types`。
+`/search` 和 `/query` 请求都支持 `history: list[str]`，用于 query rewrite；也支持 `doc_version`，用于只检索某个已发布版本；还支持 `source_types: list[str]`，用于限制 `pdf/md/html/image/api` 等来源类型。`query_mode=text|multimodal` 可切换文本链路和图文融合链路；多模态模式会走 OCR/caption text hybrid + `image_dense_vector` 融合检索。trace 会返回 `original_query`、`rewritten_query`、`rewrite_backend`、`doc_version` 和 `source_types`。多模态 hit/citation 的 `metadata` 会继续带出 `image_uri`、`bbox`、`linked_doc_id`、`fusion.channels` 等解释字段，便于前端展示和审计。
 
 默认教学模式下，API 仍接受 body 中的 `tenant_id` 和 `acl_groups`，便于脚本和 smoke 直接调用。设置 `RAG_REQUIRE_AUTH_CONTEXT=1` 后，API 会忽略 body 中的租户和 ACL，改用 `X-RAG-Tenant-ID`、`X-RAG-ACL-Groups` 和可选 Bearer token 构造服务端 metadata filter。
 
@@ -292,10 +499,21 @@ API 端点：
 
 这些运行时文件已被 `.gitignore` 忽略。生产中应替换为 Kafka、数据库事件表或对象存储。事件日志只保存短 `text_preview`，并在写入前递归脱敏邮箱、手机号、身份证号和 API key 形态；不要记录完整 API key、未脱敏隐私或长篇用户原文。
 
-可以用 `monitor_events.py` 汇总本地 runtime 事件，得到 retrieval/answer/feedback 数量、retrieval mode 分布、context 命中、分段 latency 的 p50/p95/p99、LLM latency、top context docs 和反馈 rating 分布：
+可以用 `monitor_events.py` 汇总本地 runtime 事件，得到 retrieval/answer/feedback 数量、retrieval mode 分布、请求 source type 分布、final context source type 分布、多模态 fusion channel 分布、context 命中、分段 latency 的 p50/p95/p99、LLM latency、top context docs 和反馈 rating 分布：
 
 ```bash
 python projects/08-industrial-rag/monitor_events.py
+```
+
+可以把线上反馈沉淀成离线评估集。正反馈默认使用用户 `selected_doc_ids`，没有选择时退回当次 `final_context`；加 `--include-negative` 后，负反馈且没有选中文档会导出为 `answerable=false` 的拒答/坏例样本：
+
+```bash
+python projects/08-industrial-rag/build_eval_from_feedback.py \
+  --include-negative \
+  --output projects/08-industrial-rag/data/feedback_eval_queries.jsonl
+python projects/08-industrial-rag/eval_retrieval.py \
+  --input projects/08-industrial-rag/data/feedback_eval_queries.jsonl \
+  --mode rerank
 ```
 
 `eval_retrieval.py` 和 `eval_answer.py` 支持 `--json-output` 写出机器可读指标；`release_gate.py` 会直接运行两类评估并按阈值失败退出，适合接入 CI 或上线前 checklist：
@@ -303,12 +521,25 @@ python projects/08-industrial-rag/monitor_events.py
 ```bash
 python projects/08-industrial-rag/release_gate.py \
   --min-recall 0.90 \
+  --multimodal-input projects/08-industrial-rag/data/multimodal_eval_queries.jsonl \
+  --multimodal-answer-input projects/08-industrial-rag/data/multimodal_eval_queries.jsonl \
+  --min-multimodal-recall 0.90 \
+  --min-multimodal-answer-correctness 0.80 \
+  --min-multimodal-faithfulness 1.0 \
   --min-evidence-hit-rate 0.80 \
+  --min-answer-correctness 0.80 \
+  --min-faithfulness 1.0 \
   --max-leakage-failures 0 \
-  --max-p95-retrieval-ms 800
+  --max-p95-retrieval-ms 800 \
+  --max-p95-multimodal-ms 1000 \
+  --max-p95-rerank-ms 1500
 ```
 
-入库脚本会把 PII 策略处理后的 canonical `SourceDocument` 归档到 `RAG_OBJECT_STORE_DIR/canonical/source_documents.jsonl`。Milvus 只作为检索索引；如果索引损坏或 embedding 模型升级，可以先重建 schema，再执行：
+`eval_retrieval.py` 会输出整体 `p95_latency_ms`，并在 `stage_p95_latency_ms` 中记录 `embedding`、`milvus_search`、`rerank`、`context_pack`、`multimodal_search` 等分段 p95；多模态模式下还会细分 `rewrite`、`text_search`、`image_search`、`fusion` 等阶段，便于定位 OCR/caption 通道还是 image vector 通道退化。`release_gate.py` 默认同时检查整体 retrieval p95 和 rerank p95。传入 `--multimodal-input` 后，release gate 会额外运行 `--mode multimodal`，并检查多模态 recall/MRR/nDCG 和 p95 latency；传入 `--multimodal-answer-input` 后，会额外运行 `eval_answer.py --mode multimodal`，检查图片证据回答的 citation、evidence hit、answer correctness 和 faithfulness。
+
+`eval_answer.py --mode multimodal` 会使用 `answer_multimodal.py` 回放图片/OCR/caption 证据回答，继续输出 citation accuracy、evidence hit rate、answer correctness 和 faithfulness。
+
+入库脚本会把 PII 策略处理后的 canonical `SourceDocument` 归档到 `RAG_OBJECT_STORE_DIR/canonical/source_documents.jsonl`，删除 tombstone 归档到 `RAG_OBJECT_STORE_DIR/canonical/deleted_documents.jsonl`。Milvus 只作为检索索引；如果索引损坏或 embedding 模型升级，可以先重建 schema，再执行：
 
 ```bash
 python projects/08-industrial-rag/rebuild_from_object_store.py --reset
@@ -320,7 +551,7 @@ python projects/08-industrial-rag/rebuild_from_object_store.py --reset
 
 查询链路也会把当前 `embedding_model` 加入 Milvus filter，避免同一 collection 中残留的旧模型同维度向量被混查。模型升级的推荐方式仍是新建 collection 或新字段；这个 filter 是防止迁移期误召回旧向量的护栏。
 
-Milvus Lite 使用本地数据库文件，不适合多个 Python 进程同时打开同一个 `industrial_rag_demo.db`。本地调试建议串行运行脚本；服务化或多人开发请使用 `docker-compose.yml` 启动 Milvus Standalone，并设置 `MILVUS_URI=http://127.0.0.1:19530`。
+Milvus Lite 使用本地数据库文件，不适合多个 Python 进程同时打开同一个 `industrial_rag_demo.db`。本地调试建议串行运行脚本；如果需要显式指定 Lite 文件路径，优先使用 `RAG_MILVUS_URI=/path/to/demo.db`，避免 `pymilvus` 在 import 阶段把文件路径当成 HTTP URI 解析。服务化或多人开发请使用 `docker-compose.yml` 启动 Milvus Standalone，并设置 `MILVUS_URI=http://127.0.0.1:19530`。
 
 本地教学默认让 `IMAGE_EMBEDDING_DIM` 跟 `EMBEDDING_DIM` 一致，保证 Milvus Lite 的多向量索引可跑。生产中如果视觉模型维度不同，可以设置 `IMAGE_EMBEDDING_DIM` 并使用 Milvus Standalone/Cluster 验证多向量索引。
 
@@ -433,6 +664,11 @@ BAAI/bge-reranker-v2-m3
 
 1. 稳定上线版：图片 OCR + image caption 转文本，使用 `bge-m3` 做文本检索。
 2. 增强版：引入视觉 embedding，例如 BGE visualized / VISTA 系列或 CLIP 类模型，为图片建立 `image_dense_vector`。
+
+当前仓库状态：
+
+- 已完成并可教学/上线的稳定版：文本 RAG 主链路、多模态 OCR/caption + image vector 融合检索、current-version、eval、monitoring、release gate。
+- 已接线但还不是专用 BGE visualized 方案的增强版：`image_dense_vector` 当前支持 `clip`/`hash` backend，多模态 pipeline 已完整，但尚未落专门的 BGE visualized / VISTA backend。
 
 多模态不要一开始就把所有信号混在一个向量字段里。更稳妥的 schema 是多字段：
 
@@ -588,11 +824,11 @@ load source
 
 不同来源采用不同 parser：
 
-- PDF：提取文本、标题层级、页码；保留页码用于 citation。
-- HTML：去导航、广告、脚注；保留 URL 和 DOM heading。
-- Markdown：按 heading 切结构，再按 token 长度细切。
+- PDF：按页提取文本并生成 canonical `SourceDocument`，metadata 保留 `page_no`、`page_start`、`page_end`、`page_count`，prompt 证据头会显示页码用于 citation。
+- HTML：去 script/style/nav/header/footer/aside 等非正文内容；保留 URL 和 DOM heading path。
+- Markdown：按 heading 切成 section 级 canonical 文档，metadata 保留 `heading_path`，再按 token 长度细切。
 - 图片：OCR 提取文字；caption 模型生成语义描述；保留图片 URI。
-- 表格：转成 compact markdown table，同时保留结构化 metadata。
+- 表格：CSV/TSV 转成 compact markdown table，同时保留 `columns`、`row_count_total`、`row_start`、`row_end`、`relative_path` 等结构化 metadata。
 
 ### Chunk 策略
 
@@ -601,7 +837,7 @@ load source
 - 中文知识库：以章节为优先边界，再控制 token 数。
 - 初始 chunk 大小：400-800 tokens。
 - overlap：50-120 tokens。
-- 表格和代码块尽量不拆断。
+- 表格和代码块尽量不拆断；当前 `chunk_document` 会先识别 fenced code block、markdown table、段落等结构块，再按 token budget 组合 chunk。
 - 每个 chunk 带上标题路径，例如 `产品手册 > 计费 > 退款规则`。
 
 chunk 文本建议格式：
@@ -614,6 +850,21 @@ chunk 文本建议格式：
 ```
 
 这样 embedding 能看到上下文，reranker 和 LLM 也更容易判断来源。
+
+用固定 eval set 对比 chunk 参数，而不是凭感觉改：
+
+```bash
+python projects/08-industrial-rag/sweep_chunking.py \
+  --mode hybrid \
+  --spec 400:80 \
+  --spec 700:100 \
+  --spec 1000:150 \
+  --json-output projects/08-industrial-rag/runtime/chunk_sweep.jsonl
+```
+
+输出会包含每组参数的 `chunk_count`、平均 chunk token 数、recall、MRR、nDCG 和 p95 latency。教学时可以用它解释 chunk 太小导致上下文破碎、chunk 太大导致候选少但噪声更高、overlap 增大导致写入量增加这些 tradeoff。
+
+每组参数会使用独立的临时 Milvus collection；评估结束后脚本会 drop 临时 collection，并在输出行中记录 `temporary_collection` 和 `cleanup`，避免 chunk sweep 长期污染本地或测试 Milvus。
 
 ### 幂等写入
 
@@ -724,6 +975,18 @@ rerank 输入：
 [(query, chunk_text_1), (query, chunk_text_2), ...]
 ```
 
+排查 rerank 前后的排序变化时，先运行：
+
+```bash
+python projects/08-industrial-rag/diagnose_retrieval.py \
+  "RAG 检索变慢时应该排查什么" \
+  --tenant-id team_a \
+  --acl-group ops \
+  --json-output projects/08-industrial-rag/runtime/retrieval_diagnosis.jsonl
+```
+
+输出会列出每个候选在 dense、sparse、hybrid、rerank 中的 rank/score，以及 query 与 chunk 的 lexical overlap。教学时可以用它解释：正确文档是没有被召回，还是召回了但被 reranker 降下去了。
+
 候选数量：
 
 - Milvus hybrid 召回：20-100。
@@ -734,6 +997,20 @@ rerank 输入：
 - reranker 只处理权限过滤后的候选。
 - rerank 分数低于阈值时，可以拒答或改走澄清问题。
 - 最终 prompt 不要只按分数塞满，要去重、控制同文档 chunk 数量、保留 citation。
+
+排查最终 prompt 为什么没有某条证据时，运行：
+
+```bash
+python projects/08-industrial-rag/diagnose_context.py \
+  "RAG 检索变慢时应该排查什么" \
+  --tenant-id team_a \
+  --acl-group ops \
+  --max-context-chars 1200 \
+  --max-chunks-per-doc 1 \
+  --json-output projects/08-industrial-rag/runtime/context_diagnosis.jsonl
+```
+
+输出会给出每个 reranked candidate 的 `select/drop`、原因和当时已使用的 context 字符数。常见 drop 原因包括 `below_min_rerank_score`、`max_chunks_per_doc`、`context_char_budget`、`context_hit_limit`。如果高分候选因为同文档 chunk 限制或分数阈值被丢掉，context packer 会继续从后续候选补位，而不是先截成固定 topK 再放弃。
 
 ## 8. 多模态 RAG 设计
 
@@ -768,6 +1045,7 @@ image
 
 - query 用文本 embedding 检索 `caption` / `ocr_text` 的 dense vector。
 - 同时检索 `image_dense_vector`，如果视觉模型支持 text-image shared embedding。
+- 当前 `search_multimodal.py` 会同时跑 OCR/caption 的 text hybrid 通道和 `image_dense_vector` 通道，再用 RRF 融合；输出 metadata 中的 `fusion.channels` 会标明每条证据来自哪些通道。
 
 图片查文档：
 
@@ -786,6 +1064,10 @@ LLM 如果只支持文本：
 
 - 使用 OCR/caption 作为文本证据。
 - 明确提示“图片证据来自 OCR/caption，可能不完整”。
+
+当前 `build_prompt()` 会在图片证据头中保留 `source_type=image`、`image_uri`、`linked_doc_id`、页码/行号/bbox 等定位信息，并在 prompt 规则中加入图片证据限制提示，避免模型把 OCR/caption 当成完整原图事实。
+
+需要直接基于图片证据回答时，使用 `answer_multimodal.py`。它会先运行 `search_multimodal.py` 的 OCR/caption text hybrid + image vector 融合检索，再做 context packing，并复用 `answer.py` 的 OpenAI-compatible 生成层；没有配置 LLM 网关时会返回本地 fallback 摘要和 citation，方便教学环境验证链路。
 
 ## 9. LLM Answer API
 
@@ -844,14 +1126,26 @@ expected_doc_ids
 expected_chunk_ids
 answerable
 query_type
+acl_groups
+doc_version
+source_types
+history
+expected_answer_terms
+unsupported_answer_terms
 ```
+
+`expected_doc_ids` 用于文档级 recall/MRR/nDCG；如果提供 `expected_chunk_ids`，则切换为 chunk 级评估。chunk id 支持 Milvus 主键、metadata 中的 `chunk_id`，或教学更直观的 `doc_id:chunk_index` 格式。`acl_groups`、`doc_version`、`source_types`、`history` 会在 `eval_retrieval.py` 和 `eval_answer.py` 中按原请求条件回放。
+
+`expected_answer_terms` 用于教学版 answer correctness：答案必须覆盖这些关键术语。`unsupported_answer_terms` 用于教学版 faithfulness：如果答案出现这些术语但证据没有出现，会被视为未被证据支持。生产中可以把这两个规则指标替换或补充为人工标注、LLM judge、NLI/entailment 检查。
+
+`build_eval_from_feedback.py` 会从 runtime 事件导出同样格式的 JSONL，并额外保留 `source_request_id`、`feedback_rating`、`feedback_comment` 等排障字段；eval 脚本会忽略这些附加字段。
 
 指标：
 
 - `recall@k`：正确 chunk 是否进入候选。
 - `MRR`：第一个正确结果排名。
 - `nDCG@k`：多相关等级排序质量。
-- hybrid ablation：dense only / sparse only / hybrid / hybrid+rerank。
+- hybrid / multimodal ablation：`eval_retrieval.py --mode dense|sparse|hybrid|rerank|multimodal`，对比 dense only、sparse only、hybrid、hybrid+rerank，以及 OCR/caption text hybrid + image vector 融合检索。
 - latency：embedding、Milvus search、rerank、LLM 分段统计。
 
 ### 回答评估
@@ -913,6 +1207,7 @@ object-store
 ### 配置项
 
 ```text
+RAG_MILVUS_URI
 MILVUS_URI
 MILVUS_TOKEN
 RAG_COLLECTION
@@ -948,10 +1243,10 @@ HF_ENDPOINT
 
 | 现象 | 可能原因 | 排查 |
 | --- | --- | --- |
-| 召回不到正确文档 | chunk 太大/太小、embedding 模型不适配、filter 过严 | 看 raw hits、放宽 filter、做 FLAT baseline |
+| 召回不到正确文档 | chunk 太大/太小、embedding 模型不适配、filter 过严 | 跑 `sweep_chunking.py` 对比 chunk 参数，再用 `diagnose_retrieval.py` 看 dense/sparse/hybrid rank |
 | dense 命中差但关键词明显 | 专有名词/错误码问题 | 加 BM25/sparse，调 hybrid 权重 |
-| rerank 后变差 | 候选质量差、reranker 不适配领域、文本截断 | 看 rerank 输入，做 ablation |
-| 回答编造 | prompt 证据不足、没有拒答规则 | 加 faithfulness 评估和证据阈值 |
+| rerank 后变差 | 候选质量差、reranker 不适配领域、文本截断 | 用 `diagnose_retrieval.py` 对比 hybrid_rank 和 rerank_rank，检查 rerank 输入文本 |
+| 回答编造 | prompt 证据不足、没有拒答规则 | 跑 `diagnose_context.py` 看证据是否被 budget/阈值丢弃，加 faithfulness 评估和证据阈值 |
 | 延迟高 | topK 太大、rerank 候选太多、index 参数过高 | 分段看 p95，调 `ef/nprobe/topK` |
 | 权限泄露 | filter 不完整或后置过滤 | 检查 auth context 到 Milvus filter 的映射 |
 

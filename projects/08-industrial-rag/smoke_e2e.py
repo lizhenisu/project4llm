@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
+
 from rag_core.config import load_config
 from rag_core.embeddings import build_embedding_model, build_image_embedding_model
 from rag_core.io import load_image_documents, load_source_documents, read_jsonl
@@ -18,6 +22,19 @@ from rag_core.types import Chunk
 
 
 def main() -> None:
+    old_milvus_uri = os.environ.get("MILVUS_URI")
+    old_collection = os.environ.get("RAG_COLLECTION")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["MILVUS_URI"] = str(Path(tmp) / "e2e.db")
+        os.environ["RAG_COLLECTION"] = "rag_smoke_e2e"
+        try:
+            run_smoke()
+        finally:
+            restore_env("MILVUS_URI", old_milvus_uri)
+            restore_env("RAG_COLLECTION", old_collection)
+ 
+
+def run_smoke() -> None:
     config = load_config()
     client = connect(config)
     ensure_collection(client, config, reset=True)
@@ -128,6 +145,13 @@ def config_path(filename: str):
     from rag_core.config import DATA_DIR
 
     return DATA_DIR / filename
+
+
+def restore_env(name: str, value: str | None) -> None:
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
 
 
 if __name__ == "__main__":

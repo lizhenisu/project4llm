@@ -22,3 +22,29 @@ def citation_accuracy(answer: str, evidence_count: int) -> float:
 def is_refusal(answer: str) -> bool:
     return REFUSAL_TEXT in answer
 
+
+def term_coverage(text: str, expected_terms: list[str]) -> float:
+    terms = [term for term in expected_terms if term]
+    if not terms:
+        return 1.0
+    normalized = text.lower()
+    matched = sum(1 for term in terms if term.lower() in normalized)
+    return matched / len(terms)
+
+
+def unsupported_term_rate(answer: str, evidence_text: str, unsupported_terms: list[str]) -> float:
+    terms = [term for term in unsupported_terms if term]
+    if not terms:
+        return 0.0
+    normalized_answer = answer.lower()
+    normalized_evidence = evidence_text.lower()
+    unsupported = [
+        term
+        for term in terms
+        if term.lower() in normalized_answer and term.lower() not in normalized_evidence
+    ]
+    return len(unsupported) / len(terms)
+
+
+def faithfulness_score(answer: str, evidence_text: str, unsupported_terms: list[str]) -> float:
+    return 1.0 - unsupported_term_rate(answer, evidence_text, unsupported_terms)

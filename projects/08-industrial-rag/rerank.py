@@ -24,6 +24,11 @@ def main() -> None:
         default=[],
         help="Restrict retrieval to a source type. Repeat for multiple types.",
     )
+    parser.add_argument(
+        "--show-candidates",
+        action="store_true",
+        help="Print the hybrid candidate order before rerank.",
+    )
     parser.add_argument("--candidate-limit", type=int, default=20)
     parser.add_argument("--limit", type=int, default=5)
     args = parser.parse_args()
@@ -39,6 +44,15 @@ def main() -> None:
     )
     reranker = build_reranker(config)
     reranked = reranker.rerank(args.query, hits, limit=args.limit)
+    if args.show_candidates:
+        print("Hybrid candidates before rerank:")
+        for rank, hit in enumerate(hits, start=1):
+            print(
+                f"{rank}. search={hit.score:.4f} "
+                f"doc={hit.doc_id} title={hit.title}"
+            )
+            print(hit.text[:180].replace("\n", " "))
+        print("\nAfter rerank:")
     for rank, hit in enumerate(reranked, start=1):
         print(
             f"{rank}. rerank={hit.rerank_score:.4f} search={hit.score:.4f} "

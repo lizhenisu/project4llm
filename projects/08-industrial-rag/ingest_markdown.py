@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rag_core.config import load_config
 from rag_core.embeddings import build_embedding_model, build_image_embedding_model
+from rag_core.io import load_markdown_section_documents
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
 from rag_core.object_store import archive_source_documents
 from rag_core.pii import apply_pii_policy
@@ -22,31 +23,17 @@ def load_markdown_docs(
 ) -> list[SourceDocument]:
     docs: list[SourceDocument] = []
     for path in sorted(input_dir.rglob("*.md")):
-        text = path.read_text(encoding="utf-8")
-        title = extract_title(text) or path.stem
-        docs.append(
-            SourceDocument(
+        docs.extend(
+            load_markdown_section_documents(
+                path,
+                input_dir=input_dir,
                 tenant_id=tenant_id,
-                doc_id=path.relative_to(input_dir).with_suffix("").as_posix(),
                 doc_version=doc_version,
-                source_type="md",
-                source_uri=str(path),
-                title=title,
-                text=text,
-                language="zh",
                 acl_groups=acl_groups,
-                metadata={"relative_path": path.relative_to(input_dir).as_posix()},
+                language="zh",
             )
         )
     return docs
-
-
-def extract_title(text: str) -> str | None:
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            return stripped.lstrip("#").strip()
-    return None
 
 
 def main() -> None:

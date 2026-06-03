@@ -70,16 +70,22 @@ def readiness_report(config: RagConfig) -> dict[str, Any]:
         missing_fields = sorted(REQUIRED_FIELDS - set(field_map))
         text_dim = extract_dim(field_map.get("text_dense_vector", {}))
         image_dim = extract_dim(field_map.get("image_dense_vector", {}))
+        text_analyzer_enabled = extract_bool_param(
+            field_map.get("text", {}),
+            "enable_analyzer",
+        )
         schema_ok = (
             not missing_fields
             and text_dim == config.embedding_dim
             and image_dim == config.image_embedding_dim
+            and text_analyzer_enabled is True
         )
         checks["schema"] = {
             "ok": schema_ok,
             "missing_fields": missing_fields,
             "text_dense_vector_dim": text_dim,
             "image_dense_vector_dim": image_dim,
+            "text_analyzer_enabled": text_analyzer_enabled,
         }
         if not schema_ok:
             report["status"] = "error"
@@ -101,6 +107,18 @@ def extract_dim(field: dict[str, Any]) -> int | None:
     if dim is None:
         return None
     return int(dim)
+
+
+def extract_bool_param(field: dict[str, Any], name: str) -> bool | None:
+    params = field.get("params") or field.get("type_params") or {}
+    value = params.get(name)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "on"}
+    if value is None:
+        return None
+    return bool(value)
 
 
 def redacted_config(config: RagConfig) -> dict[str, Any]:

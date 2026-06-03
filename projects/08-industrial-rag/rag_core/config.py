@@ -33,6 +33,13 @@ def _env_float_or_none(name: str) -> float | None:
     return float(value)
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return float(value)
+
+
 @dataclass(frozen=True)
 class RagConfig:
     milvus_uri: str
@@ -41,11 +48,18 @@ class RagConfig:
     embedding_model: str
     embedding_backend: str
     embedding_dim: int
+    embedding_batch_size: int
+    embedding_max_length: int
     rerank_model: str
     rerank_backend: str
+    rerank_batch_size: int
+    rerank_max_length: int
     image_embedding_backend: str
     image_embedding_model: str
     image_embedding_dim: int
+    image_embedding_batch_size: int
+    model_device: str
+    model_dtype: str
     llm_base_url: str | None
     llm_api_key: str | None
     llm_model: str
@@ -61,27 +75,47 @@ class RagConfig:
     query_rewrite_backend: str
     require_auth_context: bool
     api_token: str | None
+    dense_hnsw_m: int
+    dense_hnsw_ef_construction: int
+    dense_search_ef: int
+    image_hnsw_m: int
+    image_hnsw_ef_construction: int
+    image_search_ef: int
+    sparse_drop_ratio_build: float
+    sparse_drop_ratio_search: float
 
 
 def load_config() -> RagConfig:
     embedding_backend = os.environ.get("RAG_EMBEDDING_BACKEND", "hash").lower()
     image_backend = os.environ.get("RAG_IMAGE_EMBEDDING_BACKEND", "hash").lower()
+    milvus_uri = (
+        os.environ.get("RAG_MILVUS_URI")
+        or os.environ.get("MILVUS_URI")
+        or str(DEFAULT_MILVUS_DB)
+    )
 
     return RagConfig(
-        milvus_uri=os.environ.get("MILVUS_URI", str(DEFAULT_MILVUS_DB)),
+        milvus_uri=milvus_uri,
         milvus_token=os.environ.get("MILVUS_TOKEN") or None,
         collection_name=os.environ.get("RAG_COLLECTION", "rag_chunks_v1"),
         embedding_model=os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3"),
         embedding_backend=embedding_backend,
         embedding_dim=_env_int("EMBEDDING_DIM", 1024),
+        embedding_batch_size=_env_int("RAG_EMBED_BATCH_SIZE", 8),
+        embedding_max_length=_env_int("RAG_EMBED_MAX_LENGTH", 8192),
         rerank_model=os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"),
         rerank_backend=os.environ.get("RAG_RERANK_BACKEND", "lexical").lower(),
+        rerank_batch_size=_env_int("RAG_RERANK_BATCH_SIZE", 8),
+        rerank_max_length=_env_int("RAG_RERANK_MAX_LENGTH", 1024),
         image_embedding_backend=image_backend,
         image_embedding_model=os.environ.get(
             "IMAGE_EMBEDDING_MODEL",
             "openai/clip-vit-base-patch32",
         ),
         image_embedding_dim=_env_int("IMAGE_EMBEDDING_DIM", _env_int("EMBEDDING_DIM", 1024)),
+        image_embedding_batch_size=_env_int("RAG_IMAGE_EMBED_BATCH_SIZE", 8),
+        model_device=os.environ.get("RAG_MODEL_DEVICE", "auto").lower(),
+        model_dtype=os.environ.get("RAG_MODEL_DTYPE", "auto").lower(),
         llm_base_url=os.environ.get("OPENAI_BASE_URL") or None,
         llm_api_key=os.environ.get("OPENAI_API_KEY") or None,
         llm_model=os.environ.get("LLM_MODEL", "gemini-3-flash-preview"),
@@ -99,4 +133,12 @@ def load_config() -> RagConfig:
         query_rewrite_backend=os.environ.get("RAG_QUERY_REWRITE_BACKEND", "none").lower(),
         require_auth_context=_env_bool("RAG_REQUIRE_AUTH_CONTEXT", False),
         api_token=os.environ.get("RAG_API_TOKEN") or None,
+        dense_hnsw_m=_env_int("RAG_DENSE_HNSW_M", 16),
+        dense_hnsw_ef_construction=_env_int("RAG_DENSE_HNSW_EF_CONSTRUCTION", 100),
+        dense_search_ef=_env_int("RAG_DENSE_SEARCH_EF", 128),
+        image_hnsw_m=_env_int("RAG_IMAGE_HNSW_M", 16),
+        image_hnsw_ef_construction=_env_int("RAG_IMAGE_HNSW_EF_CONSTRUCTION", 100),
+        image_search_ef=_env_int("RAG_IMAGE_SEARCH_EF", 128),
+        sparse_drop_ratio_build=_env_float("RAG_SPARSE_DROP_RATIO_BUILD", 0.2),
+        sparse_drop_ratio_search=_env_float("RAG_SPARSE_DROP_RATIO_SEARCH", 0.0),
     )

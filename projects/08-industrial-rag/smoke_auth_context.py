@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import tempfile
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -9,16 +11,24 @@ from rag_core.embeddings import build_embedding_model, build_image_embedding_mod
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
 from rag_core.text_utils import chunk_document
 from rag_core.types import SourceDocument
+from rag_core.versioning import publish_current_versions
 from serve import create_app
 
 
 def main() -> None:
+    old_milvus_uri = os.environ.get("MILVUS_URI")
     old_collection = os.environ.get("RAG_COLLECTION")
-    os.environ["RAG_COLLECTION"] = "rag_smoke_auth_context"
-    try:
-        run_smoke()
-    finally:
-        restore_env("RAG_COLLECTION", old_collection)
+    old_object_store = os.environ.get("RAG_OBJECT_STORE_DIR")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["MILVUS_URI"] = str(Path(tmp) / "auth_context.db")
+        os.environ["RAG_COLLECTION"] = "rag_smoke_auth_context"
+        os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(tmp) / "object_store")
+        try:
+            run_smoke()
+        finally:
+            restore_env("MILVUS_URI", old_milvus_uri)
+            restore_env("RAG_COLLECTION", old_collection)
+            restore_env("RAG_OBJECT_STORE_DIR", old_object_store)
 
 
 def run_smoke() -> None:
@@ -75,6 +85,7 @@ def run_smoke() -> None:
             for chunk, dense_vector in zip(chunks, dense_vectors, strict=True)
         ],
     )
+    publish_current_versions(config.object_store_dir, docs)
 
     old_require = os.environ.get("RAG_REQUIRE_AUTH_CONTEXT")
     old_token = os.environ.get("RAG_API_TOKEN")

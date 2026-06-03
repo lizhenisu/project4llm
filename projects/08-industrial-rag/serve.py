@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from answer import answer_query
+from answer_multimodal import answer_multimodal_query
 from rag_core.auth import build_auth_context, validate_bearer_token
 from rag_core.config import load_config
 from rag_core.events import append_event, hit_event_summaries
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.readiness import readiness_report
+from search_multimodal import retrieve_multimodal
 
 
 class QueryRequest(BaseModel):
     query: str = Field(min_length=1)
+    query_mode: str = Field(default="text", pattern="^(text|multimodal)$")
     history: list[str] = Field(default_factory=list)
     tenant_id: str = "team_a"
     acl_groups: list[str] = Field(default_factory=list)
@@ -35,6 +40,7 @@ class HitResponse(BaseModel):
     score: float
     rerank_score: float | None = None
     acl_groups: list[str]
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class QueryResponse(BaseModel):
@@ -94,17 +100,7 @@ def create_app():
             x_rag_acl_groups=x_rag_acl_groups,
             request=request,
         )
-        result = retrieve_and_rerank(
-            request.query,
-            tenant_id=auth_context.tenant_id,
-            candidate_limit=request.candidate_limit,
-            context_limit=request.context_limit,
-            acl_groups=auth_context.acl_groups or None,
-            doc_version=request.doc_version,
-            source_types=request.source_types or None,
-            history=request.history,
-            request_id=request.request_id,
-        )
+        result = resolve_search_result(request, auth_context)
         response = SearchResponse(
             request_id=result.request_id,
             hits=[hit_to_response(hit) for hit in result.hits],
@@ -116,6 +112,7 @@ def create_app():
             {
                 "request_id": result.request_id,
                 "query": request.query,
+                "query_mode": request.query_mode,
                 "history_len": len(request.history),
                 "doc_version": request.doc_version,
                 "source_types": request.source_types,
@@ -143,17 +140,7 @@ def create_app():
             x_rag_acl_groups=x_rag_acl_groups,
             request=request,
         )
-        result = answer_query(
-            request.query,
-            tenant_id=auth_context.tenant_id,
-            candidate_limit=request.candidate_limit,
-            context_limit=request.context_limit,
-            acl_groups=auth_context.acl_groups or None,
-            doc_version=request.doc_version,
-            source_types=request.source_types or None,
-            history=request.history,
-            request_id=request.request_id,
-        )
+        result = resolve_answer_result(request, auth_context)
         response = QueryResponse(
             request_id=result.request_id,
             answer=result.answer,
@@ -166,6 +153,7 @@ def create_app():
             {
                 "request_id": result.request_id,
                 "query": request.query,
+                "query_mode": request.query_mode,
                 "history_len": len(request.history),
                 "auth_context": auth_context.summary(),
                 "doc_version": request.doc_version,
@@ -218,6 +206,58 @@ def resolve_auth_context(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
+def resolve_search_result(request: SearchRequest, auth_context):
+    if request.query_mode == "multimodal":
+        return retrieve_multimodal(
+            request.query,
+            tenant_id=auth_context.tenant_id,
+            candidate_limit=request.candidate_limit,
+            context_limit=request.context_limit,
+            acl_groups=auth_context.acl_groups or None,
+            doc_version=request.doc_version,
+            source_types=request.source_types or None,
+            history=request.history,
+            request_id=request.request_id,
+        )
+    return retrieve_and_rerank(
+        request.query,
+        tenant_id=auth_context.tenant_id,
+        candidate_limit=request.candidate_limit,
+        context_limit=request.context_limit,
+        acl_groups=auth_context.acl_groups or None,
+        doc_version=request.doc_version,
+        source_types=request.source_types or None,
+        history=request.history,
+        request_id=request.request_id,
+    )
+
+
+def resolve_answer_result(request: QueryRequest, auth_context):
+    if request.query_mode == "multimodal":
+        return answer_multimodal_query(
+            request.query,
+            tenant_id=auth_context.tenant_id,
+            candidate_limit=request.candidate_limit,
+            context_limit=request.context_limit,
+            acl_groups=auth_context.acl_groups or None,
+            doc_version=request.doc_version,
+            source_types=request.source_types or None,
+            history=request.history,
+            request_id=request.request_id,
+        )
+    return answer_query(
+        request.query,
+        tenant_id=auth_context.tenant_id,
+        candidate_limit=request.candidate_limit,
+        context_limit=request.context_limit,
+        acl_groups=auth_context.acl_groups or None,
+        doc_version=request.doc_version,
+        source_types=request.source_types or None,
+        history=request.history,
+        request_id=request.request_id,
+    )
+
+
 def hit_to_response(hit) -> HitResponse:
     return HitResponse(
         doc_id=hit.doc_id,
@@ -228,6 +268,7 @@ def hit_to_response(hit) -> HitResponse:
         score=hit.score,
         rerank_score=hit.rerank_score,
         acl_groups=hit.acl_groups,
+        metadata=hit.metadata,
     )
 
 

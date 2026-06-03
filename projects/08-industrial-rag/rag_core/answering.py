@@ -22,13 +22,17 @@ def build_prompt(query: str, hits: list[SearchHit]) -> str:
         evidence.append(
             "\n".join(
                 [
-                    f"[{index}] doc_id={hit.doc_id}, title={hit.title}, "
-                    f"source_uri={hit.source_uri}, chunk_index={hit.chunk_index}",
+                    format_evidence_header(index, hit),
                     hit.text,
                 ]
             )
         )
     evidence_text = "\n\n".join(evidence) if evidence else "无"
+    image_rule = (
+        "\n- 图片证据来自 OCR/caption 或图片向量召回，可能不完整；回答时必须把它当作图片派生证据。"
+        if any(hit.source_type == "image" for hit in hits)
+        else ""
+    )
     return f"""问题:
 {query}
 
@@ -39,6 +43,7 @@ def build_prompt(query: str, hits: list[SearchHit]) -> str:
 - 只使用证据回答。
 - 每个关键结论后标注引用编号。
 - 如果证据不足，回答“当前知识库没有足够证据”。
+{image_rule}
 """
 
 
@@ -51,8 +56,8 @@ def generate_answer(config: RagConfig, query: str, hits: list[SearchHit]) -> Ans
             answer = "当前知识库没有足够证据。"
         else:
             answer = (
-            "未配置 OPENAI_BASE_URL/OPENAI_API_KEY，返回检索证据摘要：\n"
-            f"{hits[0].text[:500]}\n\n引用：{citations}"
+                "未配置 OPENAI_BASE_URL/OPENAI_API_KEY，返回检索证据摘要：\n"
+                f"{hits[0].text[:500]}\n\n引用：{citations}"
             )
         return AnswerGeneration(
             answer=answer,
@@ -86,6 +91,41 @@ def generate_answer(config: RagConfig, query: str, hits: list[SearchHit]) -> Ans
 
 def elapsed_ms(start: float) -> float:
     return round((perf_counter() - start) * 1000, 2)
+
+
+def format_location(metadata: dict) -> str:
+    if not metadata:
+        return ""
+    if "page_start" in metadata and "page_end" in metadata:
+        start = metadata["page_start"]
+        end = metadata["page_end"]
+        return f", page={start}" if start == end else f", pages={start}-{end}"
+    if "page_no" in metadata:
+        return f", page={metadata['page_no']}"
+    if "row_start" in metadata and "row_end" in metadata:
+        return f", rows={metadata['row_start']}-{metadata['row_end']}"
+    if "bbox" in metadata and metadata["bbox"]:
+        return f", bbox={metadata['bbox']}"
+    return ""
+
+
+def format_evidence_header(index: int, hit: SearchHit) -> str:
+    parts = [
+        f"[{index}] doc_id={hit.doc_id}",
+        f"title={hit.title}",
+        f"source_type={hit.source_type}",
+        f"source_uri={hit.source_uri}",
+        f"chunk_index={hit.chunk_index}",
+    ]
+    location = format_location(hit.metadata)
+    if location:
+        parts.append(location.lstrip(", "))
+    if hit.source_type == "image":
+        image_uri = hit.metadata.get("image_uri") or hit.source_uri
+        parts.append(f"image_uri={image_uri}")
+        if hit.metadata.get("linked_doc_id"):
+            parts.append(f"linked_doc_id={hit.metadata['linked_doc_id']}")
+    return ", ".join(parts)
 
 
 def extract_usage(response) -> dict[str, int]:

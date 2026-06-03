@@ -19,12 +19,16 @@ from rag_core.text_utils import chunk_document, sparse_embedding
 
 
 def main() -> None:
+    old_milvus_uri = os.environ.get("MILVUS_URI")
     old_collection = os.environ.get("RAG_COLLECTION")
-    os.environ["RAG_COLLECTION"] = "rag_smoke_file_ingest"
-    try:
-        run_smoke()
-    finally:
-        restore_env("RAG_COLLECTION", old_collection)
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["MILVUS_URI"] = str(Path(tmp) / "file_ingest.db")
+        os.environ["RAG_COLLECTION"] = "rag_smoke_file_ingest"
+        try:
+            run_smoke()
+        finally:
+            restore_env("MILVUS_URI", old_milvus_uri)
+            restore_env("RAG_COLLECTION", old_collection)
 
 
 def run_smoke() -> None:

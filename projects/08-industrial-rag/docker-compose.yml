@@ -15,8 +15,8 @@ services:
     image: minio/minio:RELEASE.2024-05-28T17-19-04Z
     container_name: rag-minio
     environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -48,6 +48,7 @@ services:
     environment:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
+      RAG_OBJECT_STORE_DIR: /app/projects/08-industrial-rag/object_store
       RAG_EMBEDDING_BACKEND: hash
       RAG_RERANK_BACKEND: lexical
       RAG_IMAGE_EMBEDDING_BACKEND: hash
@@ -61,6 +62,7 @@ services:
       - "8008:8008"
     volumes:
       - ./runtime:/app/projects/08-industrial-rag/runtime
+      - ./object_store:/app/projects/08-industrial-rag/object_store
     depends_on:
       - milvus
     healthcheck:
@@ -80,10 +82,13 @@ services:
     environment:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
+      RAG_OBJECT_STORE_DIR: /app/projects/08-industrial-rag/object_store
       RAG_EMBEDDING_BACKEND: hash
       RAG_RERANK_BACKEND: lexical
       RAG_IMAGE_EMBEDDING_BACKEND: hash
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "1024"
+    volumes:
+      - ./object_store:/app/projects/08-industrial-rag/object_store
     depends_on:
       - milvus

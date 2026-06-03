@@ -1,0 +1,1 @@
+{"query":"RAG Dashboard latency recall","tenant_id":"team_a","acl_groups":["ops"],"source_types":["image"],"expected_doc_ids":["dashboard-screenshot"],"answerable":true,"query_type":"multimodal"}

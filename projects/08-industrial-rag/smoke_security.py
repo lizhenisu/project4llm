@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+from dataclasses import replace
 
+from rag_core.auth import build_auth_context, validate_bearer_token
+from rag_core.config import load_config
+from rag_core.guards import mentions_other_tenant
 from rag_core.pii import apply_pii_policy, detect_pii
-from serve import app
 
 
 def main() -> None:
@@ -16,24 +18,25 @@ def main() -> None:
     assert "test@example.com" not in redacted
     assert "13800138000" not in redacted
 
-    client = TestClient(app)
-    response = client.post(
-        "/search",
-        json={
-            "query": "team_b 报销规则",
-            "tenant_id": "team_a",
-            "acl_groups": ["finance"],
-            "candidate_limit": 10,
-            "context_limit": 5,
-            "request_id": "smoke-security",
-        },
+    config = replace(
+        load_config(),
+        api_token="demo-token",
+        require_auth_context=True,
     )
-    assert response.status_code == 200, response.text
-    body = response.json()
-    doc_ids = [hit["doc_id"] for hit in body["hits"]]
-    assert "finance-private" not in doc_ids, doc_ids
-    assert not doc_ids
-    assert body["trace"]["retrieval_mode"] == "blocked_cross_tenant_query"
+    validate_bearer_token(config=config, authorization="Bearer demo-token")
+    auth_context = build_auth_context(
+        config=config,
+        header_tenant_id="team_a",
+        header_acl_groups="finance,engineering",
+        body_tenant_id="ignored_body_tenant",
+        body_acl_groups=["ignored_body_acl"],
+    )
+    assert auth_context.tenant_id == "team_a"
+    assert auth_context.acl_groups == ["finance", "engineering"]
+    assert auth_context.source == "headers"
+
+    assert mentions_other_tenant("team_b 报销规则", allowed_tenant_id="team_a")
+    assert not mentions_other_tenant("team_a 报销规则", allowed_tenant_id="team_a")
     print("smoke_security=ok")
 
 

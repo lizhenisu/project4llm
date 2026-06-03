@@ -12,19 +12,26 @@ from rag_core.io import read_jsonl
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
 from rag_core.text_utils import chunk_document
 from rag_core.types import SourceDocument
+from rag_core.versioning import publish_current_versions
 from serve import create_app
 
 
 def main() -> None:
+    old_milvus_uri = os.environ.get("MILVUS_URI")
     old_collection = os.environ.get("RAG_COLLECTION")
+    old_object_store = os.environ.get("RAG_OBJECT_STORE_DIR")
     old_runtime = os.environ.get("RAG_RUNTIME_DIR")
     with tempfile.TemporaryDirectory() as tmp:
+        os.environ["MILVUS_URI"] = str(Path(tmp) / "observability.db")
         os.environ["RAG_COLLECTION"] = "rag_smoke_observability"
+        os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(tmp) / "object_store")
         os.environ["RAG_RUNTIME_DIR"] = str(Path(tmp) / "runtime")
         try:
             run_smoke(Path(os.environ["RAG_RUNTIME_DIR"]))
         finally:
+            restore_env("MILVUS_URI", old_milvus_uri)
             restore_env("RAG_COLLECTION", old_collection)
+            restore_env("RAG_OBJECT_STORE_DIR", old_object_store)
             restore_env("RAG_RUNTIME_DIR", old_runtime)
 
 
@@ -62,6 +69,7 @@ def run_smoke(runtime_dir: Path) -> None:
             for chunk, dense_vector in zip(chunks, dense_vectors, strict=True)
         ],
     )
+    publish_current_versions(config.object_store_dir, [doc])
 
     api = TestClient(create_app())
     search_response = api.post(

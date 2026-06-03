@@ -20,14 +20,17 @@ from rag_core.types import SourceDocument
 
 
 def main() -> None:
+    old_milvus_uri = os.environ.get("MILVUS_URI")
     old_collection = os.environ.get("RAG_COLLECTION")
     old_object_store = os.environ.get("RAG_OBJECT_STORE_DIR")
     with tempfile.TemporaryDirectory() as tmp:
+        os.environ["MILVUS_URI"] = str(Path(tmp) / "object_store_rebuild.db")
         os.environ["RAG_COLLECTION"] = "rag_smoke_object_rebuild"
         os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(tmp) / "object_store")
         try:
             run_smoke()
         finally:
+            restore_env("MILVUS_URI", old_milvus_uri)
             restore_env("RAG_COLLECTION", old_collection)
             restore_env("RAG_OBJECT_STORE_DIR", old_object_store)
 

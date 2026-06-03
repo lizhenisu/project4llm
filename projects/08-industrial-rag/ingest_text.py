@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 
 from rag_core.config import DATA_DIR, load_config
@@ -9,7 +10,7 @@ from rag_core.io import load_source_documents
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
 from rag_core.object_store import archive_source_documents
 from rag_core.pii import apply_pii_policy
-from rag_core.text_utils import chunk_document
+from rag_core.text_utils import chunk_document, tokenize
 from rag_core.types import SourceDocument
 from rag_core.versioning import publish_current_versions
 
@@ -26,6 +27,17 @@ def main() -> None:
         "--no-publish-current",
         action="store_true",
         help="Archive and index documents without changing current-version registry.",
+    )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Print how documents become chunks before upsert.",
+    )
+    parser.add_argument(
+        "--preview-chunks",
+        type=int,
+        default=3,
+        help="How many chunk previews to print when --explain is enabled.",
     )
     parser.add_argument("--reset", action="store_true", help="Drop and recreate collection first.")
     args = parser.parse_args()
@@ -56,6 +68,21 @@ def main() -> None:
             overlap=config.chunk_overlap,
         )
     ]
+    if args.explain:
+        chunk_counts = Counter(chunk.doc_id for chunk in chunks)
+        print("Chunk plan:")
+        for doc in docs:
+            print(
+                f"- doc_id={doc.doc_id} title={doc.title} "
+                f"tokens={len(tokenize(doc.text))} chunks={chunk_counts.get(doc.doc_id, 0)} "
+                f"acl={','.join(doc.acl_groups)}"
+            )
+        for chunk in chunks[: args.preview_chunks]:
+            preview = chunk.text[:220].replace("\n", " ")
+            print(
+                f"  chunk doc={chunk.doc_id} idx={chunk.chunk_index} "
+                f"tokens={len(tokenize(chunk.text))} preview={preview}"
+            )
 
     embedding_model = build_embedding_model(config)
     image_embedding_model = build_image_embedding_model(config)

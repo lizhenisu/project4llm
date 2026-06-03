@@ -5,7 +5,7 @@ import argparse
 from rag_core.config import load_config
 from rag_core.embeddings import build_embedding_model
 from rag_core.milvus_store import build_filter_expr, connect, ensure_collection, hybrid_search
-from rag_core.text_utils import sparse_embedding
+from rag_core.text_utils import sparse_embedding, tokenize
 
 
 def run_hybrid(
@@ -57,6 +57,11 @@ def main() -> None:
         default=[],
         help="Restrict retrieval to a source type. Repeat for multiple types.",
     )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Print query tokens and filter expression for teaching.",
+    )
     parser.add_argument("--limit", type=int, default=5)
     args = parser.parse_args()
 
@@ -68,6 +73,20 @@ def main() -> None:
         doc_version=args.doc_version,
         source_types=args.source_type or None,
     )
+    if args.explain:
+        config = load_config()
+        model = build_embedding_model(config)
+        query_sparse = sparse_embedding(args.query)
+        filter_expr = build_filter_expr(
+            tenant_id=args.tenant_id,
+            allowed_acl_groups=args.acl_group or None,
+            doc_version=args.doc_version,
+            embedding_model=model.model_name,
+            source_types=args.source_type or None,
+        )
+        print(f"query_tokens={tokenize(args.query)}")
+        print(f"sparse_nonzero_buckets={len(query_sparse)}")
+        print(f"filter: {filter_expr}")
     for rank, hit in enumerate(hits, start=1):
         print(
             f"{rank}. score={hit.score:.4f} doc={hit.doc_id} "

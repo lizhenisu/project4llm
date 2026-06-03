@@ -18,6 +18,7 @@ def main() -> None:
                 "trace": {
                     "retrieval_mode": "hybrid_dense_sparse_rerank",
                     "context_count": 2,
+                    "source_types": ["md", "image"],
                     "stage_latency_ms": {
                         "embedding": 10.0,
                         "milvus_search": 20.0,
@@ -25,8 +26,19 @@ def main() -> None:
                     },
                 },
                 "final_context": [
-                    {"doc_id": "rag-runbook"},
-                    {"doc_id": "hybrid-search"},
+                    {"doc_id": "rag-runbook", "source_type": "md"},
+                    {
+                        "doc_id": "dashboard-screenshot",
+                        "source_type": "image",
+                        "metadata": {
+                            "fusion": {
+                                "channels": {
+                                    "text_hybrid": 1,
+                                    "image_vector": 1,
+                                }
+                            }
+                        },
+                    },
                 ],
             },
         )
@@ -36,15 +48,29 @@ def main() -> None:
             {
                 "request_id": "monitor-answer-1",
                 "trace": {
-                    "retrieval_mode": "hybrid_dense_sparse_rerank",
+                    "retrieval_mode": "multimodal_text_image_fusion",
                     "context_count": 1,
+                    "source_types": ["image"],
                     "stage_latency_ms": {
                         "embedding": 12.0,
                         "milvus_search": 24.0,
                         "rerank": 36.0,
                     },
                 },
-                "final_context": [{"doc_id": "rag-runbook"}],
+                "final_context": [
+                    {
+                        "doc_id": "dashboard-screenshot",
+                        "source_type": "image",
+                        "metadata": {
+                            "fusion": {
+                                "channels": {
+                                    "text_hybrid": 1,
+                                    "image_vector": 1,
+                                }
+                            }
+                        },
+                    }
+                ],
                 "llm": {
                     "llm_model": "test-model",
                     "llm_backend": "local_fallback",
@@ -68,12 +94,18 @@ def main() -> None:
     assert summary["retrieval_events"] == 1
     assert summary["answer_events"] == 1
     assert summary["feedback_events"] == 1
-    assert summary["retrieval_modes"] == {"hybrid_dense_sparse_rerank": 1}
+    assert summary["retrieval_modes"] == {
+        "hybrid_dense_sparse_rerank": 1,
+        "multimodal_text_image_fusion": 1,
+    }
+    assert summary["requested_source_types"] == {"image": 2, "md": 1}
     assert summary["context"]["avg"] == 1.5
+    assert summary["context_source_types"] == {"image": 2, "md": 1}
+    assert summary["fusion_channels"] == {"image_vector": 2, "text_hybrid": 2}
     assert summary["stage_latency_ms"]["embedding"]["count"] == 2
     assert summary["stage_latency_ms"]["milvus_search"]["p95"] == 24.0
     assert summary["llm_latency_ms"]["p50"] == 5.0
-    assert summary["top_context_docs"]["rag-runbook"] == 2
+    assert summary["top_context_docs"]["dashboard-screenshot"] == 2
     assert summary["feedback_ratings"] == {"1": 1}
     print("smoke_monitoring=ok")
 

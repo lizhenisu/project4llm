@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import tempfile
+from pathlib import Path
 
 from rag_core.config import load_config
 from rag_core.embeddings import build_embedding_model, build_image_embedding_model
@@ -8,15 +10,23 @@ from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, u
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.text_utils import chunk_document
 from rag_core.types import SourceDocument
+from rag_core.versioning import publish_current_versions
 
 
 def main() -> None:
+    old_milvus_uri = os.environ.get("MILVUS_URI")
     old_collection = os.environ.get("RAG_COLLECTION")
-    os.environ["RAG_COLLECTION"] = "rag_smoke_embedding_model_filter"
-    try:
-        run_smoke()
-    finally:
-        restore_env("RAG_COLLECTION", old_collection)
+    old_object_store = os.environ.get("RAG_OBJECT_STORE_DIR")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["MILVUS_URI"] = str(Path(tmp) / "embedding_model_filter.db")
+        os.environ["RAG_COLLECTION"] = "rag_smoke_embedding_model_filter"
+        os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(tmp) / "object_store")
+        try:
+            run_smoke()
+        finally:
+            restore_env("MILVUS_URI", old_milvus_uri)
+            restore_env("RAG_COLLECTION", old_collection)
+            restore_env("RAG_OBJECT_STORE_DIR", old_object_store)
 
 
 def run_smoke() -> None:
@@ -76,6 +86,7 @@ def run_smoke() -> None:
             )
         )
     upsert_entities(client, collection_name=config.collection_name, entities=entities)
+    publish_current_versions(config.object_store_dir, docs)
 
     result = retrieve_and_rerank(
         "stale embedding model upgrade",

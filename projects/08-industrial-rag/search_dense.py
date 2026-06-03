@@ -5,6 +5,7 @@ import argparse
 from rag_core.config import load_config
 from rag_core.embeddings import build_embedding_model
 from rag_core.milvus_store import build_filter_expr, connect, dense_search, ensure_collection
+from rag_core.text_utils import tokenize
 
 
 def main() -> None:
@@ -23,6 +24,11 @@ def main() -> None:
         action="append",
         default=[],
         help="Restrict retrieval to a source type. Repeat for multiple types.",
+    )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Print query tokens and filter expression for teaching.",
     )
     parser.add_argument("--limit", type=int, default=5)
     args = parser.parse_args()
@@ -47,6 +53,8 @@ def main() -> None:
         limit=args.limit,
     )
 
+    if args.explain:
+        print(f"query_tokens={tokenize(args.query)}")
     print(f"filter: {filter_expr}")
     for rank, hit in enumerate(hits, start=1):
         print(

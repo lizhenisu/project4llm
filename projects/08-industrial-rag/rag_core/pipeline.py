@@ -104,12 +104,13 @@ def retrieve_and_rerank(
     reranked = build_reranker(config).rerank(
         rewrite.rewritten_query,
         candidates,
-        limit=context_limit,
+        limit=len(candidates),
     )
     rerank_ms = elapsed_ms(rerank_start)
     packing_start = perf_counter()
     hits, packing_stats = pack_context(
         reranked,
+        max_selected=context_limit,
         max_chars=config.max_context_chars,
         max_chunks_per_doc=config.max_chunks_per_doc,
         min_rerank_score=config.min_rerank_score,

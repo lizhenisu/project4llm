@@ -42,16 +42,31 @@ class HashEmbeddingModel:
 
 
 class TransformersBGEEmbeddingModel:
-    def __init__(self, model_name: str, dim: int, device: str | None = None) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        dim: int,
+        *,
+        batch_size: int,
+        max_length: int,
+        device: str,
+        dtype: str,
+    ) -> None:
         import torch
         from transformers import AutoModel, AutoTokenizer
 
         self._model_name = model_name
         self._dim = dim
+        self._batch_size = max(1, batch_size)
+        self._max_length = max(1, max_length)
         self._torch = torch
-        self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = resolve_device(torch, device)
         self._tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self._model = AutoModel.from_pretrained(model_name)
+        model_kwargs = {}
+        torch_dtype = resolve_torch_dtype(torch, device=self._device, dtype=dtype)
+        if torch_dtype is not None:
+            model_kwargs["torch_dtype"] = torch_dtype
+        self._model = AutoModel.from_pretrained(model_name, **model_kwargs)
         self._model.to(self._device)
         self._model.eval()
 
@@ -67,21 +82,24 @@ class TransformersBGEEmbeddingModel:
         if not texts:
             return []
 
+        vectors: list[list[float]] = []
         with self._torch.no_grad():
-            batch = self._tokenizer(
-                texts,
-                padding=True,
-                truncation=True,
-                max_length=8192,
-                return_tensors="pt",
-            )
-            batch = {key: value.to(self._device) for key, value in batch.items()}
-            outputs = self._model(**batch)
-            token_embeddings = outputs.last_hidden_state
-            mask = batch["attention_mask"].unsqueeze(-1).float()
-            pooled = (token_embeddings * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-6)
-            pooled = self._torch.nn.functional.normalize(pooled, p=2, dim=1)
-            vectors = pooled.detach().cpu().tolist()
+            for start in range(0, len(texts), self._batch_size):
+                batch_texts = texts[start : start + self._batch_size]
+                batch = self._tokenizer(
+                    batch_texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=self._max_length,
+                    return_tensors="pt",
+                )
+                batch = {key: value.to(self._device) for key, value in batch.items()}
+                outputs = self._model(**batch)
+                token_embeddings = outputs.last_hidden_state
+                mask = batch["attention_mask"].unsqueeze(-1).float()
+                pooled = (token_embeddings * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-6)
+                pooled = self._torch.nn.functional.normalize(pooled, p=2, dim=1)
+                vectors.extend(pooled.detach().cpu().tolist())
 
         for vector in vectors:
             if len(vector) != self._dim:
@@ -93,16 +111,29 @@ class TransformersBGEEmbeddingModel:
 
 
 class TransformersCLIPImageEmbeddingModel:
-    def __init__(self, model_name: str, dim: int, device: str | None = None) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        dim: int,
+        *,
+        batch_size: int,
+        device: str,
+        dtype: str,
+    ) -> None:
         import torch
         from transformers import CLIPModel, CLIPProcessor
 
         self._model_name = model_name
         self._dim = dim
+        self._batch_size = max(1, batch_size)
         self._torch = torch
-        self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = resolve_device(torch, device)
         self._processor = CLIPProcessor.from_pretrained(model_name)
-        self._model = CLIPModel.from_pretrained(model_name)
+        model_kwargs = {}
+        torch_dtype = resolve_torch_dtype(torch, device=self._device, dtype=dtype)
+        if torch_dtype is not None:
+            model_kwargs["torch_dtype"] = torch_dtype
+        self._model = CLIPModel.from_pretrained(model_name, **model_kwargs)
         self._model.to(self._device)
         self._model.eval()
 
@@ -118,17 +149,20 @@ class TransformersCLIPImageEmbeddingModel:
         if not texts:
             return []
 
+        vectors: list[list[float]] = []
         with self._torch.no_grad():
-            inputs = self._processor(
-                text=texts,
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-            )
-            inputs = {key: value.to(self._device) for key, value in inputs.items()}
-            features = self._model.get_text_features(**inputs)
-            features = self._torch.nn.functional.normalize(features, p=2, dim=1)
-            vectors = features.detach().cpu().tolist()
+            for start in range(0, len(texts), self._batch_size):
+                batch_texts = texts[start : start + self._batch_size]
+                inputs = self._processor(
+                    text=batch_texts,
+                    padding=True,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                inputs = {key: value.to(self._device) for key, value in inputs.items()}
+                features = self._model.get_text_features(**inputs)
+                features = self._torch.nn.functional.normalize(features, p=2, dim=1)
+                vectors.extend(features.detach().cpu().tolist())
         self._check_dims(vectors)
         return vectors
 
@@ -138,13 +172,16 @@ class TransformersCLIPImageEmbeddingModel:
 
         from PIL import Image
 
-        images = [Image.open(path).convert("RGB") for path in image_paths]
+        vectors: list[list[float]] = []
         with self._torch.no_grad():
-            inputs = self._processor(images=images, return_tensors="pt")
-            inputs = {key: value.to(self._device) for key, value in inputs.items()}
-            features = self._model.get_image_features(**inputs)
-            features = self._torch.nn.functional.normalize(features, p=2, dim=1)
-            vectors = features.detach().cpu().tolist()
+            for start in range(0, len(image_paths), self._batch_size):
+                batch_paths = image_paths[start : start + self._batch_size]
+                images = [Image.open(path).convert("RGB") for path in batch_paths]
+                inputs = self._processor(images=images, return_tensors="pt")
+                inputs = {key: value.to(self._device) for key, value in inputs.items()}
+                features = self._model.get_image_features(**inputs)
+                features = self._torch.nn.functional.normalize(features, p=2, dim=1)
+                vectors.extend(features.detach().cpu().tolist())
         self._check_dims(vectors)
         return vectors
 
@@ -162,6 +199,10 @@ def build_embedding_model(config: RagConfig) -> EmbeddingModel:
         return TransformersBGEEmbeddingModel(
             model_name=config.embedding_model,
             dim=config.embedding_dim,
+            batch_size=config.embedding_batch_size,
+            max_length=config.embedding_max_length,
+            device=config.model_device,
+            dtype=config.model_dtype,
         )
     if config.embedding_backend == "hash":
         return HashEmbeddingModel(
@@ -181,8 +222,40 @@ def build_image_embedding_model(config: RagConfig) -> ImageEmbeddingModel:
         return TransformersCLIPImageEmbeddingModel(
             model_name=config.image_embedding_model,
             dim=config.image_embedding_dim,
+            batch_size=config.image_embedding_batch_size,
+            device=config.model_device,
+            dtype=config.model_dtype,
         )
     raise ValueError(
         "Unsupported RAG_IMAGE_EMBEDDING_BACKEND="
         f"{config.image_embedding_backend!r}. Use 'hash' or 'clip'."
     )
+
+
+def resolve_device(torch, requested: str) -> str:
+    if requested and requested != "auto":
+        if requested.startswith("cuda") and not torch.cuda.is_available():
+            return "cpu"
+        return requested
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def resolve_torch_dtype(torch, *, device: str, dtype: str):
+    if not dtype or dtype == "auto":
+        return None
+    mapping = {
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }
+    resolved = mapping.get(dtype)
+    if resolved is None:
+        raise ValueError(
+            f"Unsupported RAG_MODEL_DTYPE={dtype!r}; use auto/fp16/bf16/fp32"
+        )
+    if device.startswith("cpu") and resolved != torch.float32:
+        return torch.float32
+    return resolved

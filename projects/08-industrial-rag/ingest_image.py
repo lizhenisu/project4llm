@@ -52,7 +52,7 @@ def main() -> None:
             ),
             language=doc.language,
             acl_groups=doc.acl_groups,
-            metadata=doc.metadata | {"caption": doc.caption, "ocr_text": doc.ocr_text},
+            metadata=normalize_image_metadata(doc),
         )
         for doc in image_docs
     ]
@@ -103,6 +103,18 @@ def main() -> None:
     print(f"Archived canonical docs: {archived}")
     if not args.no_publish_current:
         print(f"Published current versions: {current_versions}")
+
+
+def normalize_image_metadata(doc) -> dict:
+    metadata = {
+        **doc.metadata,
+        "image_uri": doc.metadata.get("image_uri") or doc.source_uri,
+        "caption": doc.caption,
+        "ocr_text": doc.ocr_text,
+        "bbox": doc.metadata.get("bbox", []),
+        "linked_doc_id": doc.metadata.get("linked_doc_id", ""),
+    }
+    return metadata
 
 
 if __name__ == "__main__":

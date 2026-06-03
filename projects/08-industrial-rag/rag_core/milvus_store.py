@@ -5,7 +5,7 @@ from typing import Any
 
 from pymilvus import AnnSearchRequest, DataType, MilvusClient, RRFRanker
 
-from rag_core.config import RagConfig
+from rag_core.config import RagConfig, load_config
 from rag_core.text_utils import chunk_id, content_hash, now_ms, sparse_embedding
 from rag_core.types import Chunk, SearchHit
 
@@ -48,7 +48,7 @@ def create_schema(config: RagConfig):
     schema.add_field("source_type", DataType.VARCHAR, max_length=32)
     schema.add_field("source_uri", DataType.VARCHAR, max_length=512)
     schema.add_field("title", DataType.VARCHAR, max_length=512)
-    schema.add_field("text", DataType.VARCHAR, max_length=8192)
+    schema.add_field("text", DataType.VARCHAR, max_length=8192, enable_analyzer=True)
     schema.add_field("language", DataType.VARCHAR, max_length=16)
     schema.add_field(
         "acl_groups",
@@ -70,28 +70,34 @@ def create_schema(config: RagConfig):
     return schema
 
 
-def create_index_params() -> Any:
+def create_index_params(config: RagConfig) -> Any:
     index_params = MilvusClient.prepare_index_params()
     index_params.add_index(
         field_name="text_dense_vector",
         index_name="text_dense_hnsw",
         index_type="HNSW",
         metric_type="COSINE",
-        params={"M": 16, "efConstruction": 100},
+        params={
+            "M": config.dense_hnsw_m,
+            "efConstruction": config.dense_hnsw_ef_construction,
+        },
     )
     index_params.add_index(
         field_name="bm25_sparse_vector",
         index_name="bm25_sparse_inverted",
         index_type="SPARSE_INVERTED_INDEX",
         metric_type="IP",
-        params={"drop_ratio_build": 0.2},
+        params={"drop_ratio_build": config.sparse_drop_ratio_build},
     )
     index_params.add_index(
         field_name="image_dense_vector",
         index_name="image_dense_hnsw",
         index_type="HNSW",
         metric_type="COSINE",
-        params={"M": 16, "efConstruction": 100},
+        params={
+            "M": config.image_hnsw_m,
+            "efConstruction": config.image_hnsw_ef_construction,
+        },
     )
     return index_params
 
@@ -104,10 +110,25 @@ def ensure_collection(client: MilvusClient, config: RagConfig, *, reset: bool = 
         client.create_collection(
             collection_name=config.collection_name,
             schema=create_schema(config),
-            index_params=create_index_params(),
+            index_params=create_index_params(config),
         )
 
     client.load_collection(config.collection_name)
+
+
+def dense_search_params(config: RagConfig) -> dict[str, Any]:
+    return {"metric_type": "COSINE", "params": {"ef": config.dense_search_ef}}
+
+
+def sparse_search_params(config: RagConfig) -> dict[str, Any]:
+    return {
+        "metric_type": "IP",
+        "params": {"drop_ratio_search": config.sparse_drop_ratio_search},
+    }
+
+
+def image_search_params(config: RagConfig) -> dict[str, Any]:
+    return {"metric_type": "COSINE", "params": {"ef": config.image_search_ef}}
 
 
 def build_filter_expr(
@@ -213,13 +234,35 @@ def dense_search(
     filter_expr: str,
     limit: int,
 ) -> list[SearchHit]:
+    config = load_config()
     result = client.search(
         collection_name=collection_name,
         data=[query_vector],
         anns_field="text_dense_vector",
         filter=filter_expr,
         limit=limit,
-        search_params={"metric_type": "COSINE", "params": {"ef": 128}},
+        search_params=dense_search_params(config),
+        output_fields=OUTPUT_FIELDS,
+    )
+    return [_hit_to_search_hit(hit) for hit in result[0]]
+
+
+def sparse_search(
+    client: MilvusClient,
+    *,
+    collection_name: str,
+    query_sparse: dict[int, float],
+    filter_expr: str,
+    limit: int,
+) -> list[SearchHit]:
+    config = load_config()
+    result = client.search(
+        collection_name=collection_name,
+        data=[query_sparse],
+        anns_field="bm25_sparse_vector",
+        filter=filter_expr,
+        limit=limit,
+        search_params=sparse_search_params(config),
         output_fields=OUTPUT_FIELDS,
     )
     return [_hit_to_search_hit(hit) for hit in result[0]]
@@ -234,17 +277,18 @@ def hybrid_search(
     filter_expr: str,
     limit: int,
 ) -> list[SearchHit]:
+    config = load_config()
     dense_req = AnnSearchRequest(
         data=[query_vector],
         anns_field="text_dense_vector",
-        param={"metric_type": "COSINE", "params": {"ef": 128}},
+        param=dense_search_params(config),
         limit=max(limit, 20),
         expr=filter_expr,
     )
     sparse_req = AnnSearchRequest(
         data=[query_sparse],
         anns_field="bm25_sparse_vector",
-        param={"metric_type": "IP", "params": {"drop_ratio_search": 0.0}},
+        param=sparse_search_params(config),
         limit=max(limit, 20),
         expr=filter_expr,
     )
@@ -266,13 +310,14 @@ def image_search(
     filter_expr: str,
     limit: int,
 ) -> list[SearchHit]:
+    config = load_config()
     result = client.search(
         collection_name=collection_name,
         data=[image_query_vector],
         anns_field="image_dense_vector",
         filter=filter_expr,
         limit=limit,
-        search_params={"metric_type": "COSINE", "params": {"ef": 128}},
+        search_params=image_search_params(config),
         output_fields=OUTPUT_FIELDS,
     )
     return [_hit_to_search_hit(hit) for hit in result[0]]

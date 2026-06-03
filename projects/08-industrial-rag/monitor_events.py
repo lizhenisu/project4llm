@@ -39,7 +39,13 @@ def summarize_runtime_events(runtime_dir: Path) -> dict[str, Any]:
     ]
     retrieval_modes = Counter(
         event.get("trace", {}).get("retrieval_mode", "<missing>")
-        for event in retrieval_events
+        for event in [*retrieval_events, *answer_events]
+        if "trace" in event
+    )
+    requested_source_types = Counter(
+        source_type
+        for event in [*retrieval_events, *answer_events]
+        for source_type in event.get("trace", {}).get("source_types", []) or ["<all>"]
     )
     context_counts = [
         int(event.get("trace", {}).get("context_count", 0))
@@ -51,6 +57,22 @@ def summarize_runtime_events(runtime_dir: Path) -> dict[str, Any]:
         for event in [*retrieval_events, *answer_events]
         for hit in event.get("final_context", [])
     )
+    context_source_types = Counter(
+        hit.get("source_type", "<missing>")
+        for event in [*retrieval_events, *answer_events]
+        for hit in event.get("final_context", [])
+    )
+    fusion_channels = Counter(
+        channel
+        for event in [*retrieval_events, *answer_events]
+        for hit in event.get("final_context", [])
+        for channel in (
+            hit.get("metadata", {})
+            .get("fusion", {})
+            .get("channels", {})
+            .keys()
+        )
+    )
     ratings = Counter(str(event.get("rating", "<missing>")) for event in feedback_events)
 
     return {
@@ -59,10 +81,13 @@ def summarize_runtime_events(runtime_dir: Path) -> dict[str, Any]:
         "answer_events": len(answer_events),
         "feedback_events": len(feedback_events),
         "retrieval_modes": dict(sorted(retrieval_modes.items())),
+        "requested_source_types": dict(sorted(requested_source_types.items())),
         "context": {
             "avg": avg(context_counts),
             "zero_context_events": sum(1 for count in context_counts if count == 0),
         },
+        "context_source_types": dict(sorted(context_source_types.items())),
+        "fusion_channels": dict(sorted(fusion_channels.items())),
         "stage_latency_ms": {
             name: latency_summary(values)
             for name, values in sorted(stage_latencies.items())
@@ -118,7 +143,10 @@ def print_summary(summary: dict[str, Any]) -> None:
     print(f"answer_events={summary['answer_events']}")
     print(f"feedback_events={summary['feedback_events']}")
     print(f"retrieval_modes={summary['retrieval_modes']}")
+    print(f"requested_source_types={summary['requested_source_types']}")
     print(f"context={summary['context']}")
+    print(f"context_source_types={summary['context_source_types']}")
+    print(f"fusion_channels={summary['fusion_channels']}")
     print(f"stage_latency_ms={summary['stage_latency_ms']}")
     print(f"llm_latency_ms={summary['llm_latency_ms']}")
     print(f"top_context_docs={summary['top_context_docs']}")

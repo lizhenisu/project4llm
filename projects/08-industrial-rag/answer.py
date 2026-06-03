@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import dataclass
 
-from rag_core.answering import generate_answer
+from rag_core.answering import build_prompt, generate_answer
 from rag_core.config import load_config
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.types import SearchHit
@@ -75,6 +76,17 @@ def main() -> None:
         default=[],
         help="Restrict retrieval to a source type. Repeat for multiple types.",
     )
+    parser.add_argument(
+        "--show-trace",
+        action="store_true",
+        help="Print rewritten query, filter, and stage latency for teaching.",
+    )
+    parser.add_argument(
+        "--show-prompt-chars",
+        type=int,
+        default=0,
+        help="Print the first N prompt characters before the answer.",
+    )
     args = parser.parse_args()
 
     result = answer_query(
@@ -86,6 +98,29 @@ def main() -> None:
         doc_version=args.doc_version,
         source_types=args.source_type or None,
     )
+    if args.show_trace:
+        trace_payload = {
+            "request_id": result.trace.request_id,
+            "original_query": result.trace.original_query,
+            "rewritten_query": result.trace.rewritten_query,
+            "filter_expr": result.trace.filter_expr,
+            "retrieval_mode": result.trace.retrieval_mode,
+            "candidate_count": result.trace.candidate_count,
+            "reranked_count": result.trace.reranked_count,
+            "context_count": result.trace.context_count,
+            "stage_latency_ms": result.trace.stage_latency_ms,
+        }
+        print("trace:")
+        print(json.dumps(trace_payload, ensure_ascii=False, indent=2))
+        print()
+    if args.show_prompt_chars > 0:
+        prompt = build_prompt(result.trace.rewritten_query, result.hits)
+        preview = prompt[: args.show_prompt_chars]
+        print("prompt_preview:")
+        print(preview)
+        if len(prompt) > len(preview):
+            print("... (prompt truncated)")
+        print()
     print(f"request_id: {result.request_id}\n")
     print(result.answer)
     print("\nCitations:")
