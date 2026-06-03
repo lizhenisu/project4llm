@@ -143,11 +143,29 @@ python projects/08-industrial-rag/eval_answer.py
 | `.env.example` | 本地和生产配置模板，不包含真实密钥 |
 | `RELEASE_CHECKLIST.md` | 从教学 smoke 到上线前验收的检查清单 |
 
-本地默认使用 `RAG_EMBEDDING_BACKEND=hash` 和 `RAG_RERANK_BACKEND=lexical`，目的是让教学烟测不下载大模型也能稳定跑通链路。上线或真实评估时应切换为：
+本地默认使用 `RAG_EMBEDDING_BACKEND=bge` 和 `RAG_RERANK_BACKEND=bge`，首次使用需先下载模型：
 
 ```bash
-export RAG_EMBEDDING_BACKEND=bge
-export RAG_RERANK_BACKEND=bge
+python projects/08-industrial-rag/download_models.py
+```
+
+国内网络建议设置镜像加速：
+
+```bash
+export HF_ENDPOINT="https://hf-mirror.com"
+python projects/08-industrial-rag/download_models.py
+```
+
+如需使用教学简化后端（不下载大模型）：
+
+```bash
+export RAG_EMBEDDING_BACKEND=hash
+export RAG_RERANK_BACKEND=lexical
+```
+
+生产环境配置参考：
+
+```bash
 export EMBEDDING_MODEL=BAAI/bge-m3
 export RERANK_MODEL=BAAI/bge-reranker-v2-m3
 export RAG_MODEL_DEVICE=cpu          # 或 cuda
@@ -239,6 +257,19 @@ export HF_ENDPOINT="https://hf-mirror.com"
 ```
 
 ### 本地快速运行
+
+首次使用请先下载模型（需 3-5 GB 磁盘空间）：
+
+```bash
+python projects/08-industrial-rag/download_models.py
+```
+
+国内网络建议：
+
+```bash
+export HF_ENDPOINT="https://hf-mirror.com"
+python projects/08-industrial-rag/download_models.py
+```
 
 从仓库根目录执行：
 

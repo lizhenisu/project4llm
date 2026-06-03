@@ -86,8 +86,8 @@ class RagConfig:
 
 
 def load_config() -> RagConfig:
-    embedding_backend = os.environ.get("RAG_EMBEDDING_BACKEND", "hash").lower()
-    image_backend = os.environ.get("RAG_IMAGE_EMBEDDING_BACKEND", "hash").lower()
+    embedding_backend = os.environ.get("RAG_EMBEDDING_BACKEND", "bge").lower()
+    image_backend = os.environ.get("RAG_IMAGE_EMBEDDING_BACKEND", "bge").lower()
     milvus_uri = (
         os.environ.get("RAG_MILVUS_URI")
         or os.environ.get("MILVUS_URI")
@@ -104,7 +104,7 @@ def load_config() -> RagConfig:
         embedding_batch_size=_env_int("RAG_EMBED_BATCH_SIZE", 8),
         embedding_max_length=_env_int("RAG_EMBED_MAX_LENGTH", 8192),
         rerank_model=os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"),
-        rerank_backend=os.environ.get("RAG_RERANK_BACKEND", "lexical").lower(),
+        rerank_backend=os.environ.get("RAG_RERANK_BACKEND", "bge").lower(),
         rerank_batch_size=_env_int("RAG_RERANK_BATCH_SIZE", 8),
         rerank_max_length=_env_int("RAG_RERANK_MAX_LENGTH", 1024),
         image_embedding_backend=image_backend,
