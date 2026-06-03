@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from rag_core.config import RagConfig
+from rag_core.config import RagConfig, _resolve_model_path
 from rag_core.text_utils import hash_dense_embedding
 
 
@@ -47,6 +47,7 @@ class TransformersBGEEmbeddingModel:
         model_name: str,
         dim: int,
         *,
+        model_path: str | None = None,
         batch_size: int,
         max_length: int,
         device: str,
@@ -61,12 +62,13 @@ class TransformersBGEEmbeddingModel:
         self._max_length = max(1, max_length)
         self._torch = torch
         self._device = resolve_device(torch, device)
-        self._tokenizer = AutoTokenizer.from_pretrained(model_name)
+        load_from = model_path or model_name
+        self._tokenizer = AutoTokenizer.from_pretrained(load_from)
         model_kwargs = {}
         torch_dtype = resolve_torch_dtype(torch, device=self._device, dtype=dtype)
         if torch_dtype is not None:
             model_kwargs["torch_dtype"] = torch_dtype
-        self._model = AutoModel.from_pretrained(model_name, **model_kwargs)
+        self._model = AutoModel.from_pretrained(load_from, **model_kwargs)
         self._model.to(self._device)
         self._model.eval()
 
@@ -196,8 +198,10 @@ class TransformersCLIPImageEmbeddingModel:
 
 def build_embedding_model(config: RagConfig) -> EmbeddingModel:
     if config.embedding_backend == "bge":
+        local_path = _resolve_model_path(config.embedding_model, ms_subdir="bge-m3")
         return TransformersBGEEmbeddingModel(
             model_name=config.embedding_model,
+            model_path=local_path,
             dim=config.embedding_dim,
             batch_size=config.embedding_batch_size,
             max_length=config.embedding_max_length,

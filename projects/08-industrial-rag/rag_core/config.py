@@ -10,6 +10,18 @@ DATA_DIR = PROJECT_DIR / "data"
 RUNTIME_DIR = PROJECT_DIR / "runtime"
 OBJECT_STORE_DIR = PROJECT_DIR / "object_store"
 DEFAULT_MILVUS_DB = PROJECT_DIR / "industrial_rag_demo.db"
+MODELSCOPE_CACHE = Path.home() / ".cache" / "modelscope" / "hub" / "models" / "BAAI"
+
+
+def _resolve_model_path(model_id: str, *, ms_subdir: str) -> str:
+    """Return local path if the model exists in the ModelScope cache."""
+    candidate = MODELSCOPE_CACHE / ms_subdir
+    if candidate.is_dir() and (
+        (candidate / "pytorch_model.bin").exists()
+        or (candidate / "model.safetensors").exists()
+    ):
+        return str(candidate)
+    return model_id
 
 
 def _env_int(name: str, default: int) -> int:
@@ -87,7 +99,7 @@ class RagConfig:
 
 def load_config() -> RagConfig:
     embedding_backend = os.environ.get("RAG_EMBEDDING_BACKEND", "bge").lower()
-    image_backend = os.environ.get("RAG_IMAGE_EMBEDDING_BACKEND", "bge").lower()
+    image_backend = os.environ.get("RAG_IMAGE_EMBEDDING_BACKEND", "hash").lower()
     milvus_uri = (
         os.environ.get("RAG_MILVUS_URI")
         or os.environ.get("MILVUS_URI")

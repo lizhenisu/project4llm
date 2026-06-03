@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Protocol
 
-from rag_core.config import RagConfig
+from rag_core.config import RagConfig, _resolve_model_path
 from rag_core.embeddings import resolve_device, resolve_torch_dtype
 from rag_core.text_utils import lexical_overlap_score
 from rag_core.types import SearchHit
@@ -91,8 +91,9 @@ class TransformersBGEReranker:
 
 def build_reranker(config: RagConfig) -> Reranker:
     if config.rerank_backend == "bge":
+        model_path = _resolve_model_path(config.rerank_model, ms_subdir="bge-reranker-v2-m3")
         return TransformersBGEReranker(
-            config.rerank_model,
+            model_path,
             batch_size=config.rerank_batch_size,
             max_length=config.rerank_max_length,
             device=config.model_device,
