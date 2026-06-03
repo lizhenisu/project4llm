@@ -143,16 +143,9 @@ python projects/08-industrial-rag/eval_answer.py
 | `.env.example` | 本地和生产配置模板，不包含真实密钥 |
 | `RELEASE_CHECKLIST.md` | 从教学 smoke 到上线前验收的检查清单 |
 
-本地默认使用 `RAG_EMBEDDING_BACKEND=bge` 和 `RAG_RERANK_BACKEND=bge`，首次使用需先下载模型：
+本地默认使用 `RAG_EMBEDDING_BACKEND=bge` 和 `RAG_RERANK_BACKEND=bge`，首次使用需先下载模型（ModelScope 源，国内可直接下载）：
 
 ```bash
-python projects/08-industrial-rag/download_models.py
-```
-
-国内网络建议设置镜像加速：
-
-```bash
-export HF_ENDPOINT="https://hf-mirror.com"
 python projects/08-industrial-rag/download_models.py
 ```
 
@@ -174,16 +167,14 @@ export RAG_EMBED_BATCH_SIZE=8
 export RAG_RERANK_BATCH_SIZE=8
 ```
 
-如果模型下载慢，可以再加：
+如果模型本地缓存未命中且需通过 Hugging Face Hub 下载，可以设置镜像：
 
 ```bash
 export HF_ENDPOINT="https://hf-mirror.com"
 export HF_HUB_DISABLE_XET=1
-export HF_ENABLE_PARALLEL_LOADING=true
-export HF_PARALLEL_LOADING_WORKERS=4
 ```
 
-`HF_HUB_DISABLE_XET` 和 `HF_ENABLE_PARALLEL_LOADING` 都是 Hugging Face 官方支持的环境变量，用于在部分网络环境下绕开 `hf-xet` 或加快模型权重加载。
+`HF_ENDPOINT` 和 `HF_HUB_DISABLE_XET` 是 Hugging Face 官方支持的环境变量，用于在部分网络环境下绕开 `hf-xet` 或加快模型权重加载。
 
 PII 策略：
 
@@ -258,16 +249,9 @@ export HF_ENDPOINT="https://hf-mirror.com"
 
 ### 本地快速运行
 
-首次使用请先下载模型（需 3-5 GB 磁盘空间）：
+首次使用请先下载模型（~4.5 GB，ModelScope 源）：
 
 ```bash
-python projects/08-industrial-rag/download_models.py
-```
-
-国内网络建议：
-
-```bash
-export HF_ENDPOINT="https://hf-mirror.com"
 python projects/08-industrial-rag/download_models.py
 ```
 
