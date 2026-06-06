@@ -17,7 +17,7 @@ from rag_core.milvus_store import (
     upsert_entities,
 )
 from rag_core.rerankers import build_reranker
-from rag_core.text_utils import chunk_document, sparse_embedding
+from rag_core.text_utils import chunk_document
 from rag_core.types import Chunk
 
 
@@ -113,7 +113,7 @@ def run_smoke() -> None:
         client,
         collection_name=config.collection_name,
         query_vector=query_vector,
-        query_sparse=sparse_embedding(query),
+        query_text=query,
         filter_expr=filter_expr,
         limit=5,
     )

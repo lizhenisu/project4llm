@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from rag_core.config import load_config
-from rag_core.embeddings import build_embedding_model, build_image_embedding_model
+from rag_core.embeddings import build_embedding_model, zero_image_vector
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.text_utils import chunk_document
@@ -22,7 +22,7 @@ def main() -> None:
         os.environ["MILVUS_URI"] = str(Path(tmp) / "rewrite.db")
         os.environ["RAG_COLLECTION"] = "rag_smoke_rewrite"
         os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(tmp) / "object_store")
-        os.environ["RAG_QUERY_REWRITE_BACKEND"] = "heuristic"
+        os.environ["RAG_QUERY_REWRITE_BACKEND"] = "llm"
         try:
             run_smoke()
         finally:
@@ -50,9 +50,8 @@ def run_smoke() -> None:
     )
     chunks = chunk_document(doc, chunk_size=config.chunk_size, overlap=config.chunk_overlap)
     text_model = build_embedding_model(config)
-    image_model = build_image_embedding_model(config)
     dense_vectors = text_model.encode([chunk.text for chunk in chunks])
-    zero_image = image_model.encode(["no image"])[0]
+    zero_image = zero_image_vector(config)
     upsert_entities(
         client,
         collection_name=config.collection_name,
@@ -80,7 +79,7 @@ def run_smoke() -> None:
     )
     assert result.trace.original_query == "怎么排查？"
     assert "RAG" in result.trace.rewritten_query
-    assert result.trace.rewrite_backend == "heuristic"
+    assert result.trace.rewrite_backend == "llm"
     assert result.hits
 
 

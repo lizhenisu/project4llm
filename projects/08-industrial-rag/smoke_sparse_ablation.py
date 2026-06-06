@@ -6,7 +6,7 @@ from pathlib import Path
 
 from eval_retrieval import evaluate_retrieval
 from rag_core.config import load_config
-from rag_core.embeddings import build_embedding_model, build_image_embedding_model
+from rag_core.embeddings import build_embedding_model, zero_image_vector
 from rag_core.io import write_jsonl
 from rag_core.milvus_store import (
     build_filter_expr,
@@ -16,7 +16,7 @@ from rag_core.milvus_store import (
     sparse_search,
     upsert_entities,
 )
-from rag_core.text_utils import chunk_document, sparse_embedding
+from rag_core.text_utils import chunk_document
 from rag_core.types import SourceDocument
 
 
@@ -49,9 +49,8 @@ def run_smoke() -> None:
     )
     chunks = chunk_document(doc, chunk_size=config.chunk_size, overlap=config.chunk_overlap)
     text_model = build_embedding_model(config)
-    image_model = build_image_embedding_model(config)
     dense_vectors = text_model.encode([chunk.text for chunk in chunks])
-    zero_image = image_model.encode(["no image"])[0]
+    zero_image = zero_image_vector(config)
     upsert_entities(
         client,
         collection_name=config.collection_name,
@@ -70,7 +69,7 @@ def run_smoke() -> None:
     hits = sparse_search(
         client,
         collection_name=config.collection_name,
-        query_sparse=sparse_embedding(query),
+        query_text=query,
         filter_expr=build_filter_expr(
             tenant_id="team_a",
             allowed_acl_groups=["ops"],
@@ -100,7 +99,7 @@ def run_smoke() -> None:
 
     assert metrics["recall"] == 1.0
     assert metrics["mrr"] == 1.0
-    assert metrics["stage_p95_latency_ms"]["sparse_query"] >= 0.0
+    assert metrics["stage_p95_latency_ms"]["milvus_search"] >= 0.0
     print("smoke_sparse_ablation=ok")
 
 

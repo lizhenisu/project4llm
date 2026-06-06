@@ -19,7 +19,6 @@ from rag_core.milvus_store import (
     sparse_search,
 )
 from rag_core.pipeline import retrieve_and_rerank
-from rag_core.text_utils import sparse_embedding
 from rag_core.types import SearchHit
 from search_multimodal import retrieve_multimodal
 
@@ -209,22 +208,18 @@ def run_eval_search(
         source_types=source_types,
         embedding_model=embedding_model.model_name,
     )
-    sparse_start = time.perf_counter()
-    query_sparse = sparse_embedding(query)
-    sparse_ms = elapsed_ms(sparse_start)
     if mode == "sparse":
         search_start = time.perf_counter()
         hits = sparse_search(
             client,
             collection_name=collection_name,
-            query_sparse=query_sparse,
+            query_text=query,
             filter_expr=filter_expr,
             limit=limit,
         )
         return EvalSearchResult(
             hits=hits,
             stage_latency_ms={
-                "sparse_query": sparse_ms,
                 "milvus_search": elapsed_ms(search_start),
             },
         )
@@ -246,7 +241,7 @@ def run_eval_search(
             client,
             collection_name=collection_name,
             query_vector=query_vector,
-            query_sparse=query_sparse,
+            query_text=query,
             filter_expr=filter_expr,
             limit=limit,
         )

@@ -5,11 +5,11 @@ import argparse
 from rag_core.config import load_config
 from rag_core.embeddings import build_embedding_model
 from rag_core.milvus_store import build_filter_expr, connect, ensure_collection, sparse_search
-from rag_core.text_utils import sparse_embedding, tokenize
+from rag_core.text_utils import tokenize
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run metadata-filtered sparse/BM25-like search.")
+    parser = argparse.ArgumentParser(description="Run metadata-filtered Milvus BM25 search.")
     parser.add_argument("query", help="User query.")
     parser.add_argument("--tenant-id", default="team_a")
     parser.add_argument(
@@ -37,7 +37,6 @@ def main() -> None:
     client = connect(config)
     ensure_collection(client, config, reset=False)
     model = build_embedding_model(config)
-    query_sparse = sparse_embedding(args.query)
     filter_expr = build_filter_expr(
         tenant_id=args.tenant_id,
         allowed_acl_groups=args.acl_group or None,
@@ -48,14 +47,13 @@ def main() -> None:
     hits = sparse_search(
         client,
         collection_name=config.collection_name,
-        query_sparse=query_sparse,
+        query_text=args.query,
         filter_expr=filter_expr,
         limit=args.limit,
     )
 
     if args.explain:
         print(f"query_tokens={tokenize(args.query)}")
-        print(f"sparse_nonzero_buckets={len(query_sparse)}")
     print(f"filter: {filter_expr}")
     for rank, hit in enumerate(hits, start=1):
         print(

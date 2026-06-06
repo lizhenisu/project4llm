@@ -9,7 +9,7 @@ from pathlib import Path
 from diagnose_context import diagnose_context, main as diagnose_main
 from rag_core.config import load_config
 from rag_core.context import explain_context_packing
-from rag_core.embeddings import build_embedding_model, build_image_embedding_model
+from rag_core.embeddings import build_embedding_model, zero_image_vector
 from rag_core.io import read_jsonl
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
 from rag_core.text_utils import chunk_document
@@ -47,6 +47,7 @@ def test_decision_reasons() -> None:
         max_chars=70,
         max_chunks_per_doc=1,
         min_rerank_score=0.2,
+        text_unit_counter=len,
     )
     assert [hit.doc_id for hit in selected] == ["doc-a"]
     assert stats.dropped_by_doc_limit == 1
@@ -96,9 +97,8 @@ def run_pipeline_smoke() -> None:
         )
     ]
     text_model = build_embedding_model(config)
-    image_model = build_image_embedding_model(config)
     dense_vectors = text_model.encode([chunk.text for chunk in chunks])
-    zero_image = image_model.encode(["no image"])[0]
+    zero_image = zero_image_vector(config)
     upsert_entities(
         client,
         collection_name=config.collection_name,
@@ -120,7 +120,7 @@ def run_pipeline_smoke() -> None:
         acl_groups=["ops"],
         candidate_limit=5,
         context_limit=5,
-        max_context_chars=160,
+        max_context_chars=40,
         max_chunks_per_doc=1,
     )
     assert rows
@@ -138,7 +138,7 @@ def run_pipeline_smoke() -> None:
             "--acl-group",
             "ops",
             "--max-context-chars",
-            "160",
+            "40",
             "--json-output",
             str(output),
         ]

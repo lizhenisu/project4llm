@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""下载 BGE-M3 和 bge-reranker-v2-m3 模型（通过 ModelScope）。
+"""下载 BGE-M3、bge-reranker-v2-m3 和 CLIP 模型。
 
 首次使用需运行此脚本，需要 ~5 GB 磁盘空间。
-国内网络 ModelScope 速度优于 HuggingFace Hub。
+BGE/reranker 通过 ModelScope 下载；CLIP 使用 Hugging Face Hub。
 
 用法:
     python projects/08-industrial-rag/download_models.py
@@ -66,9 +66,22 @@ def _verify_reranker(path: Path) -> None:
     print(f"  scores={[f'{s:.3f}' for s in scores]} — 通过")
 
 
+def _verify_clip(model_name: str) -> None:
+    from transformers import CLIPModel, CLIPProcessor
+
+    print(f"  加载 CLIP 验证: {model_name}")
+    start = time.monotonic()
+    processor = CLIPProcessor.from_pretrained(model_name)
+    model = CLIPModel.from_pretrained(model_name)
+    elapsed = time.monotonic() - start
+    batch = processor(text=["RAG dashboard screenshot"], padding=True, return_tensors="pt")
+    features = model.get_text_features(**batch)
+    print(f"  dim={features.shape[-1]}, load_time={elapsed:.1f}s — 通过")
+
+
 def main() -> None:
     print("=" * 60)
-    print("下载 BGE 模型（ModelScope 源）")
+    print("下载 RAG 模型")
     print("=" * 60)
 
     # BGE-M3 embedding
@@ -78,6 +91,9 @@ def main() -> None:
     # bge-reranker-v2-m3
     rerank_path = _download("BAAI/bge-reranker-v2-m3", "bge-reranker-v2-m3")
     _verify_reranker(rerank_path)
+
+    # CLIP image/text embedding
+    _verify_clip("openai/clip-vit-base-patch32")
 
     print()
     print("=" * 60)

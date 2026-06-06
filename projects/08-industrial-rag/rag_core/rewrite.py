@@ -15,29 +15,16 @@ def rewrite_query(
     original = normalize_text(query)
     if backend == "none":
         return RewriteResult(original, original, backend)
-    if backend == "heuristic":
-        return RewriteResult(original, heuristic_rewrite(original, history or []), backend)
     if backend == "llm":
         return RewriteResult(original, llm_rewrite(original, history or [], config), backend)
     raise ValueError(
-        f"Unsupported RAG_QUERY_REWRITE_BACKEND={backend!r}; use none/heuristic/llm"
+        f"Unsupported RAG_QUERY_REWRITE_BACKEND={backend!r}; use none/llm"
     )
-
-
-def heuristic_rewrite(query: str, history: list[str]) -> str:
-    if not history:
-        return query
-    if len(query) >= 12:
-        return query
-    recent = " ".join(normalize_text(item) for item in history[-2:] if item.strip())
-    if not recent:
-        return query
-    return f"{recent} {query}".strip()
 
 
 def llm_rewrite(query: str, history: list[str], config: RagConfig) -> str:
     if not config.llm_base_url or not config.llm_api_key:
-        return heuristic_rewrite(query, history)
+        raise RuntimeError("NEW_API_URL/NEW_API_KEY must be configured for llm query rewrite.")
 
     from openai import OpenAI
 
@@ -62,4 +49,3 @@ def llm_rewrite(query: str, history: list[str], config: RagConfig) -> str:
     )
     rewritten = response.choices[0].message.content or query
     return normalize_text(rewritten)
-

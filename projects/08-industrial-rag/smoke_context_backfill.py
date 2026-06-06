@@ -12,7 +12,7 @@ from search_multimodal import retrieve_multimodal
 
 
 class FakeEmbeddingModel:
-    model_name = "hash:smoke"
+    model_name = "BAAI/bge-m3"
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         return [[0.0, 1.0] for _ in texts]
@@ -72,7 +72,6 @@ def test_text_pipeline_backfills_after_doc_limit() -> None:
         patch("rag_core.pipeline.mentions_other_tenant", return_value=False),
         patch("rag_core.pipeline.load_current_versions", return_value={}),
         patch("rag_core.pipeline.build_filter_expr", return_value='tenant_id == "team_a"'),
-        patch("rag_core.pipeline.sparse_embedding", return_value={}),
         patch("rag_core.pipeline.hybrid_search", return_value=candidates),
         patch("rag_core.pipeline.build_reranker", return_value=FakeReranker()),
     ):
@@ -110,7 +109,6 @@ def test_multimodal_pipeline_backfills_after_doc_limit() -> None:
         patch("search_multimodal.mentions_other_tenant", return_value=False),
         patch("search_multimodal.load_current_versions", return_value={}),
         patch("search_multimodal.build_filter_expr", return_value='tenant_id == "team_a"'),
-        patch("search_multimodal.sparse_embedding", return_value={}),
         patch("search_multimodal.hybrid_search", return_value=candidates),
         patch("search_multimodal.image_search", return_value=candidates),
         patch("search_multimodal.reciprocal_rank_fusion", return_value=candidates),

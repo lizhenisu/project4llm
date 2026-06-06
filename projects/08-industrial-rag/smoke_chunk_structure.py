@@ -51,6 +51,30 @@ def build_filter(tenant_id):
 
     assert all("标题路径: Chunk Structure" in text for text in texts)
     assert all("来源: md" in text for text in texts)
+
+    long_code_doc = SourceDocument(
+        tenant_id="team_a",
+        doc_id="chunk-long-code",
+        doc_version=1,
+        source_type="md",
+        source_uri="memory://chunk-long-code",
+        title="Long Code",
+        text="""
+```python
+def search(query: str) -> list[str]:
+    if query:
+        return ["ok"]
+```
+""",
+        acl_groups=["ops"],
+    )
+    long_code_chunks = chunk_document(long_code_doc, chunk_size=4, overlap=1)
+    long_code_text = "\n".join(chunk.text for chunk in long_code_chunks)
+    assert "```python" in long_code_text
+    assert "search(query:" in long_code_text
+    assert "str) -> list[str]:" in long_code_text
+    assert 'return ["ok"]' in long_code_text
+
     print("smoke_chunk_structure=ok")
 
 

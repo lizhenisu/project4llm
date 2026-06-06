@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from eval_retrieval import evaluate_retrieval
 from rag_core.config import DATA_DIR, load_config
-from rag_core.embeddings import build_embedding_model, build_image_embedding_model
+from rag_core.embeddings import build_embedding_model, zero_image_vector
 from rag_core.io import load_source_documents, write_jsonl
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
 from rag_core.text_utils import chunk_document, tokenize
@@ -138,9 +138,8 @@ def run_one_spec(
         )
     ]
     text_model = build_embedding_model(config)
-    image_model = build_image_embedding_model(config)
     dense_vectors = text_model.encode([chunk.text for chunk in chunks])
-    zero_image = image_model.encode(["no image"])[0]
+    zero_image = zero_image_vector(config)
     upserted = upsert_entities(
         client,
         collection_name=config.collection_name,

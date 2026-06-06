@@ -12,7 +12,6 @@ from rag_core.milvus_store import build_filter_expr, connect, ensure_collection,
 from rag_core.versioning import load_current_versions
 from rag_core.rerankers import build_reranker
 from rag_core.rewrite import rewrite_query
-from rag_core.text_utils import sparse_embedding
 from rag_core.types import SearchHit, TraceInfo
 
 
@@ -95,7 +94,7 @@ def retrieve_and_rerank(
         client,
         collection_name=config.collection_name,
         query_vector=query_vector,
-        query_sparse=sparse_embedding(rewrite.rewritten_query),
+        query_text=rewrite.rewritten_query,
         filter_expr=filter_expr,
         limit=candidate_limit,
     )
@@ -114,6 +113,7 @@ def retrieve_and_rerank(
         max_chars=config.max_context_chars,
         max_chunks_per_doc=config.max_chunks_per_doc,
         min_rerank_score=config.min_rerank_score,
+        text_unit_counter=getattr(embedding_model, "count_tokens", None),
     )
     packing_ms = elapsed_ms(packing_start)
     trace = TraceInfo(

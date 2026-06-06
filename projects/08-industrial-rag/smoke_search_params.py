@@ -40,9 +40,9 @@ class CapturingClient:
                         "created_at": 0,
                         "updated_at": 0,
                         "is_active": True,
-                        "embedding_model": "hash",
+                        "embedding_model": "BAAI/bge-m3",
                         "embedding_dim": 4,
-                        "content_hash": "hash",
+                        "content_hash": "content-hash",
                         "metadata": {},
                     },
                 }
@@ -89,7 +89,7 @@ def run_smoke() -> None:
         "params": {"ef": 96},
     }
     assert sparse_search_params(config) == {
-        "metric_type": "IP",
+        "metric_type": "BM25",
         "params": {"drop_ratio_search": 0.05},
     }
     assert image_search_params(config) == {
@@ -109,7 +109,7 @@ def run_smoke() -> None:
     sparse_search(
         client,  # type: ignore[arg-type]
         collection_name="collection",
-        query_sparse={1: 1.0},
+        query_text="search params",
         filter_expr='tenant_id == "team_a"',
         limit=3,
     )

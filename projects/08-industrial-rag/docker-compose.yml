@@ -49,14 +49,14 @@ services:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
       RAG_OBJECT_STORE_DIR: /app/projects/08-industrial-rag/object_store
-      RAG_EMBEDDING_BACKEND: hash
-      RAG_RERANK_BACKEND: lexical
-      RAG_IMAGE_EMBEDDING_BACKEND: hash
+      RAG_EMBEDDING_BACKEND: bge
+      RAG_RERANK_BACKEND: bge
+      RAG_IMAGE_EMBEDDING_BACKEND: clip
       EMBEDDING_DIM: "1024"
-      IMAGE_EMBEDDING_DIM: "1024"
+      IMAGE_EMBEDDING_DIM: "512"
       RAG_RUNTIME_DIR: /app/projects/08-industrial-rag/runtime
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      NEW_API_URL: ${NEW_API_URL:-}
+      NEW_API_KEY: ${NEW_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-gemini-3-flash-preview}
     ports:
       - "8008:8008"
@@ -83,11 +83,11 @@ services:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
       RAG_OBJECT_STORE_DIR: /app/projects/08-industrial-rag/object_store
-      RAG_EMBEDDING_BACKEND: hash
-      RAG_RERANK_BACKEND: lexical
-      RAG_IMAGE_EMBEDDING_BACKEND: hash
+      RAG_EMBEDDING_BACKEND: bge
+      RAG_RERANK_BACKEND: bge
+      RAG_IMAGE_EMBEDDING_BACKEND: clip
       EMBEDDING_DIM: "1024"
-      IMAGE_EMBEDDING_DIM: "1024"
+      IMAGE_EMBEDDING_DIM: "512"
     volumes:
       - ./object_store:/app/projects/08-industrial-rag/object_store
     depends_on:

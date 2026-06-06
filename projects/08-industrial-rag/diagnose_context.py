@@ -6,6 +6,7 @@ from pathlib import Path
 
 from rag_core.config import load_config
 from rag_core.context import explain_context_packing
+from rag_core.embeddings import build_embedding_model
 from rag_core.io import write_jsonl
 from rag_core.pipeline import retrieve_and_rerank
 
@@ -69,6 +70,7 @@ def diagnose_context(
     min_rerank_score: float | None = None,
 ) -> list[dict[str, object]]:
     config = load_config()
+    embedding_model = build_embedding_model(config)
     retrieval = retrieve_and_rerank(
         query,
         tenant_id=tenant_id,
@@ -86,6 +88,7 @@ def diagnose_context(
         min_rerank_score=(
             config.min_rerank_score if min_rerank_score is None else min_rerank_score
         ),
+        text_unit_counter=embedding_model.count_tokens,
     )
     rows: list[dict[str, object]] = []
     for rank, decision in enumerate(decisions, start=1):
@@ -104,7 +107,7 @@ def print_decisions(rows: list[dict[str, object]]) -> None:
         print(
             f"rank={row['rerank_rank']} decision={row['decision']} "
             f"reason={row['reason']} doc={row['doc_id']} chunk={row['chunk_index']} "
-            f"rerank={row['rerank_score']} chars={row['text_chars']} "
+            f"rerank={row['rerank_score']} text_units={row['text_chars']} "
             f"used_before={row['used_chars_before']}"
         )
 

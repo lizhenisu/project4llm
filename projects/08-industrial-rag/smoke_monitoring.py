@@ -73,7 +73,7 @@ def main() -> None:
                 ],
                 "llm": {
                     "llm_model": "test-model",
-                    "llm_backend": "local_fallback",
+                    "llm_backend": "newapi",
                     "latency_ms": 5.0,
                     "token_usage": {},
                 },

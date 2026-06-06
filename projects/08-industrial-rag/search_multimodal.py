@@ -20,7 +20,6 @@ from rag_core.milvus_store import (
 from rag_core.multimodal import reciprocal_rank_fusion
 from rag_core.pipeline import elapsed_ms
 from rag_core.rewrite import rewrite_query
-from rag_core.text_utils import sparse_embedding
 from rag_core.types import SearchHit, TraceInfo
 from rag_core.versioning import load_current_versions
 
@@ -107,9 +106,6 @@ def retrieve_multimodal(
         embedding_model=text_model.model_name,
         source_types=resolved_source_types,
     )
-    sparse_start = perf_counter()
-    query_sparse = sparse_embedding(rewritten_query)
-    sparse_ms = elapsed_ms(sparse_start)
     text_embedding_start = perf_counter()
     text_query_vector = text_model.encode([rewritten_query])[0]
     text_embedding_ms = elapsed_ms(text_embedding_start)
@@ -118,7 +114,7 @@ def retrieve_multimodal(
         client,
         collection_name=config.collection_name,
         query_vector=text_query_vector,
-        query_sparse=query_sparse,
+        query_text=rewritten_query,
         filter_expr=filter_expr,
         limit=max(candidate_limit, 10),
     )
@@ -155,6 +151,7 @@ def retrieve_multimodal(
         max_chars=config.max_context_chars,
         max_chunks_per_doc=config.max_chunks_per_doc,
         min_rerank_score=config.min_rerank_score,
+        text_unit_counter=getattr(text_model, "count_tokens", None),
     )
     packing_ms = elapsed_ms(packing_start)
     trace = TraceInfo(
@@ -178,7 +175,6 @@ def retrieve_multimodal(
         dropped_by_budget=packing_stats.dropped_by_budget,
         stage_latency_ms={
             "rewrite": rewrite_ms,
-            "sparse_query": sparse_ms,
             "text_embedding": text_embedding_ms,
             "text_search": text_search_ms,
             "image_embedding": image_embedding_ms,

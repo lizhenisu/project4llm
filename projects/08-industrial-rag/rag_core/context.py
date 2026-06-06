@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 
+from rag_core.text_utils import tokenize
 from rag_core.types import PackingStats, SearchHit
 
 
@@ -18,6 +20,10 @@ class PackingDecision:
     reason: str
 
 
+def default_text_units(text: str) -> int:
+    return len(tokenize(text))
+
+
 def pack_context(
     hits: list[SearchHit],
     *,
@@ -25,6 +31,7 @@ def pack_context(
     max_chars: int,
     max_chunks_per_doc: int,
     min_rerank_score: float | None,
+    text_unit_counter: Callable[[str], int] | None = None,
 ) -> tuple[list[SearchHit], PackingStats]:
     selected, stats, _ = explain_context_packing(
         hits,
@@ -32,6 +39,7 @@ def pack_context(
         max_chars=max_chars,
         max_chunks_per_doc=max_chunks_per_doc,
         min_rerank_score=min_rerank_score,
+        text_unit_counter=text_unit_counter,
     )
     return selected, stats
 
@@ -43,6 +51,7 @@ def explain_context_packing(
     max_chars: int,
     max_chunks_per_doc: int,
     min_rerank_score: float | None,
+    text_unit_counter: Callable[[str], int] | None = None,
 ) -> tuple[list[SearchHit], PackingStats, list[PackingDecision]]:
     selected: list[SearchHit] = []
     per_doc: Counter[str] = Counter()
@@ -51,9 +60,10 @@ def explain_context_packing(
     dropped_by_doc_limit = 0
     dropped_by_budget = 0
     decisions: list[PackingDecision] = []
+    count_text_units = text_unit_counter or default_text_units
 
     for hit in hits:
-        text_len = len(hit.text)
+        text_len = count_text_units(hit.text)
         if (
             min_rerank_score is not None
             and hit.rerank_score is not None

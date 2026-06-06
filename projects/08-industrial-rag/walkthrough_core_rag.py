@@ -13,7 +13,7 @@ from eval_answer import evaluate_answers
 from eval_retrieval import evaluate_retrieval
 from rag_core.answering import build_prompt, generate_answer
 from rag_core.config import DATA_DIR, load_config
-from rag_core.embeddings import build_embedding_model, build_image_embedding_model
+from rag_core.embeddings import build_embedding_model, zero_image_vector
 from rag_core.io import load_source_documents
 from rag_core.milvus_store import (
     build_filter_expr,
@@ -30,7 +30,7 @@ from rag_core.pii import apply_pii_policy
 from rag_core.context import explain_context_packing
 from rag_core.rerankers import build_reranker
 from rag_core.rewrite import rewrite_query
-from rag_core.text_utils import chunk_document, sparse_embedding, tokenize
+from rag_core.text_utils import chunk_document, tokenize
 from rag_core.types import SearchHit, SourceDocument
 from rag_core.versioning import load_current_versions, publish_current_versions
 
@@ -85,8 +85,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--rewrite-backend",
-        choices=["none", "heuristic", "llm"],
-        default="none",
+        choices=["none", "llm"],
+        default="llm",
         help="Query rewrite backend to demonstrate.",
     )
     parser.add_argument("--candidate-limit", type=int, default=5)
@@ -142,9 +142,8 @@ def run_walkthrough(args: argparse.Namespace) -> None:
 
         print_section("3. Ingest")
         embedding_model = build_embedding_model(config)
-        image_embedding_model = build_image_embedding_model(config)
         dense_vectors = embedding_model.encode([chunk.text for chunk in chunks])
-        zero_image = image_embedding_model.encode(["no image"])[0]
+        zero_image = zero_image_vector(config)
         entities = [
             chunk_to_entity(
                 chunk,
@@ -176,13 +175,12 @@ def run_walkthrough(args: argparse.Namespace) -> None:
             current_doc_versions=current_versions,
             embedding_model=embedding_model.model_name,
         )
-        query_sparse = sparse_embedding(rewrite.rewritten_query)
         query_vector = embedding_model.encode([rewrite.rewritten_query])[0]
         print(f"original_query={rewrite.original_query}")
         print(f"rewritten_query={rewrite.rewritten_query}")
         print(f"rewrite_backend={rewrite.backend}")
         print(f"query_tokens={tokenize(rewrite.rewritten_query)}")
-        print(f"sparse_nonzero_buckets={len(query_sparse)}")
+        print("sparse_backend=milvus_bm25_function")
         print(f"filter_expr={filter_expr}")
 
         dense_hits = dense_search(
@@ -195,7 +193,7 @@ def run_walkthrough(args: argparse.Namespace) -> None:
         sparse_hits = sparse_search(
             client,
             collection_name=config.collection_name,
-            query_sparse=query_sparse,
+            query_text=rewrite.rewritten_query,
             filter_expr=filter_expr,
             limit=args.candidate_limit,
         )
@@ -203,7 +201,7 @@ def run_walkthrough(args: argparse.Namespace) -> None:
             client,
             collection_name=config.collection_name,
             query_vector=query_vector,
-            query_sparse=query_sparse,
+            query_text=rewrite.rewritten_query,
             filter_expr=filter_expr,
             limit=args.candidate_limit,
         )
@@ -224,6 +222,7 @@ def run_walkthrough(args: argparse.Namespace) -> None:
             max_chars=config.max_context_chars,
             max_chunks_per_doc=config.max_chunks_per_doc,
             min_rerank_score=config.min_rerank_score,
+            text_unit_counter=embedding_model.count_tokens,
         )
         print_hits("reranked_hits", reranked, include_rerank=True)
         print(
@@ -238,7 +237,8 @@ def run_walkthrough(args: argparse.Namespace) -> None:
                 "packing_decision "
                 f"doc={decision.doc_id} chunk={decision.chunk_index} "
                 f"decision={decision.decision} reason={decision.reason} "
-                f"rerank={format_optional(decision.rerank_score)}"
+                f"rerank={format_optional(decision.rerank_score)} "
+                f"text_units={decision.text_chars} used_before={decision.used_chars_before}"
             )
 
         print_section("6. Prompt -> Answer")
@@ -315,7 +315,7 @@ def print_doc_summary(docs: list[SourceDocument]) -> None:
     for doc in docs:
         print(
             f"doc_id={doc.doc_id} tenant={doc.tenant_id} "
-            f"acl={','.join(doc.acl_groups)} tokens={len(tokenize(doc.text))} "
+            f"acl={','.join(doc.acl_groups)} teaching_tokens={len(tokenize(doc.text))} "
             f"title={doc.title}"
         )
 
@@ -327,7 +327,7 @@ def print_chunk_summary(chunks) -> None:
         preview = chunk.text[:180].replace("\n", " ")
         print(
             f"chunk doc={chunk.doc_id} idx={chunk.chunk_index} "
-            f"chars={len(chunk.text)} preview={preview}"
+            f"chars={len(chunk.text)} teaching_tokens={len(tokenize(chunk.text))} preview={preview}"
         )
 
 

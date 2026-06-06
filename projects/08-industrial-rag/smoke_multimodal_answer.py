@@ -105,7 +105,7 @@ def run_smoke() -> None:
     assert result.hits[0].doc_id == "dashboard-screenshot"
     assert result.trace.retrieval_mode == "multimodal_text_image_fusion"
     assert result.trace.current_versions == {"dashboard-screenshot": 1}
-    assert result.generation.llm_backend == "local_fallback"
+    assert result.generation.llm_backend == "newapi"
     assert "[1]" in result.answer
     assert "RAG Dashboard" in result.answer
     print("smoke_multimodal_answer=ok")

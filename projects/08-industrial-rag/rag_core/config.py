@@ -11,6 +11,33 @@ RUNTIME_DIR = PROJECT_DIR / "runtime"
 OBJECT_STORE_DIR = PROJECT_DIR / "object_store"
 DEFAULT_MILVUS_DB = PROJECT_DIR / "industrial_rag_demo.db"
 MODELSCOPE_CACHE = Path.home() / ".cache" / "modelscope" / "hub" / "models" / "BAAI"
+_ENV_LOADED = False
+
+
+def load_dotenv_if_present() -> None:
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+    for path in (PROJECT_DIR.parents[1] / ".env", PROJECT_DIR / ".env"):
+        if not path.exists():
+            continue
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, value = line.split("=", 1)
+            os.environ.setdefault(name.strip(), value.strip().strip('"').strip("'"))
+    _ENV_LOADED = True
+
+
+def _newapi_base_url() -> str | None:
+    value = os.environ.get("NEW_API_URL")
+    if not value:
+        return None
+    base_url = value.rstrip("/")
+    if not base_url.endswith("/v1"):
+        base_url = f"{base_url}/v1"
+    return base_url
 
 
 def _resolve_model_path(model_id: str, *, ms_subdir: str) -> str:
@@ -98,8 +125,9 @@ class RagConfig:
 
 
 def load_config() -> RagConfig:
+    load_dotenv_if_present()
     embedding_backend = os.environ.get("RAG_EMBEDDING_BACKEND", "bge").lower()
-    image_backend = os.environ.get("RAG_IMAGE_EMBEDDING_BACKEND", "hash").lower()
+    image_backend = os.environ.get("RAG_IMAGE_EMBEDDING_BACKEND", "clip").lower()
     milvus_uri = (
         os.environ.get("RAG_MILVUS_URI")
         or os.environ.get("MILVUS_URI")
@@ -124,12 +152,12 @@ def load_config() -> RagConfig:
             "IMAGE_EMBEDDING_MODEL",
             "openai/clip-vit-base-patch32",
         ),
-        image_embedding_dim=_env_int("IMAGE_EMBEDDING_DIM", _env_int("EMBEDDING_DIM", 1024)),
+        image_embedding_dim=_env_int("IMAGE_EMBEDDING_DIM", 512),
         image_embedding_batch_size=_env_int("RAG_IMAGE_EMBED_BATCH_SIZE", 8),
         model_device=os.environ.get("RAG_MODEL_DEVICE", "auto").lower(),
         model_dtype=os.environ.get("RAG_MODEL_DTYPE", "auto").lower(),
-        llm_base_url=os.environ.get("NEW_API_KEY") or None,
-        llm_api_key=os.environ.get("NEW_API_URL") or None,
+        llm_base_url=_newapi_base_url(),
+        llm_api_key=os.environ.get("NEW_API_KEY") or None,
         llm_model=os.environ.get("LLM_MODEL", "gemini-3-flash-preview"),
         chunk_size=_env_int("RAG_CHUNK_SIZE", 700),
         chunk_overlap=_env_int("RAG_CHUNK_OVERLAP", 100),
@@ -142,7 +170,7 @@ def load_config() -> RagConfig:
         max_context_chars=_env_int("RAG_MAX_CONTEXT_CHARS", 6000),
         max_chunks_per_doc=_env_int("RAG_MAX_CHUNKS_PER_DOC", 2),
         min_rerank_score=_env_float_or_none("RAG_MIN_RERANK_SCORE"),
-        query_rewrite_backend=os.environ.get("RAG_QUERY_REWRITE_BACKEND", "none").lower(),
+        query_rewrite_backend=os.environ.get("RAG_QUERY_REWRITE_BACKEND", "llm").lower(),
         require_auth_context=_env_bool("RAG_REQUIRE_AUTH_CONTEXT", False),
         api_token=os.environ.get("RAG_API_TOKEN") or None,
         dense_hnsw_m=_env_int("RAG_DENSE_HNSW_M", 16),

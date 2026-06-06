@@ -16,7 +16,7 @@ FIELD_EXPLANATIONS = [
     ("text", "原始检索文本字段，启用 analyzer 供 BM25/sparse 检索。"),
     ("acl_groups", "检索阶段直接做 ACL 过滤，而不是召回后再删。"),
     ("text_dense_vector", "dense 语义召回向量。"),
-    ("bm25_sparse_vector", "sparse/BM25-like 关键词召回向量。"),
+    ("bm25_sparse_vector", "由 Milvus BM25 function 从 text 自动生成的关键词召回向量。"),
     ("image_dense_vector", "多模态扩展字段，为 image search 预留。"),
     ("metadata", "页码、heading_path、bbox、row_range 等结构化定位信息。"),
 ]
@@ -48,7 +48,7 @@ def main() -> None:
             f"(M={config.dense_hnsw_m}, efConstruction={config.dense_hnsw_ef_construction})"
         )
         print(
-            "- bm25_sparse_vector -> SPARSE_INVERTED_INDEX/IP "
+            "- bm25_sparse_vector -> SPARSE_INVERTED_INDEX/BM25 "
             f"(drop_ratio_build={config.sparse_drop_ratio_build})"
         )
         print(

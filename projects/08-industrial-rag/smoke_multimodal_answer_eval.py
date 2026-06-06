@@ -22,7 +22,7 @@ def main() -> None:
         os.environ["MILVUS_URI"] = str(Path(tmp) / "multimodal_answer_eval.db")
         os.environ["RAG_COLLECTION"] = "rag_smoke_multimodal_answer_eval"
         os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(tmp) / "object_store")
-        os.environ["RAG_QUERY_REWRITE_BACKEND"] = "heuristic"
+        os.environ["RAG_QUERY_REWRITE_BACKEND"] = "llm"
         try:
             run_smoke(Path(tmp))
         finally:

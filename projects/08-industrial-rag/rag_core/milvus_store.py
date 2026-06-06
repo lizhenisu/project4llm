@@ -3,10 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from pymilvus import AnnSearchRequest, DataType, MilvusClient, RRFRanker
+from pymilvus import AnnSearchRequest, DataType, Function, FunctionType, MilvusClient, RRFRanker
 
 from rag_core.config import RagConfig, load_config
-from rag_core.text_utils import chunk_id, content_hash, now_ms, sparse_embedding
+from rag_core.text_utils import chunk_id, content_hash, now_ms
 from rag_core.types import Chunk, SearchHit
 
 
@@ -67,6 +67,14 @@ def create_schema(config: RagConfig):
     schema.add_field("bm25_sparse_vector", DataType.SPARSE_FLOAT_VECTOR)
     schema.add_field("image_dense_vector", DataType.FLOAT_VECTOR, dim=config.image_embedding_dim)
     schema.add_field("metadata", DataType.JSON)
+    schema.add_function(
+        Function(
+            name="text_bm25_function",
+            function_type=FunctionType.BM25,
+            input_field_names=["text"],
+            output_field_names=["bm25_sparse_vector"],
+        )
+    )
     return schema
 
 
@@ -86,7 +94,7 @@ def create_index_params(config: RagConfig) -> Any:
         field_name="bm25_sparse_vector",
         index_name="bm25_sparse_inverted",
         index_type="SPARSE_INVERTED_INDEX",
-        metric_type="IP",
+        metric_type="BM25",
         params={"drop_ratio_build": config.sparse_drop_ratio_build},
     )
     index_params.add_index(
@@ -122,7 +130,7 @@ def dense_search_params(config: RagConfig) -> dict[str, Any]:
 
 def sparse_search_params(config: RagConfig) -> dict[str, Any]:
     return {
-        "metric_type": "IP",
+        "metric_type": "BM25",
         "params": {"drop_ratio_search": config.sparse_drop_ratio_search},
     }
 
@@ -191,7 +199,6 @@ def chunk_to_entity(
         "embedding_dim": embedding_dim,
         "content_hash": content_hash(chunk.text),
         "text_dense_vector": dense_vector,
-        "bm25_sparse_vector": sparse_embedding(chunk.text),
         "image_dense_vector": image_vector,
         "metadata": chunk.metadata,
     }
@@ -251,14 +258,14 @@ def sparse_search(
     client: MilvusClient,
     *,
     collection_name: str,
-    query_sparse: dict[int, float],
+    query_text: str,
     filter_expr: str,
     limit: int,
 ) -> list[SearchHit]:
     config = load_config()
     result = client.search(
         collection_name=collection_name,
-        data=[query_sparse],
+        data=[query_text],
         anns_field="bm25_sparse_vector",
         filter=filter_expr,
         limit=limit,
@@ -273,7 +280,7 @@ def hybrid_search(
     *,
     collection_name: str,
     query_vector: list[float],
-    query_sparse: dict[int, float],
+    query_text: str,
     filter_expr: str,
     limit: int,
 ) -> list[SearchHit]:
@@ -286,7 +293,7 @@ def hybrid_search(
         expr=filter_expr,
     )
     sparse_req = AnnSearchRequest(
-        data=[query_sparse],
+        data=[query_text],
         anns_field="bm25_sparse_vector",
         param=sparse_search_params(config),
         limit=max(limit, 20),

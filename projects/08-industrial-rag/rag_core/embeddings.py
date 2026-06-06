@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Protocol
 
 from rag_core.config import RagConfig, _resolve_model_path
-from rag_core.text_utils import hash_dense_embedding
 
 
 class EmbeddingModel(Protocol):
@@ -16,29 +15,15 @@ class EmbeddingModel(Protocol):
 
     def encode(self, texts: list[str]) -> list[list[float]]: ...
 
+    def count_tokens(self, text: str) -> int: ...
+
 
 class ImageEmbeddingModel(EmbeddingModel, Protocol):
     def encode_images(self, image_paths: list[Path]) -> list[list[float]]: ...
 
 
-class HashEmbeddingModel:
-    def __init__(self, dim: int, model_name: str = "hash-teaching-backend") -> None:
-        self._dim = dim
-        self._model_name = model_name
-
-    @property
-    def dim(self) -> int:
-        return self._dim
-
-    @property
-    def model_name(self) -> str:
-        return self._model_name
-
-    def encode(self, texts: list[str]) -> list[list[float]]:
-        return [hash_dense_embedding(text, self._dim) for text in texts]
-
-    def encode_images(self, image_paths: list[Path]) -> list[list[float]]:
-        return self.encode([str(path) for path in image_paths])
+def zero_image_vector(config: RagConfig) -> list[float]:
+    return [0.0] * config.image_embedding_dim
 
 
 class TransformersBGEEmbeddingModel:
@@ -88,11 +73,11 @@ class TransformersBGEEmbeddingModel:
         with self._torch.no_grad():
             for start in range(0, len(texts), self._batch_size):
                 batch_texts = texts[start : start + self._batch_size]
+                self._raise_if_truncated(batch_texts, offset=start)
                 batch = self._tokenizer(
                     batch_texts,
                     padding=True,
-                    truncation=True,
-                    max_length=self._max_length,
+                    truncation=False,
                     return_tensors="pt",
                 )
                 batch = {key: value.to(self._device) for key, value in batch.items()}
@@ -110,6 +95,33 @@ class TransformersBGEEmbeddingModel:
                     "Set EMBEDDING_DIM to match the model."
                 )
         return vectors
+
+    def count_tokens(self, text: str) -> int:
+        encoded = self._tokenizer(
+            text,
+            add_special_tokens=True,
+            truncation=False,
+            return_attention_mask=False,
+        )
+        return len(encoded["input_ids"])
+
+    def _raise_if_truncated(self, texts: list[str], *, offset: int) -> None:
+        encoded = self._tokenizer(
+            texts,
+            add_special_tokens=True,
+            padding=False,
+            truncation=False,
+            return_attention_mask=False,
+        )
+        for index, input_ids in enumerate(encoded["input_ids"]):
+            if len(input_ids) > self._max_length:
+                preview = texts[index][:120].replace("\n", " ")
+                raise ValueError(
+                    "Embedding input exceeds RAG_EMBED_MAX_LENGTH: "
+                    f"batch_index={offset + index} tokens={len(input_ids)} "
+                    f"max_length={self._max_length}. Re-chunk the document instead "
+                    f"of relying on tokenizer truncation. preview={preview!r}"
+                )
 
 
 class TransformersCLIPImageEmbeddingModel:
@@ -187,6 +199,15 @@ class TransformersCLIPImageEmbeddingModel:
         self._check_dims(vectors)
         return vectors
 
+    def count_tokens(self, text: str) -> int:
+        inputs = self._processor.tokenizer(
+            text,
+            add_special_tokens=True,
+            truncation=False,
+            return_attention_mask=False,
+        )
+        return len(inputs["input_ids"])
+
     def _check_dims(self, vectors: list[list[float]]) -> None:
         for vector in vectors:
             if len(vector) != self._dim:
@@ -208,20 +229,13 @@ def build_embedding_model(config: RagConfig) -> EmbeddingModel:
             device=config.model_device,
             dtype=config.model_dtype,
         )
-    if config.embedding_backend == "hash":
-        return HashEmbeddingModel(
-            dim=config.embedding_dim,
-            model_name=f"hash:{config.embedding_model}",
-        )
-    raise ValueError(f"Unsupported RAG_EMBEDDING_BACKEND={config.embedding_backend!r}")
+    raise ValueError(
+        "Unsupported RAG_EMBEDDING_BACKEND="
+        f"{config.embedding_backend!r}. Use 'bge'."
+    )
 
 
 def build_image_embedding_model(config: RagConfig) -> ImageEmbeddingModel:
-    if config.image_embedding_backend == "hash":
-        return HashEmbeddingModel(
-            dim=config.image_embedding_dim,
-            model_name="hash:image-teaching-backend",
-        )
     if config.image_embedding_backend == "clip":
         return TransformersCLIPImageEmbeddingModel(
             model_name=config.image_embedding_model,
@@ -232,7 +246,7 @@ def build_image_embedding_model(config: RagConfig) -> ImageEmbeddingModel:
         )
     raise ValueError(
         "Unsupported RAG_IMAGE_EMBEDDING_BACKEND="
-        f"{config.image_embedding_backend!r}. Use 'hash' or 'clip'."
+        f"{config.image_embedding_backend!r}. Use 'clip'."
     )
 
 

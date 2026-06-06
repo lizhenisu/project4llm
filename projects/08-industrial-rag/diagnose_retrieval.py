@@ -17,7 +17,7 @@ from rag_core.milvus_store import (
     sparse_search,
 )
 from rag_core.rerankers import build_reranker
-from rag_core.text_utils import lexical_overlap_score, sparse_embedding
+from rag_core.text_utils import lexical_overlap_score
 from rag_core.types import SearchHit
 
 
@@ -93,7 +93,6 @@ def diagnose_retrieval(
     ensure_collection(client, config, reset=False)
     embedding_model = build_embedding_model(config)
     query_vector = embedding_model.encode([query])[0]
-    query_sparse = sparse_embedding(query)
     filter_expr = build_filter_expr(
         tenant_id=tenant_id,
         allowed_acl_groups=acl_groups,
@@ -111,7 +110,7 @@ def diagnose_retrieval(
     sparse_hits = sparse_search(
         client,
         collection_name=config.collection_name,
-        query_sparse=query_sparse,
+        query_text=query,
         filter_expr=filter_expr,
         limit=candidate_limit,
     )
@@ -119,7 +118,7 @@ def diagnose_retrieval(
         client,
         collection_name=config.collection_name,
         query_vector=query_vector,
-        query_sparse=query_sparse,
+        query_text=query,
         filter_expr=filter_expr,
         limit=candidate_limit,
     )

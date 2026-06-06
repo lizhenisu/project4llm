@@ -52,7 +52,7 @@ python projects/08-industrial-rag/eval_answer.py
 
 - `V1`：已完成，可教学，也具备上线所需主链路。
 - `V2`：主链路已完成，已经有 `search_multimodal.py`、`answer_multimodal.py`、`eval_* --mode multimodal` 和 API/monitoring/release gate 接入。
-- `V2` 尚未专门落地的项：BGE visualized / VISTA 这类专用视觉 embedding backend；当前 `image_dense_vector` 走的是 `clip`/`hash` backend。
+- `V2` 尚未专门落地的项：BGE visualized / VISTA 这类专用视觉 embedding backend；当前 `image_dense_vector` 走的是 CLIP backend。
 
 ## 0. 当前实现状态
 
@@ -70,18 +70,18 @@ python projects/08-industrial-rag/eval_answer.py
 | `delete_document.py` | 按 `tenant_id/doc_id/doc_version` 删除文档 chunk |
 | `list_documents.py` | 按租户查看已发布文档版本、chunk 数和 ACL |
 | `collection_stats.py` | 输出 collection 行数、文档数、租户数和 source 类型分布 |
-| `walkthrough_core_rag.py` | 用临时 Milvus Lite 串起 schema、chunk、dense/sparse/hybrid、rerank、prompt、answer、eval 的教学 walkthrough |
+| `walkthrough_core_rag.py` | 用临时 Milvus Lite 串起 schema、chunk、dense/BM25/hybrid、rerank、prompt、answer、eval 的教学 walkthrough |
 | `walkthrough_multimodal_rag.py` | 用临时 Milvus Lite 串起 OCR/caption、image vector、multimodal retrieval、answer、eval 的教学 walkthrough |
 | `search_dense.py` | metadata filter + dense search |
-| `search_sparse.py` | metadata filter + sparse/BM25-like search，便于关键词召回 ablation |
-| `search_hybrid.py` | Milvus hybrid search，融合 dense 和 sparse/BM25-like 向量 |
+| `search_sparse.py` | metadata filter + Milvus BM25 search，便于关键词召回 ablation |
+| `search_hybrid.py` | Milvus hybrid search，融合 dense 向量和 Milvus BM25 |
 | `search_image.py` | 使用 `image_dense_vector` 做图片向量检索 |
 | `search_multimodal.py` | 融合 OCR/caption 文本 hybrid 检索和 `image_dense_vector` 图片检索 |
 | `rerank.py` | 对 hybrid 候选做二阶段 rerank |
 | `diagnose_retrieval.py` | 展开 dense/sparse/hybrid/rerank 的候选 rank 和 score，排查召回与 rerank 问题 |
 | `diagnose_context.py` | 展开 context packing 的逐候选选择/丢弃原因，排查 prompt 证据构造 |
 | `sweep_chunking.py` | 用临时 collection 对多组 chunk_size/overlap 做检索指标和延迟 sweep |
-| `answer.py` | 检索、rerank、组 prompt，并通过 OpenAI-compatible API 生成答案 |
+| `answer.py` | 检索、rerank、组 prompt，并通过 NewAPI 生成答案 |
 | `answer_multimodal.py` | 多模态检索、context packing、图片 OCR/caption prompt 和答案生成 |
 | `eval_retrieval.py` | 输出 recall、MRR、nDCG、latency 和权限泄露检查 |
 | `eval_answer.py` | 输出 citation accuracy、evidence hit rate、refusal quality |
@@ -133,7 +133,7 @@ python projects/08-industrial-rag/eval_answer.py
 | `smoke_readiness.py` | 验证 `/ready` 会检查 Milvus collection、schema 字段和向量维度 |
 | `smoke_deploy.py` | 默认自起临时 HTTP API 做部署 smoke；设置 `RAG_API_URL` 时可改为验证外部已部署服务 |
 | `smoke_deploy_contract.py` | 验证部署 smoke 的 auth header 和反馈 selected docs 构造 |
-| `smoke_llm.py` | 使用 OpenAI-compatible 配置做 LLM 网关连通性测试 |
+| `smoke_llm.py` | 使用 NewAPI 配置做 LLM 网关连通性测试 |
 | `smoke_milvus.py` | 验证当前 `MILVUS_URI` 可连接且 collection 可 load |
 | `smoke_models.py` | 可选加载 BGE/reranker/CLIP 后端，并在临时 Milvus 上做一次真实 ingest -> retrieve -> rerank smoke |
 | `check_config.py` | 打印脱敏配置并检查 Milvus 连接 |
@@ -147,13 +147,6 @@ python projects/08-industrial-rag/eval_answer.py
 
 ```bash
 python projects/08-industrial-rag/download_models.py
-```
-
-如需使用教学简化后端（不下载大模型）：
-
-```bash
-export RAG_EMBEDDING_BACKEND=hash
-export RAG_RERANK_BACKEND=lexical
 ```
 
 生产环境配置参考：
@@ -187,7 +180,7 @@ export RAG_PII_POLICY=fail    # 发现 PII 直接失败
 Context packing 和拒答阈值：
 
 ```bash
-export RAG_MAX_CONTEXT_CHARS=6000
+export RAG_MAX_CONTEXT_CHARS=6000      # 兼容旧变量名；BGE 路径会按 tokenizer token 预算计数
 export RAG_MAX_CHUNKS_PER_DOC=2
 export RAG_MIN_RERANK_SCORE=       # 空值表示不启用最低分阈值
 export RAG_OBJECT_STORE_DIR=projects/08-industrial-rag/object_store
@@ -196,10 +189,11 @@ export RAG_OBJECT_STORE_DIR=projects/08-industrial-rag/object_store
 Query rewrite：
 
 ```bash
-export RAG_QUERY_REWRITE_BACKEND=none       # 默认，不改写
-export RAG_QUERY_REWRITE_BACKEND=heuristic  # 短问题结合最近 history
-export RAG_QUERY_REWRITE_BACKEND=llm        # 使用 OpenAI-compatible LLM 改写
+export RAG_QUERY_REWRITE_BACKEND=llm        # 默认，使用 NewAPI LLM 改写
+export RAG_QUERY_REWRITE_BACKEND=none       # 完全不改写
 ```
+
+`llm` rewrite 需要配置 `NEW_API_URL` / `NEW_API_KEY`，未配置会直接失败。生产中应使用 LLM 或专门 query rewrite 模型把追问改写成独立检索问题。
 
 Milvus index/search 调参：
 
@@ -233,7 +227,7 @@ X-RAG-ACL-Groups: support,ops
 
 生产中 `tenant_id` 和 `acl_groups` 应来自认证服务或 API 网关注入的服务端可信上下文；请求 body 里的同名字段只保留给教学兼容模式。
 
-图片向量可以继续使用教学 hash 后端，也可以切换 CLIP 后端：
+图片向量使用真实视觉或图文 embedding。当前 CLIP 后端配置：
 
 ```bash
 export RAG_IMAGE_EMBEDDING_BACKEND=clip
@@ -421,7 +415,7 @@ export RAG_DEPLOY_ACL_GROUPS=ops,support
 RAG_API_URL=http://127.0.0.1:8008 python smoke_deploy.py
 ```
 
-`rag-api` 默认连接 compose 内的 `http://milvus:19530`，并使用 hash/lexical 教学后端。`./object_store` 会同时挂载到 `rag-api` 和 `rag-ingest`，用于持久化 canonical 文档、删除 tombstone 和 `current_versions.json`；`./runtime` 会挂载到 `rag-api`，用于保留 retrieval/answer/feedback 事件。真实模型和 LLM 网关仍通过环境变量注入，不要写入 compose 文件。
+`rag-api` 默认连接 compose 内的 `http://milvus:19530`，并使用 BGE/CLIP/NewAPI 配置。`./object_store` 会同时挂载到 `rag-api` 和 `rag-ingest`，用于持久化 canonical 文档、删除 tombstone 和 `current_versions.json`；`./runtime` 会挂载到 `rag-api`，用于保留 retrieval/answer/feedback 事件。真实 NewAPI key 通过环境变量注入，不要写入 compose 文件。
 
 入库 Markdown 目录：
 
@@ -577,11 +571,11 @@ Milvus Lite 使用本地数据库文件，不适合多个 Python 进程同时打
 - 文本文档 RAG：PDF、Markdown、HTML、纯文本、业务 JSON。
 - 图片/图文 RAG：图片 OCR、图片 caption、图片向量检索、图文混合检索。
 - Milvus collection 显式 schema，不依赖动态字段承载核心业务字段。
-- dense embedding、sparse/BM25、metadata filter、hybrid search、rerank。
+- dense embedding、Milvus BM25、metadata filter、hybrid search、rerank。
 - tenant / ACL 权限过滤在检索阶段生效。
 - 支持增量写入、文档删除、版本发布和 embedding 模型升级。
 - 支持离线评估、线上监控、可回放排障。
-- LLM 生成层通过 OpenAI-compatible API 调用，不把 API key 写入代码或文档。
+- LLM 生成层通过 NewAPI 调用，不把 API key 写入代码或文档。
 
 ### 推荐硬件基线
 
@@ -590,13 +584,13 @@ Milvus Lite 使用本地数据库文件，不适合多个 Python 进程同时打
 - embedding：`BAAI/bge-m3`，FP16，batch size 视显存从 4/8/16 起压测。
 - rerank：`BAAI/bge-reranker-v2-m3`，只对召回后的候选做二阶段排序。
 - Milvus：开发期可用 Milvus Lite；上线建议 Milvus Standalone 或 Milvus Cluster。
-- LLM：通过已有 NewAPI 网关调用，例如 `OPENAI_BASE_URL` + `OPENAI_API_KEY` + `LLM_MODEL`。
+- LLM：通过已有 NewAPI 网关调用，例如 `NEW_API_URL` + `NEW_API_KEY` + `LLM_MODEL`。
 
 不要把真实 API key 提交到仓库。配置示例只保留环境变量名：
 
 ```bash
-export OPENAI_BASE_URL="http://<newapi-host>:<port>/v1"
-export OPENAI_API_KEY="..."
+export NEW_API_URL="http://<newapi-host>:<port>"
+export NEW_API_KEY="..."
 export LLM_MODEL="gemini-3-flash-preview"
 ```
 
@@ -657,7 +651,7 @@ BAAI/bge-m3
 - 支持 dense、sparse lexical weights、ColBERT-style multi-vector 三种检索信号。
 - 官方模型卡建议 RAG 使用 hybrid retrieval + reranking。
 
-开发期可先只落地 dense + BM25，后续再接 BGE-M3 sparse 和 ColBERT late interaction。
+开发期可先只落地 dense + Milvus BM25，后续再按业务需要接更复杂的 late interaction 模型。
 
 ### Reranker
 
@@ -683,7 +677,7 @@ BAAI/bge-reranker-v2-m3
 当前仓库状态：
 
 - 已完成并可教学/上线的稳定版：文本 RAG 主链路、多模态 OCR/caption + image vector 融合检索、current-version、eval、monitoring、release gate。
-- 已接线但还不是专用 BGE visualized 方案的增强版：`image_dense_vector` 当前支持 `clip`/`hash` backend，多模态 pipeline 已完整，但尚未落专门的 BGE visualized / VISTA backend。
+- 已接线但还不是专用 BGE visualized 方案的增强版：`image_dense_vector` 当前支持 CLIP backend，多模态 pipeline 已完整，但尚未落专门的 BGE visualized / VISTA backend。
 
 多模态不要一开始就把所有信号混在一个向量字段里。更稳妥的 schema 是多字段：
 
@@ -727,7 +721,7 @@ rag_chunks_v1
 | `embedding_dim` | `INT64` | 例如 1024 |
 | `content_hash` | `VARCHAR` | 去重和幂等写入 |
 | `text_dense_vector` | `FLOAT_VECTOR(1024)` | BGE-M3 dense embedding |
-| `bm25_sparse_vector` | `SPARSE_FLOAT_VECTOR` | BM25 或 BGE-M3 sparse lexical weights |
+| `bm25_sparse_vector` | `SPARSE_FLOAT_VECTOR` | Milvus BM25 function 从 `text` 自动生成的关键词权重 |
 | `image_dense_vector` | `FLOAT_VECTOR(dim)` | 图片向量，可选 |
 | `metadata` | `JSON` | 业务扩展字段 |
 
@@ -853,6 +847,7 @@ load source
 - 初始 chunk 大小：400-800 tokens。
 - overlap：50-120 tokens。
 - 表格和代码块尽量不拆断；当前 `chunk_document` 会先识别 fenced code block、markdown table、段落等结构块，再按 token budget 组合 chunk。
+- 单个结构块超过 token budget 时，会按 token 窗口切原文片段，尽量保留代码缩进、表格换行、公式符号和标点；不要把代码先 tokenize 再用空格拼回去。
 - 每个 chunk 带上标题路径，例如 `产品手册 > 计费 > 退款规则`。
 
 chunk 文本建议格式：
@@ -878,6 +873,8 @@ python projects/08-industrial-rag/sweep_chunking.py \
 ```
 
 输出会包含每组参数的 `chunk_count`、平均 chunk token 数、recall、MRR、nDCG 和 p95 latency。教学时可以用它解释 chunk 太小导致上下文破碎、chunk 太大导致候选少但噪声更高、overlap 增大导致写入量增加这些 tradeoff。
+
+BGE embedding 路径会在调用模型前检查 tokenizer 后的输入长度；如果 chunk 超过 `RAG_EMBED_MAX_LENGTH`，脚本会失败并要求重新分块，而不是静默截断后半段文本。这样可以避免“入库成功但重要证据被截断丢失”的隐性数据质量问题。
 
 每组参数会使用独立的临时 Milvus collection；评估结束后脚本会 drop 临时 collection，并在输出行中记录 `temporary_collection` 和 `cleanup`，避免 chunk sweep 长期污染本地或测试 Milvus。
 
@@ -910,7 +907,7 @@ user query
   -> query normalize
   -> optional query rewrite
   -> dense embedding
-  -> sparse/BM25 query
+  -> BM25 query text
   -> Milvus hybrid search with metadata filter
   -> bge reranker
   -> context packing
@@ -949,6 +946,8 @@ and source_type in ["pdf", "md", "html"]
 2. `bm25_sparse_vector` 或 Milvus full text：关键词、代码、错误码、专有名词召回。
 3. `image_dense_vector`：图片相似检索或图文检索。
 
+`bm25_sparse_vector` 由 Milvus BM25 function 从 `text` 字段自动生成；写入 entity 时不再手工传 sparse dict。查询 BM25/hybrid 时直接传 query 文本，Milvus 按同一 analyzer 生成查询端 BM25 表示。
+
 Milvus 多向量 hybrid search 的思路：
 
 ```python
@@ -961,9 +960,9 @@ dense_req = AnnSearchRequest(
 )
 
 sparse_req = AnnSearchRequest(
-    data=[sparse_query_vector],
+    data=[query_text],
     anns_field="bm25_sparse_vector",
-    param={"metric_type": "IP"},
+    param={"metric_type": "BM25"},
     limit=50,
     expr=filter_expr,
 )
@@ -1082,18 +1081,18 @@ LLM 如果只支持文本：
 
 当前 `build_prompt()` 会在图片证据头中保留 `source_type=image`、`image_uri`、`linked_doc_id`、页码/行号/bbox 等定位信息，并在 prompt 规则中加入图片证据限制提示，避免模型把 OCR/caption 当成完整原图事实。
 
-需要直接基于图片证据回答时，使用 `answer_multimodal.py`。它会先运行 `search_multimodal.py` 的 OCR/caption text hybrid + image vector 融合检索，再做 context packing，并复用 `answer.py` 的 OpenAI-compatible 生成层；没有配置 LLM 网关时会返回本地 fallback 摘要和 citation，方便教学环境验证链路。
+需要直接基于图片证据回答时，使用 `answer_multimodal.py`。它会先运行 `search_multimodal.py` 的 OCR/caption text hybrid + image vector 融合检索，再做 context packing，并复用 `answer.py` 的 NewAPI 生成层；没有配置 `NEW_API_URL` / `NEW_API_KEY` 时会直接失败。
 
 ## 9. LLM Answer API
 
-使用 OpenAI-compatible 客户端：
+NewAPI 兼容 OpenAI SDK，因此代码里使用 `openai.OpenAI` 客户端：
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    base_url=os.environ["OPENAI_BASE_URL"],
-    api_key=os.environ["OPENAI_API_KEY"],
+    base_url=os.environ["NEW_API_URL"].rstrip("/") + "/v1",
+    api_key=os.environ["NEW_API_KEY"],
 )
 
 response = client.chat.completions.create(
@@ -1231,8 +1230,8 @@ RAG_REQUIRE_AUTH_CONTEXT
 RAG_API_TOKEN
 EMBEDDING_MODEL=BAAI/bge-m3
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
-OPENAI_BASE_URL
-OPENAI_API_KEY
+NEW_API_URL
+NEW_API_KEY
 LLM_MODEL
 HF_ENDPOINT
 ```
@@ -1293,7 +1292,7 @@ user -> auth service -> allowed_tenant_ids + allowed_acl_groups
 3. `search_dense.py`：metadata filter + dense search。
 4. `search_hybrid.py`：BM25/sparse + dense hybrid search。
 5. `rerank.py`：接入 `bge-reranker-v2-m3`。
-6. `answer.py`：通过 NewAPI/OpenAI-compatible API 生成带 citation 的回答。
+6. `answer.py`：通过 NewAPI 生成带 citation 的回答。
 7. `ingest_image.py`：OCR/caption/image embedding。
 8. `eval_retrieval.py`：构造 eval set，输出 recall/MRR/nDCG/latency。
 9. `serve.py`：FastAPI 查询服务。

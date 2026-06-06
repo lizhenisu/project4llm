@@ -6,8 +6,7 @@ from rag_core.config import load_config
 def main() -> None:
     config = load_config()
     if not config.llm_base_url or not config.llm_api_key:
-        print("smoke_llm=skipped; OPENAI_BASE_URL/OPENAI_API_KEY not configured")
-        return
+        raise RuntimeError("NEW_API_URL/NEW_API_KEY must be configured for smoke_llm.")
 
     from openai import OpenAI
 
@@ -26,4 +25,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

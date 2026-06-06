@@ -212,8 +212,8 @@ make model-smoke
 ## 4. LLM 网关验收
 
 ```bash
-export OPENAI_BASE_URL=http://<newapi-host>:<port>/v1
-export OPENAI_API_KEY=...
+export NEW_API_URL=http://<newapi-host>:<port>
+export NEW_API_KEY=...
 export LLM_MODEL=gemini-3-flash-preview
 make llm-smoke
 python answer.py "RAG 检索变慢时应该排查什么" --tenant-id team_a --acl-group ops
@@ -228,7 +228,7 @@ python answer.py "RAG 检索变慢时应该排查什么" --tenant-id team_a --ac
 ## 5. 安全检查
 
 ```bash
-rg -n "OPENAI_API_KEY=.*[A-Za-z0-9_-]{20,}|172\\.31\\." .
+rg -n "NEW_API_KEY=.*[A-Za-z0-9_-]{20,}|172\\.31\\." .
 git status --ignored --short runtime industrial_rag_demo.db volumes
 ```
 

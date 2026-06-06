@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from rag_core.config import load_config
-from rag_core.embeddings import build_embedding_model, build_image_embedding_model
+from rag_core.embeddings import build_embedding_model, zero_image_vector
 from rag_core.milvus_store import (
     build_filter_expr,
     chunk_to_entity,
@@ -15,7 +15,7 @@ from rag_core.milvus_store import (
     upsert_entities,
 )
 from rag_core.object_store import archive_source_documents, load_archived_source_documents
-from rag_core.text_utils import chunk_document, sparse_embedding
+from rag_core.text_utils import chunk_document
 from rag_core.types import SourceDocument
 
 
@@ -69,9 +69,8 @@ def run_smoke() -> None:
         )
     ]
     text_model = build_embedding_model(config)
-    image_model = build_image_embedding_model(config)
     dense_vectors = text_model.encode([chunk.text for chunk in chunks])
-    zero_image = image_model.encode(["no image"])[0]
+    zero_image = zero_image_vector(config)
     upsert_entities(
         client,
         collection_name=config.collection_name,
@@ -92,7 +91,7 @@ def run_smoke() -> None:
         client,
         collection_name=config.collection_name,
         query_vector=text_model.encode([query])[0],
-        query_sparse=sparse_embedding(query),
+        query_text=query,
         filter_expr=build_filter_expr(
             tenant_id="team_a",
             allowed_acl_groups=["ops"],

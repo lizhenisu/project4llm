@@ -51,21 +51,7 @@ def generate_answer(config: RagConfig, query: str, hits: list[SearchHit]) -> Ans
     prompt = build_prompt(query, hits)
     start = perf_counter()
     if not config.llm_base_url or not config.llm_api_key:
-        citations = " ".join(f"[{index}]" for index, _ in enumerate(hits, start=1))
-        if not hits:
-            answer = "当前知识库没有足够证据。"
-        else:
-            answer = (
-                "未配置 OPENAI_BASE_URL/OPENAI_API_KEY，返回检索证据摘要：\n"
-                f"{hits[0].text[:500]}\n\n引用：{citations}"
-            )
-        return AnswerGeneration(
-            answer=answer,
-            llm_model=config.llm_model,
-            llm_backend="local_fallback",
-            latency_ms=elapsed_ms(start),
-            token_usage={},
-        )
+        raise RuntimeError("NEW_API_URL/NEW_API_KEY must be configured for answer generation.")
 
     from openai import OpenAI
 
@@ -83,7 +69,7 @@ def generate_answer(config: RagConfig, query: str, hits: list[SearchHit]) -> Ans
     return AnswerGeneration(
         answer=response.choices[0].message.content or "",
         llm_model=config.llm_model,
-        llm_backend="openai_compatible",
+        llm_backend="newapi",
         latency_ms=elapsed_ms(start),
         token_usage=extract_usage(response),
     )

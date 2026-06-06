@@ -6,7 +6,7 @@ from pathlib import Path
 
 from benchmark_latency import benchmark_query
 from rag_core.config import load_config
-from rag_core.embeddings import build_embedding_model, build_image_embedding_model
+from rag_core.embeddings import build_embedding_model, zero_image_vector
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
 from rag_core.text_utils import chunk_document
 from rag_core.types import Chunk, SourceDocument
@@ -22,7 +22,7 @@ def main() -> None:
         os.environ["MILVUS_URI"] = str(Path(tmp) / "benchmark.db")
         os.environ["RAG_COLLECTION"] = "rag_smoke_benchmark"
         os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(tmp) / "object_store")
-        os.environ["RAG_QUERY_REWRITE_BACKEND"] = "heuristic"
+        os.environ["RAG_QUERY_REWRITE_BACKEND"] = "llm"
         try:
             run_smoke()
         finally:
@@ -38,7 +38,6 @@ def run_smoke() -> None:
     client = connect(config)
     ensure_collection(client, config, reset=True)
     text_model = build_embedding_model(config)
-    image_model = build_image_embedding_model(config)
 
     text_doc = SourceDocument(
         tenant_id="team_a",
@@ -55,7 +54,7 @@ def run_smoke() -> None:
         chunk_size=config.chunk_size,
         overlap=config.chunk_overlap,
     )
-    zero_image = image_model.encode(["no image"])[0]
+    zero_image = zero_image_vector(config)
     image_chunk = Chunk(
         tenant_id="team_a",
         doc_id="dashboard-screenshot",

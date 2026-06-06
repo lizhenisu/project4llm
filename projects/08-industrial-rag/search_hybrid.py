@@ -5,7 +5,7 @@ import argparse
 from rag_core.config import load_config
 from rag_core.embeddings import build_embedding_model
 from rag_core.milvus_store import build_filter_expr, connect, ensure_collection, hybrid_search
-from rag_core.text_utils import sparse_embedding, tokenize
+from rag_core.text_utils import tokenize
 
 
 def run_hybrid(
@@ -22,7 +22,6 @@ def run_hybrid(
     ensure_collection(client, config, reset=False)
     model = build_embedding_model(config)
     query_vector = model.encode([query])[0]
-    query_sparse = sparse_embedding(query)
     filter_expr = build_filter_expr(
         tenant_id=tenant_id,
         allowed_acl_groups=acl_groups,
@@ -34,7 +33,7 @@ def run_hybrid(
         client,
         collection_name=config.collection_name,
         query_vector=query_vector,
-        query_sparse=query_sparse,
+        query_text=query,
         filter_expr=filter_expr,
         limit=limit,
     )
@@ -76,7 +75,6 @@ def main() -> None:
     if args.explain:
         config = load_config()
         model = build_embedding_model(config)
-        query_sparse = sparse_embedding(args.query)
         filter_expr = build_filter_expr(
             tenant_id=args.tenant_id,
             allowed_acl_groups=args.acl_group or None,
@@ -85,7 +83,6 @@ def main() -> None:
             source_types=args.source_type or None,
         )
         print(f"query_tokens={tokenize(args.query)}")
-        print(f"sparse_nonzero_buckets={len(query_sparse)}")
         print(f"filter: {filter_expr}")
     for rank, hit in enumerate(hits, start=1):
         print(

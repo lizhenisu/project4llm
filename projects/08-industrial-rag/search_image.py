@@ -15,8 +15,8 @@ def main() -> None:
     parser.add_argument(
         "image_query",
         help=(
-            "Image query surrogate. With the local hash backend this can be an image URI, "
-            "OCR text, or caption. A production visual backend should encode the image bytes."
+            "Image path or text query. CLIP encodes image bytes for existing files and "
+            "text features otherwise."
         ),
     )
     parser.add_argument("--tenant-id", default="team_a")

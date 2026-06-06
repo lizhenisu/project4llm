@@ -14,7 +14,6 @@ STAGE_ORDER = [
     "embedding",
     "milvus_search",
     "rerank",
-    "sparse_query",
     "text_embedding",
     "text_search",
     "image_embedding",

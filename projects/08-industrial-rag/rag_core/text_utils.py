@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 import time
-from collections import Counter
 from typing import Iterable
 
 from rag_core.types import Chunk, SourceDocument
@@ -138,7 +136,7 @@ def split_structural_blocks(text: str) -> list[str]:
         blocks.append("\n".join(code_block).strip())
     flush_table()
     flush_paragraph()
-    return [block for block in blocks if tokenize(block)]
+    return [block for block in blocks if block.strip()]
 
 
 def is_markdown_table_line(line: str) -> bool:
@@ -151,15 +149,21 @@ def is_markdown_table_line(line: str) -> bool:
 
 
 def split_large_block(block: str, *, chunk_size: int, overlap: int) -> list[str]:
-    tokens = tokenize(block)
-    if not tokens:
+    token_spans = list(TOKEN_PATTERN.finditer(block.lower()))
+    if not token_spans:
         return []
     stride = max(1, chunk_size - overlap)
-    return [
-        " ".join(tokens[start : start + chunk_size])
-        for start in range(0, len(tokens), stride)
-        if tokens[start : start + chunk_size]
-    ]
+    chunks: list[str] = []
+    for start in range(0, len(token_spans), stride):
+        end = min(start + chunk_size, len(token_spans))
+        if start >= end:
+            continue
+        char_start = 0 if start == 0 else token_spans[start].start()
+        char_end = token_spans[end].start() if end < len(token_spans) else len(block)
+        chunk = block[char_start:char_end].strip()
+        if chunk:
+            chunks.append(chunk)
+    return chunks
 
 
 def chunk_id(chunk: Chunk) -> str:
@@ -168,34 +172,6 @@ def chunk_id(chunk: Chunk) -> str:
         f"{chunk.doc_version}:{chunk.chunk_index}"
     )
     return stable_hash(raw, length=32)
-
-
-def hash_dense_embedding(text: str, dim: int) -> list[float]:
-    vector = [0.0] * dim
-    for token in tokenize(text):
-        digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
-        bucket = int.from_bytes(digest[:4], "little") % dim
-        sign = 1.0 if digest[4] % 2 == 0 else -1.0
-        vector[bucket] += sign
-
-    norm = math.sqrt(sum(value * value for value in vector))
-    if norm == 0:
-        return vector
-    return [value / norm for value in vector]
-
-
-def sparse_embedding(text: str, *, vocab_size: int = 100_000) -> dict[int, float]:
-    counts = Counter(tokenize(text))
-    if not counts:
-        return {}
-
-    max_count = max(counts.values())
-    sparse: dict[int, float] = {}
-    for token, count in counts.items():
-        digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
-        bucket = int.from_bytes(digest[:4], "little") % vocab_size
-        sparse[bucket] = sparse.get(bucket, 0.0) + count / max_count
-    return sparse
 
 
 def lexical_overlap_score(query: str, text: str) -> float:
