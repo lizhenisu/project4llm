@@ -10,6 +10,7 @@
 
 先只看这一条主线：
 
+0. `ARCHITECTURE.md`：先看项目分层、模块关系和从零复现顺序，建立宏观代码框架。
 1. `walkthrough_core_rag.py`：先一口气看完整条链路发生了什么。
 2. `schema.py`：Milvus 里为什么要显式 schema，而不是随手塞 JSON。
 3. `ingest_text.py` + `rag_core/text_utils.py`：文档怎么切 chunk，chunk 里保留哪些 metadata。
