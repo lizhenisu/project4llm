@@ -1,0 +1,6 @@
+{"query":"维护包装线前 LOTO 零能量验证要做什么？","tenant_id":"team_a","acl_groups":["ops"],"source_types":["md"],"expected_doc_ids":["loto_checklist/section-002"],"answerable":true,"query_type":"markdown"}
+{"query":"危险能量控制在班次交接时为什么要使用组锁箱？","tenant_id":"team_a","acl_groups":["ops"],"source_types":["html"],"expected_doc_ids":["energy_control"],"answerable":true,"query_type":"html"}
+{"query":"night shift header pressure falls below 620 kPa what should be checked before raising setpoint?","tenant_id":"team_a","acl_groups":["engineering"],"source_types":["txt"],"expected_doc_ids":["compressed_air_excerpt"],"answerable":true,"query_type":"txt"}
+{"query":"compressed air leak rate 18 percent and dryer pressure drop 42 kPa","tenant_id":"team_a","acl_groups":["engineering"],"source_types":["tsv"],"expected_doc_ids":["compressor_energy"],"answerable":true,"query_type":"table"}
+{"query":"P-204 vibration above 7.0 mm/s should do what action?","tenant_id":"team_a","acl_groups":["ops"],"source_types":["csv"],"expected_doc_ids":["pump_vibration_readings"],"answerable":true,"query_type":"table"}
+{"query":"compressed air PDF leak survey pressure drop heat recovery","tenant_id":"team_a","acl_groups":["engineering"],"source_types":["pdf"],"expected_doc_ids":["compressed_air_sourcebook_sample/page-1"],"answerable":true,"query_type":"pdf"}

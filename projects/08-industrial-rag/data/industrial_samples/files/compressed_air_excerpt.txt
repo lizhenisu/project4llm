@@ -1,0 +1,7 @@
+Compressed air troubleshooting note
+
+When compressed air demand rises while production volume is stable, first inspect leaks, inappropriate open blowing, pressure drop, and compressor control mode. A leak survey should record location, estimated leak size, header pressure, and repair owner.
+
+For the training fixture, the key rule is: if header pressure falls below 620 kPa during the night shift, check receiver storage, dryer pressure drop, and load/unload compressor cycling before raising the plant-wide pressure setpoint.
+
+Heat recovery is useful when compressor discharge heat can be routed to process water or space heating without increasing maintenance risk.

@@ -233,7 +233,7 @@ X-RAG-ACL-Groups: support,ops
 ```bash
 export RAG_IMAGE_EMBEDDING_BACKEND=clip
 export IMAGE_EMBEDDING_MODEL=openai/clip-vit-base-patch32
-export IMAGE_EMBEDDING_DIM=512
+export IMAGE_EMBEDDING_DIM=1024  # 本地 Milvus Lite 默认：CLIP 512 维会零填充到 1024
 ```
 
 如果 Hugging Face 下载受限，可以配置镜像：
@@ -448,6 +448,47 @@ python projects/08-industrial-rag/ingest_tables.py \
   --doc-version 2 \
   --rows-per-document 200 \
   --acl-group ops
+```
+
+### 工业多格式样本
+
+`data/industrial_samples/` 提供了一组可直接入库的非 JSONL 教学样本：
+
+| 路径 | 格式 | 覆盖点 |
+| --- | --- | --- |
+| `files/loto_checklist.md` | Markdown | heading 切分、LOTO 零能量验证 |
+| `files/energy_control.html` | HTML | 可见文本抽取、班次交接/组锁箱 |
+| `files/compressed_air_excerpt.txt` | TXT | 普通文本抽取、空压站夜班压降 |
+| `files/compressed_air_sourcebook_sample.pdf` | PDF | 按页抽取、页码 metadata |
+| `tables/pump_vibration_readings.csv` | CSV | 表格转 markdown table、振动告警 |
+| `tables/compressor_energy.tsv` | TSV | 表格行范围 metadata、泄漏率/压降 |
+| `images/compressed_air_dashboard.png` | PNG | 图片 OCR/caption/image vector 教学 |
+
+样本来源和改写说明见 `data/industrial_samples/SOURCES.md`。从仓库根目录执行：
+
+```bash
+source .venv/bin/activate
+python projects/08-industrial-rag/schema.py --reset
+python projects/08-industrial-rag/ingest_files.py \
+  --input-dir projects/08-industrial-rag/data/industrial_samples/files \
+  --tenant-id team_a \
+  --acl-group ops \
+  --acl-group engineering
+python projects/08-industrial-rag/ingest_tables.py \
+  --input-dir projects/08-industrial-rag/data/industrial_samples/tables \
+  --tenant-id team_a \
+  --acl-group ops \
+  --acl-group engineering
+python projects/08-industrial-rag/ingest_image.py \
+  --input projects/08-industrial-rag/data/sample_images_industrial.jsonl
+python projects/08-industrial-rag/eval_retrieval.py \
+  --input projects/08-industrial-rag/data/industrial_multiformat_eval_queries.jsonl \
+  --mode hybrid \
+  --limit 5
+python projects/08-industrial-rag/eval_retrieval.py \
+  --input projects/08-industrial-rag/data/industrial_multimodal_eval_queries.jsonl \
+  --mode multimodal \
+  --limit 5
 ```
 
 查看当前 collection 文档版本：

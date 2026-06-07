@@ -1,0 +1,5 @@
+line_id	shift	header_pressure_kpa	flow_m3_min	leak_rate_pct	recommended_action
+CA-1	day	690	42	8	repair audible leaks during weekly shutdown
+CA-1	night	615	39	18	check receiver storage and dryer pressure drop
+CA-2	day	705	55	6	keep current setpoint
+CA-2	night	630	51	14	isolate abandoned branch and repeat leak survey

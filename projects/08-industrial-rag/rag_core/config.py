@@ -128,6 +128,7 @@ def load_config() -> RagConfig:
     load_dotenv_if_present()
     embedding_backend = os.environ.get("RAG_EMBEDDING_BACKEND", "bge").lower()
     image_backend = os.environ.get("RAG_IMAGE_EMBEDDING_BACKEND", "clip").lower()
+    embedding_dim = _env_int("EMBEDDING_DIM", 1024)
     milvus_uri = (
         os.environ.get("RAG_MILVUS_URI")
         or os.environ.get("MILVUS_URI")
@@ -140,7 +141,7 @@ def load_config() -> RagConfig:
         collection_name=os.environ.get("RAG_COLLECTION", "rag_chunks_v1"),
         embedding_model=os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3"),
         embedding_backend=embedding_backend,
-        embedding_dim=_env_int("EMBEDDING_DIM", 1024),
+        embedding_dim=embedding_dim,
         embedding_batch_size=_env_int("RAG_EMBED_BATCH_SIZE", 8),
         embedding_max_length=_env_int("RAG_EMBED_MAX_LENGTH", 8192),
         rerank_model=os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"),
@@ -152,7 +153,7 @@ def load_config() -> RagConfig:
             "IMAGE_EMBEDDING_MODEL",
             "openai/clip-vit-base-patch32",
         ),
-        image_embedding_dim=_env_int("IMAGE_EMBEDDING_DIM", 512),
+        image_embedding_dim=_env_int("IMAGE_EMBEDDING_DIM", embedding_dim),
         image_embedding_batch_size=_env_int("RAG_IMAGE_EMBED_BATCH_SIZE", 8),
         model_device=os.environ.get("RAG_MODEL_DEVICE", "auto").lower(),
         model_dtype=os.environ.get("RAG_MODEL_DTYPE", "auto").lower(),

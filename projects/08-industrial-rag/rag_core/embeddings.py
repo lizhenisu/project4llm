@@ -174,7 +174,7 @@ class TransformersCLIPImageEmbeddingModel:
                     return_tensors="pt",
                 )
                 inputs = {key: value.to(self._device) for key, value in inputs.items()}
-                features = self._model.get_text_features(**inputs)
+                features = pooled_clip_features(self._model.get_text_features(**inputs))
                 features = self._torch.nn.functional.normalize(features, p=2, dim=1)
                 vectors.extend(features.detach().cpu().tolist())
         self._check_dims(vectors)
@@ -193,7 +193,7 @@ class TransformersCLIPImageEmbeddingModel:
                 images = [Image.open(path).convert("RGB") for path in batch_paths]
                 inputs = self._processor(images=images, return_tensors="pt")
                 inputs = {key: value.to(self._device) for key, value in inputs.items()}
-                features = self._model.get_image_features(**inputs)
+                features = pooled_clip_features(self._model.get_image_features(**inputs))
                 features = self._torch.nn.functional.normalize(features, p=2, dim=1)
                 vectors.extend(features.detach().cpu().tolist())
         self._check_dims(vectors)
@@ -210,10 +210,13 @@ class TransformersCLIPImageEmbeddingModel:
 
     def _check_dims(self, vectors: list[list[float]]) -> None:
         for vector in vectors:
+            if len(vector) < self._dim:
+                vector.extend([0.0] * (self._dim - len(vector)))
+                continue
             if len(vector) != self._dim:
                 raise ValueError(
                     f"Image embedding dim mismatch: expected {self._dim}, got {len(vector)}. "
-                    "Set IMAGE_EMBEDDING_DIM to match the model."
+                    "Set IMAGE_EMBEDDING_DIM to match the model or a larger padded dimension."
                 )
 
 
@@ -233,6 +236,12 @@ def build_embedding_model(config: RagConfig) -> EmbeddingModel:
         "Unsupported RAG_EMBEDDING_BACKEND="
         f"{config.embedding_backend!r}. Use 'bge'."
     )
+
+
+def pooled_clip_features(features):
+    if hasattr(features, "pooler_output"):
+        return features.pooler_output
+    return features
 
 
 def build_image_embedding_model(config: RagConfig) -> ImageEmbeddingModel:
