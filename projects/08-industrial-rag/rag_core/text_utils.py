@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import re
 import time
@@ -27,18 +28,25 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()
 
 
-def chunk_document(doc: SourceDocument, *, chunk_size: int, overlap: int) -> list[Chunk]:
+def chunk_document(
+    doc: SourceDocument,
+    *,
+    chunk_size: int,
+    overlap: int,
+    token_counter: Callable[[str], int] | None = None,
+) -> list[Chunk]:
     blocks = split_structural_blocks(doc.text)
     if not blocks:
         return []
 
     effective_chunk_size = max(1, chunk_size)
+    count_tokens = token_counter or (lambda text: len(tokenize(text)))
     chunks: list[Chunk] = []
     current_blocks: list[str] = []
     current_tokens = 0
 
     for block in blocks:
-        block_tokens = len(tokenize(block))
+        block_tokens = count_tokens(block)
         if block_tokens == 0:
             continue
 

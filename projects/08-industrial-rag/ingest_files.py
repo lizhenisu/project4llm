@@ -68,6 +68,7 @@ def main() -> None:
         )
         for doc in docs
     ]
+    text_model = build_embedding_model(config)
     chunks = [
         chunk
         for doc in docs
@@ -75,10 +76,10 @@ def main() -> None:
             doc,
             chunk_size=config.chunk_size,
             overlap=config.chunk_overlap,
+            token_counter=text_model.count_tokens,
         )
     ]
 
-    text_model = build_embedding_model(config)
     dense_vectors = text_model.encode([chunk.text for chunk in chunks])
     zero_image = zero_image_vector(config)
     entities = [

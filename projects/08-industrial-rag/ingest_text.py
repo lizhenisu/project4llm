@@ -59,6 +59,7 @@ def main() -> None:
         )
         for doc in load_source_documents(args.input)
     ]
+    embedding_model = build_embedding_model(config)
     chunks = [
         chunk
         for doc in docs
@@ -66,6 +67,7 @@ def main() -> None:
             doc,
             chunk_size=config.chunk_size,
             overlap=config.chunk_overlap,
+            token_counter=embedding_model.count_tokens,
         )
     ]
     if args.explain:
@@ -74,17 +76,20 @@ def main() -> None:
         for doc in docs:
             print(
                 f"- doc_id={doc.doc_id} title={doc.title} "
-                f"tokens={len(tokenize(doc.text))} chunks={chunk_counts.get(doc.doc_id, 0)} "
+                f"approx_tokens={len(tokenize(doc.text))} "
+                f"model_tokens={embedding_model.count_tokens(doc.text)} "
+                f"chunks={chunk_counts.get(doc.doc_id, 0)} "
                 f"acl={','.join(doc.acl_groups)}"
             )
         for chunk in chunks[: args.preview_chunks]:
             preview = chunk.text[:220].replace("\n", " ")
             print(
                 f"  chunk doc={chunk.doc_id} idx={chunk.chunk_index} "
-                f"tokens={len(tokenize(chunk.text))} preview={preview}"
+                f"approx_tokens={len(tokenize(chunk.text))} "
+                f"model_tokens={embedding_model.count_tokens(chunk.text)} "
+                f"preview={preview}"
             )
 
-    embedding_model = build_embedding_model(config)
     dense_vectors = embedding_model.encode([chunk.text for chunk in chunks])
     zero_image = zero_image_vector(config)
 

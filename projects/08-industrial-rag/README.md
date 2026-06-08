@@ -456,7 +456,7 @@ python projects/08-industrial-rag/ingest_tables.py \
 
 | 路径 | 格式 | 覆盖点 |
 | --- | --- | --- |
-| `files/loto_checklist.md` | Markdown | heading 切分、LOTO 零能量验证 |
+| `files/loto_checklist.md` | Markdown | heading 切分、LOTO 零能量验证、markdown table、fenced code block |
 | `files/energy_control.html` | HTML | 可见文本抽取、班次交接/组锁箱 |
 | `files/compressed_air_excerpt.txt` | TXT | 普通文本抽取、空压站夜班压降 |
 | `files/compressed_air_sourcebook_sample.pdf` | PDF | 按页抽取、页码 metadata |
@@ -891,6 +891,8 @@ load source
 - 表格和代码块尽量不拆断；当前 `chunk_document` 会先识别 fenced code block、markdown table、段落等结构块，再按 token budget 组合 chunk。
 - 单个结构块超过 token budget 时，会按 token 窗口切原文片段，尽量保留代码缩进、表格换行、公式符号和标点；不要把代码先 tokenize 再用空格拼回去。
 - 每个 chunk 带上标题路径，例如 `产品手册 > 计费 > 退款规则`。
+
+`chunk_document` 默认使用 `rag_core.text_utils.tokenize()` 做轻量 token 估算，方便 smoke test 和不加载模型的教学脚本直接运行。真实入库脚本，例如 `ingest_text.py`、`ingest_files.py`、`ingest_markdown.py` 和 `ingest_tables.py`，会把 embedding model 的 `count_tokens()` 传给 `chunk_document`，因此 chunk 预算按实际 tokenizer 计数。`--explain` 会同时打印 `approx_tokens` 和 `model_tokens`，便于观察正则估算和模型 tokenizer 的差异。
 
 chunk 文本建议格式：
 
