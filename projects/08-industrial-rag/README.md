@@ -132,6 +132,7 @@ python projects/08-industrial-rag/eval_answer.py
 | `smoke_api.py` | 直接调用 FastAPI app，验证 `/health`、`/search`、`/query`、`/feedback` |
 | `smoke_api_multimodal.py` | 直接调用 FastAPI app，验证 `/search`、`/query` 的多模态分支 |
 | `smoke_readiness.py` | 验证 `/ready` 会检查 Milvus collection、schema 字段和向量维度 |
+| `smoke_rewrite_rerank_config.py` | 验证 query rewrite 历史窗口、输出 token 配置，以及只允许 BGE rerank backend |
 | `smoke_deploy.py` | 默认自起临时 HTTP API 做部署 smoke；设置 `RAG_API_URL` 时可改为验证外部已部署服务 |
 | `smoke_deploy_contract.py` | 验证部署 smoke 的 auth header 和反馈 selected docs 构造 |
 | `smoke_llm.py` | 使用 NewAPI 配置做 LLM 网关连通性测试 |
@@ -192,9 +193,11 @@ Query rewrite：
 ```bash
 export RAG_QUERY_REWRITE_BACKEND=llm        # 默认，使用 NewAPI LLM 改写
 export RAG_QUERY_REWRITE_BACKEND=none       # 完全不改写
+export RAG_QUERY_REWRITE_HISTORY_TURNS=6    # 最多带入最近 6 条历史消息，避免长历史污染检索意图
+export RAG_QUERY_REWRITE_MAX_TOKENS=256     # 改写 query 的输出上限；长工单/设备名场景可按需调大
 ```
 
-`llm` rewrite 需要配置 `NEW_API_URL` / `NEW_API_KEY`，未配置会直接失败。生产中应使用 LLM 或专门 query rewrite 模型把追问改写成独立检索问题。
+`llm` rewrite 需要配置 `NEW_API_URL` / `NEW_API_KEY`，未配置会直接失败。生产中应使用 LLM 或专门 query rewrite 模型把追问改写成独立检索问题。历史窗口不是越大越好：rewrite 只需要补全指代和业务上下文，过长历史会把已经切换的话题、无权限租户或旧实体带进检索词。`RAG_QUERY_REWRITE_MAX_TOKENS` 是 LLM 改写阶段的生成上限，不是最终回答长度；它应该覆盖“独立检索 query + 必要实体/时间/设备/指标”，如果领域 query 经常包含长设备路径、错误堆栈或多指标条件，就用评测集压测后调大。
 
 Milvus index/search 调参：
 
@@ -892,7 +895,7 @@ load source
 - 单个结构块超过 token budget 时，会按 token 窗口切原文片段，尽量保留代码缩进、表格换行、公式符号和标点；不要把代码先 tokenize 再用空格拼回去。
 - 每个 chunk 带上标题路径，例如 `产品手册 > 计费 > 退款规则`。
 
-`chunk_document` 默认使用 `rag_core.text_utils.tokenize()` 做轻量 token 估算，方便 smoke test 和不加载模型的教学脚本直接运行。真实入库脚本，例如 `ingest_text.py`、`ingest_files.py`、`ingest_markdown.py` 和 `ingest_tables.py`，会把 embedding model 的 `count_tokens()` 传给 `chunk_document`，因此 chunk 预算按实际 tokenizer 计数。`--explain` 会同时打印 `approx_tokens` 和 `model_tokens`，便于观察正则估算和模型 tokenizer 的差异。
+真实入库脚本，例如 `ingest_text.py`、`ingest_files.py`、`ingest_markdown.py` 和 `ingest_tables.py`，会把 embedding model 的 `count_tokens()` 传给 `chunk_document`，因此 chunk 预算按实际 tokenizer 计数。`search_dense.py --explain` 也使用当前 embedding model 的 tokenizer 打印 `query_token_count` 和 `query_token_ids`，避免用正则分词结果误导 token 预算判断。`chunk_document` 仍保留轻量估算回退，供不加载模型的结构化切分 smoke test 使用。
 
 chunk 文本建议格式：
 
@@ -968,6 +971,8 @@ user query
 - 需要把口语化问题改写成业务检索词。
 
 rewrite 不能引入权限外信息，必须保留原 query 和 rewritten query 方便回放。
+
+当前教学项目只保留 `RAG_RERANK_BACKEND=bge`。早期词面重合重排只适合作为玩具 baseline，容易让学习者误以为生产链路可以用词面重合代替 cross-encoder rerank；如果想观察词面重合，可以用 `diagnose_retrieval.py` 里的 overlap 字段，而不是把它作为 rerank backend。
 
 ### Metadata Filter
 

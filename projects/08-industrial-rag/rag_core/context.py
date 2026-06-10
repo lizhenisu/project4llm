@@ -4,7 +4,6 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from rag_core.text_utils import tokenize
 from rag_core.types import PackingStats, SearchHit
 
 
@@ -21,7 +20,7 @@ class PackingDecision:
 
 
 def default_text_units(text: str) -> int:
-    return len(tokenize(text))
+    return len(text)
 
 
 def pack_context(

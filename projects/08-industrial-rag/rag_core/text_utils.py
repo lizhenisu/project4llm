@@ -16,10 +16,6 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def tokenize(text: str) -> list[str]:
-    return TOKEN_PATTERN.findall(text.lower())
-
-
 def stable_hash(text: str, length: int = 16) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
 
@@ -40,7 +36,7 @@ def chunk_document(
         return []
 
     effective_chunk_size = max(1, chunk_size)
-    count_tokens = token_counter or (lambda text: len(tokenize(text)))
+    count_tokens = token_counter or approximate_token_count
     chunks: list[Chunk] = []
     current_blocks: list[str] = []
     current_tokens = 0
@@ -174,6 +170,10 @@ def split_large_block(block: str, *, chunk_size: int, overlap: int) -> list[str]
     return chunks
 
 
+def approximate_token_count(text: str) -> int:
+    return len(_lexical_terms(text))
+
+
 def chunk_id(chunk: Chunk) -> str:
     raw = (
         f"{chunk.tenant_id}:{chunk.doc_id}:"
@@ -183,11 +183,15 @@ def chunk_id(chunk: Chunk) -> str:
 
 
 def lexical_overlap_score(query: str, text: str) -> float:
-    query_terms = set(tokenize(query))
+    query_terms = set(_lexical_terms(query))
     if not query_terms:
         return 0.0
-    text_terms = set(tokenize(text))
+    text_terms = set(_lexical_terms(text))
     return len(query_terms & text_terms) / len(query_terms)
+
+
+def _lexical_terms(text: str) -> list[str]:
+    return TOKEN_PATTERN.findall(text.lower())
 
 
 def now_ms() -> int:

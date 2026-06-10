@@ -12,7 +12,7 @@ from rag_core.config import DATA_DIR, load_config
 from rag_core.embeddings import build_embedding_model, zero_image_vector
 from rag_core.io import load_source_documents, write_jsonl
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
-from rag_core.text_utils import chunk_document, tokenize
+from rag_core.text_utils import chunk_document
 from rag_core.versioning import publish_current_versions
 
 
@@ -128,6 +128,7 @@ def run_one_spec(
     client = connect(config)
     ensure_collection(client, config, reset=True)
     docs = load_source_documents(input_path)
+    text_model = build_embedding_model(config)
     chunks = [
         chunk
         for doc in docs
@@ -135,9 +136,9 @@ def run_one_spec(
             doc,
             chunk_size=spec.chunk_size,
             overlap=spec.overlap,
+            token_counter=text_model.count_tokens,
         )
     ]
-    text_model = build_embedding_model(config)
     dense_vectors = text_model.encode([chunk.text for chunk in chunks])
     zero_image = zero_image_vector(config)
     upserted = upsert_entities(
@@ -165,8 +166,11 @@ def run_one_spec(
         "overlap": spec.overlap,
         "doc_count": len(docs),
         "chunk_count": len(chunks),
-        "avg_chunk_tokens": avg([len(tokenize(chunk.text)) for chunk in chunks]),
-        "max_chunk_tokens": max([len(tokenize(chunk.text)) for chunk in chunks], default=0),
+        "avg_chunk_tokens": avg([text_model.count_tokens(chunk.text) for chunk in chunks]),
+        "max_chunk_tokens": max(
+            [text_model.count_tokens(chunk.text) for chunk in chunks],
+            default=0,
+        ),
         "upserted": upserted,
         "mode": mode,
         "limit": limit,

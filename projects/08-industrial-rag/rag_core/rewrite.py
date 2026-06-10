@@ -28,7 +28,9 @@ def llm_rewrite(query: str, history: list[str], config: RagConfig) -> str:
 
     from openai import OpenAI
 
-    history_text = "\n".join(history[-6:])
+    history_window = max(0, config.query_rewrite_history_turns)
+    selected_history = history[-history_window:] if history_window else []
+    history_text = "\n".join(selected_history)
     client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
     response = client.chat.completions.create(
         model=config.llm_model,
@@ -45,7 +47,7 @@ def llm_rewrite(query: str, history: list[str], config: RagConfig) -> str:
                 "content": f"对话历史:\n{history_text}\n\n当前问题:\n{query}",
             },
         ],
-        max_tokens=128,
+        max_tokens=max(1, config.query_rewrite_max_tokens),
     )
     rewritten = response.choices[0].message.content or query
     return normalize_text(rewritten)

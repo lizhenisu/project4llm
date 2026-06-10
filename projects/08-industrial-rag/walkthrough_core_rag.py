@@ -30,7 +30,7 @@ from rag_core.pii import apply_pii_policy
 from rag_core.context import explain_context_packing
 from rag_core.rerankers import build_reranker
 from rag_core.rewrite import rewrite_query
-from rag_core.text_utils import chunk_document, tokenize
+from rag_core.text_utils import chunk_document
 from rag_core.types import SearchHit, SourceDocument
 from rag_core.versioning import load_current_versions, publish_current_versions
 
@@ -118,6 +118,7 @@ def run_walkthrough(args: argparse.Namespace) -> None:
     try:
         ensure_collection(client, config, reset=True)
         docs = load_docs(args.input, config)
+        embedding_model = build_embedding_model(config)
         chunks = [
             chunk
             for doc in docs
@@ -125,6 +126,7 @@ def run_walkthrough(args: argparse.Namespace) -> None:
                 doc,
                 chunk_size=config.chunk_size,
                 overlap=config.chunk_overlap,
+                token_counter=embedding_model.count_tokens,
             )
         ]
 
@@ -137,11 +139,10 @@ def run_walkthrough(args: argparse.Namespace) -> None:
 
         print_section("2. Documents -> Chunks")
         print(f"loaded_docs={len(docs)} from={args.input}")
-        print_doc_summary(docs)
-        print_chunk_summary(chunks)
+        print_doc_summary(docs, embedding_model.count_tokens)
+        print_chunk_summary(chunks, embedding_model.count_tokens)
 
         print_section("3. Ingest")
-        embedding_model = build_embedding_model(config)
         dense_vectors = embedding_model.encode([chunk.text for chunk in chunks])
         zero_image = zero_image_vector(config)
         entities = [
@@ -179,7 +180,8 @@ def run_walkthrough(args: argparse.Namespace) -> None:
         print(f"original_query={rewrite.original_query}")
         print(f"rewritten_query={rewrite.rewritten_query}")
         print(f"rewrite_backend={rewrite.backend}")
-        print(f"query_tokens={tokenize(rewrite.rewritten_query)}")
+        print(f"query_token_count={embedding_model.count_tokens(rewrite.rewritten_query)}")
+        print(f"query_token_ids={embedding_model.tokenize(rewrite.rewritten_query)}")
         print("sparse_backend=milvus_bm25_function")
         print(f"filter_expr={filter_expr}")
 
@@ -311,23 +313,23 @@ def load_docs(input_path: Path, config) -> list[SourceDocument]:
     ]
 
 
-def print_doc_summary(docs: list[SourceDocument]) -> None:
+def print_doc_summary(docs: list[SourceDocument], count_tokens) -> None:
     for doc in docs:
         print(
             f"doc_id={doc.doc_id} tenant={doc.tenant_id} "
-            f"acl={','.join(doc.acl_groups)} teaching_tokens={len(tokenize(doc.text))} "
+            f"acl={','.join(doc.acl_groups)} model_tokens={count_tokens(doc.text)} "
             f"title={doc.title}"
         )
 
 
-def print_chunk_summary(chunks) -> None:
+def print_chunk_summary(chunks, count_tokens) -> None:
     counts = Counter(chunk.doc_id for chunk in chunks)
     print(f"total_chunks={len(chunks)} per_doc={dict(counts)}")
     for chunk in chunks[:3]:
         preview = chunk.text[:180].replace("\n", " ")
         print(
             f"chunk doc={chunk.doc_id} idx={chunk.chunk_index} "
-            f"chars={len(chunk.text)} teaching_tokens={len(tokenize(chunk.text))} preview={preview}"
+            f"chars={len(chunk.text)} model_tokens={count_tokens(chunk.text)} preview={preview}"
         )
 
 

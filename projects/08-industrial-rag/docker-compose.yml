@@ -55,6 +55,9 @@ services:
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "512"
       RAG_RUNTIME_DIR: /app/projects/08-industrial-rag/runtime
+      RAG_QUERY_REWRITE_BACKEND: llm
+      RAG_QUERY_REWRITE_HISTORY_TURNS: "6"
+      RAG_QUERY_REWRITE_MAX_TOKENS: "256"
       NEW_API_URL: ${NEW_API_URL:-}
       NEW_API_KEY: ${NEW_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-gemini-3-flash-preview}

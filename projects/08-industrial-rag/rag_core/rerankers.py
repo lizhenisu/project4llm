@@ -5,27 +5,11 @@ from typing import Protocol
 
 from rag_core.config import RagConfig, _resolve_model_path
 from rag_core.embeddings import resolve_device, resolve_torch_dtype
-from rag_core.text_utils import lexical_overlap_score
 from rag_core.types import SearchHit
 
 
 class Reranker(Protocol):
     def rerank(self, query: str, hits: list[SearchHit], *, limit: int) -> list[SearchHit]: ...
-
-
-class LexicalReranker:
-    """Small local reranker for smoke tests; production should use BGE reranker."""
-
-    def rerank(self, query: str, hits: list[SearchHit], *, limit: int) -> list[SearchHit]:
-        scored = [
-            replace(hit, rerank_score=lexical_overlap_score(query, hit.text))
-            for hit in hits
-        ]
-        return sorted(
-            scored,
-            key=lambda hit: (hit.rerank_score or 0.0, hit.score),
-            reverse=True,
-        )[:limit]
 
 
 class TransformersBGEReranker:
@@ -99,6 +83,4 @@ def build_reranker(config: RagConfig) -> Reranker:
             device=config.model_device,
             dtype=config.model_dtype,
         )
-    if config.rerank_backend == "lexical":
-        return LexicalReranker()
-    raise ValueError(f"Unsupported RAG_RERANK_BACKEND={config.rerank_backend!r}")
+    raise ValueError(f"Unsupported RAG_RERANK_BACKEND={config.rerank_backend!r}; use bge")

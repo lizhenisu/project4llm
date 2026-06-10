@@ -10,7 +10,7 @@ from rag_core.io import load_source_documents
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
 from rag_core.object_store import archive_source_documents
 from rag_core.pii import apply_pii_policy
-from rag_core.text_utils import chunk_document, tokenize
+from rag_core.text_utils import chunk_document
 from rag_core.types import SourceDocument
 from rag_core.versioning import publish_current_versions
 
@@ -76,7 +76,6 @@ def main() -> None:
         for doc in docs:
             print(
                 f"- doc_id={doc.doc_id} title={doc.title} "
-                f"approx_tokens={len(tokenize(doc.text))} "
                 f"model_tokens={embedding_model.count_tokens(doc.text)} "
                 f"chunks={chunk_counts.get(doc.doc_id, 0)} "
                 f"acl={','.join(doc.acl_groups)}"
@@ -85,7 +84,6 @@ def main() -> None:
             preview = chunk.text[:220].replace("\n", " ")
             print(
                 f"  chunk doc={chunk.doc_id} idx={chunk.chunk_index} "
-                f"approx_tokens={len(tokenize(chunk.text))} "
                 f"model_tokens={embedding_model.count_tokens(chunk.text)} "
                 f"preview={preview}"
             )

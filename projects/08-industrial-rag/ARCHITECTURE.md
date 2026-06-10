@@ -55,7 +55,7 @@ flowchart TB
         MM["multimodal.py<br/>图文融合 RRF"]
         REWRITE["rewrite.py<br/>query rewrite"]
         GUARD["guards.py<br/>跨租户防护"]
-        RERANKERS["rerankers.py<br/>lexical / BGE rerank"]
+        RERANKERS["rerankers.py<br/>BGE rerank"]
         CONTEXT["context.py<br/>context packing"]
         ANS["answering.py<br/>prompt / LLM answer"]
         AUTH["auth.py<br/>API auth context"]
@@ -150,7 +150,7 @@ flowchart LR
 | 数据结构 | 定义文档、图片文档、chunk、检索结果、trace、context packing 统计 | `rag_core/types.py` |
 | 配置 | 从环境变量加载 Milvus URI、collection、模型后端、维度、chunk 参数、阈值、API token | `rag_core/config.py` |
 | 文件解析 | 读取 JSONL、Markdown、HTML、PDF、TXT、CSV/TSV，并转成统一文档对象 | `rag_core/io.py` |
-| 文本处理 | normalize、tokenize、稳定 hash、结构化 chunk，不拆断表格和 fenced code block | `rag_core/text_utils.py` |
+| 文本处理 | normalize、稳定 hash、结构化 chunk，不拆断表格和 fenced code block；真实 tokenizer 计数由 embedding model 提供 | `rag_core/text_utils.py`、`rag_core/embeddings.py` |
 | PII | 检测邮箱、手机号、身份证/API key 形态，并按 warn/redact/fail 策略处理 | `rag_core/pii.py` |
 | 向量模型 | 封装文本 embedding、图片 embedding、设备和 dtype 解析 | `rag_core/embeddings.py` |
 | Milvus 存储 | 创建 schema、dense/sparse/image index、metadata filter、upsert、dense/sparse/hybrid/image search | `rag_core/milvus_store.py` |
@@ -159,7 +159,7 @@ flowchart LR
 | 查询改写 | 把带历史的追问改写成独立检索 query | `rag_core/rewrite.py` |
 | 权限护栏 | 拦截明显跨租户问题，构造 tenant/ACL/source/version filter | `rag_core/guards.py`、`rag_core/milvus_store.py` |
 | 检索编排 | 串联 rewrite、embedding、Milvus hybrid search、rerank、context packing，并产出 trace | `rag_core/pipeline.py` |
-| 重排 | lexical baseline 或 BGE reranker，把粗召回候选重排 | `rag_core/rerankers.py` |
+| 重排 | BGE reranker 把粗召回候选重排；词面重合只保留在诊断脚本里辅助解释 | `rag_core/rerankers.py` |
 | Context packing | 按 token/字符预算、每文档 chunk 上限、最低 rerank 分选择证据 | `rag_core/context.py` |
 | 回答生成 | 根据 evidence 生成 prompt，调用 NewAPI-compatible LLM，保留 citation | `rag_core/answering.py` |
 | API 鉴权 | 从 header 解析 tenant、ACL、token，服务端控制权限上下文 | `rag_core/auth.py` |

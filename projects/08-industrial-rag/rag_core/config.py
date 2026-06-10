@@ -112,6 +112,8 @@ class RagConfig:
     max_chunks_per_doc: int
     min_rerank_score: float | None
     query_rewrite_backend: str
+    query_rewrite_history_turns: int
+    query_rewrite_max_tokens: int
     require_auth_context: bool
     api_token: str | None
     dense_hnsw_m: int
@@ -172,6 +174,8 @@ def load_config() -> RagConfig:
         max_chunks_per_doc=_env_int("RAG_MAX_CHUNKS_PER_DOC", 2),
         min_rerank_score=_env_float_or_none("RAG_MIN_RERANK_SCORE"),
         query_rewrite_backend=os.environ.get("RAG_QUERY_REWRITE_BACKEND", "llm").lower(),
+        query_rewrite_history_turns=_env_int("RAG_QUERY_REWRITE_HISTORY_TURNS", 6),
+        query_rewrite_max_tokens=_env_int("RAG_QUERY_REWRITE_MAX_TOKENS", 256),
         require_auth_context=_env_bool("RAG_REQUIRE_AUTH_CONTEXT", False),
         api_token=os.environ.get("RAG_API_TOKEN") or None,
         dense_hnsw_m=_env_int("RAG_DENSE_HNSW_M", 16),

@@ -37,6 +37,8 @@ def main() -> None:
         "RAG_RERANK_MAX_LENGTH",
         "RAG_IMAGE_EMBED_BATCH_SIZE",
         "RAG_QUERY_REWRITE_BACKEND",
+        "RAG_QUERY_REWRITE_HISTORY_TURNS",
+        "RAG_QUERY_REWRITE_MAX_TOKENS",
         "RAG_MAX_CONTEXT_CHARS",
         "RAG_MAX_CHUNKS_PER_DOC",
         "NEW_API_URL",
@@ -66,6 +68,8 @@ def main() -> None:
     assert rag_api_env["MILVUS_URI"] == "http://milvus:19530"
     assert rag_api_env["RAG_OBJECT_STORE_DIR"] == EXPECTED_OBJECT_STORE_PATH
     assert rag_api_env["RAG_RUNTIME_DIR"] == EXPECTED_RUNTIME_PATH
+    assert rag_api_env["RAG_QUERY_REWRITE_HISTORY_TURNS"] == "6"
+    assert rag_api_env["RAG_QUERY_REWRITE_MAX_TOKENS"] == "256"
     assert has_volume(rag_api["volumes"], EXPECTED_OBJECT_STORE_PATH)
     assert has_volume(rag_api["volumes"], EXPECTED_RUNTIME_PATH)
 

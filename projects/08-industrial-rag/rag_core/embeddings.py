@@ -15,6 +15,8 @@ class EmbeddingModel(Protocol):
 
     def encode(self, texts: list[str]) -> list[list[float]]: ...
 
+    def tokenize(self, text: str) -> list[int]: ...
+
     def count_tokens(self, text: str) -> int: ...
 
 
@@ -97,13 +99,16 @@ class TransformersBGEEmbeddingModel:
         return vectors
 
     def count_tokens(self, text: str) -> int:
+        return len(self.tokenize(text))
+
+    def tokenize(self, text: str) -> list[int]:
         encoded = self._tokenizer(
             text,
             add_special_tokens=True,
             truncation=False,
             return_attention_mask=False,
         )
-        return len(encoded["input_ids"])
+        return list(encoded["input_ids"])
 
     def _raise_if_truncated(self, texts: list[str], *, offset: int) -> None:
         encoded = self._tokenizer(
@@ -200,13 +205,16 @@ class TransformersCLIPImageEmbeddingModel:
         return vectors
 
     def count_tokens(self, text: str) -> int:
+        return len(self.tokenize(text))
+
+    def tokenize(self, text: str) -> list[int]:
         inputs = self._processor.tokenizer(
             text,
             add_special_tokens=True,
             truncation=False,
             return_attention_mask=False,
         )
-        return len(inputs["input_ids"])
+        return list(inputs["input_ids"])
 
     def _check_dims(self, vectors: list[list[float]]) -> None:
         for vector in vectors:
