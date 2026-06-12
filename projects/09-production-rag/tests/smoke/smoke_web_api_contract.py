@@ -1,18 +1,28 @@
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
+
+from fastapi.testclient import TestClient
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
+import serve
+from rag_core.sources import IngestSummary
 from serve import (
     ArtifactListResponse,
     DeleteArtifactResponse,
+    DeleteConversationResponse,
     DeleteSourceResponse,
     HitResponse,
     MindMapArtifactResponse,
+    ConversationListResponse,
+    ConversationMessageRequest,
+    ConversationResponse,
     SourceListResponse,
     SourceResponse,
     SourceUploadResponse,
@@ -30,6 +40,8 @@ def main() -> None:
         "/sources",
         "/sources/upload",
         "/sources/{doc_id:path}",
+        "/conversations",
+        "/conversations/{conversation_id}",
         "/artifacts",
         "/artifacts/mindmap",
         "/artifacts/{artifact_id}",
@@ -40,6 +52,10 @@ def main() -> None:
     assert "POST" in methods_by_route["/sources/upload"]
     assert "GET" in methods_by_route["/sources/{doc_id:path}"]
     assert "DELETE" in methods_by_route["/sources/{doc_id:path}"]
+    assert "GET" in methods_by_route["/conversations"]
+    assert "POST" in methods_by_route["/conversations"]
+    assert "GET" in methods_by_route["/conversations/{conversation_id}"]
+    assert "DELETE" in methods_by_route["/conversations/{conversation_id}"]
     assert "GET" in methods_by_route["/artifacts"]
     assert "POST" in methods_by_route["/artifacts/mindmap"]
     assert "GET" in methods_by_route["/artifacts/{artifact_id}"]
@@ -95,6 +111,90 @@ def main() -> None:
     )
     assert ArtifactListResponse(artifacts=[artifact]).artifacts[0].id == "artifact-1"
     assert DeleteArtifactResponse(status="deleted", artifact_id="artifact-1").status == "deleted"
+
+    conversation = ConversationResponse(
+        id="conv-1",
+        tenant_id="team_a",
+        title="Runbook chat",
+        messages=[
+            ConversationMessageRequest(
+                id="msg-1",
+                role="user",
+                content="怎么排障？",
+            ),
+            ConversationMessageRequest(
+                id="msg-2",
+                role="assistant",
+                content="检查 Milvus。",
+                citations=[hit],
+            ),
+        ],
+        source_doc_ids=["runbook"],
+        created_at=1,
+        updated_at=2,
+    )
+    assert conversation.messages[1].citations[0].doc_id == "runbook"
+    assert ConversationListResponse(conversations=[]).conversations == []
+    assert DeleteConversationResponse(status="deleted", conversation_id="conv-1").status == "deleted"
+
+    old_save_uploaded_file = serve.save_uploaded_file
+    old_ingest_uploaded_path = serve.ingest_uploaded_path
+    try:
+        serve.save_uploaded_file = lambda **_: Path("/tmp/upload.txt")
+        serve.ingest_uploaded_path = lambda **_: IngestSummary(
+            sources=[source],
+            document_count=1,
+            chunk_count=2,
+        )
+        upload_response = TestClient(app).post(
+            "/sources/upload",
+            files={"file": ("upload.txt", b"hello", "text/plain")},
+            data={"tenant_id": "team_a", "acl_groups": "ops"},
+        )
+        assert upload_response.status_code == 200, upload_response.text
+        assert upload_response.json()["sources"][0]["doc_id"] == "runbook"
+    finally:
+        serve.save_uploaded_file = old_save_uploaded_file
+        serve.ingest_uploaded_path = old_ingest_uploaded_path
+
+    old_runtime_dir = os.environ.get("RAG_RUNTIME_DIR")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["RAG_RUNTIME_DIR"] = tmp
+        try:
+            client = TestClient(app)
+            save_response = client.post(
+                "/conversations",
+                json={
+                    "tenant_id": "team_a",
+                    "title": "Runbook chat",
+                    "source_doc_ids": ["runbook"],
+                    "messages": [
+                        {"id": "msg-1", "role": "user", "content": "怎么排障？"},
+                        {
+                            "id": "msg-2",
+                            "role": "assistant",
+                            "content": "检查 Milvus。",
+                            "citations": [hit.model_dump()],
+                        },
+                    ],
+                },
+            )
+            assert save_response.status_code == 200, save_response.text
+            conversation_id = save_response.json()["id"]
+            list_response = client.get("/conversations?tenant_id=team_a")
+            assert list_response.status_code == 200, list_response.text
+            assert list_response.json()["conversations"][0]["id"] == conversation_id
+            get_response = client.get(f"/conversations/{conversation_id}?tenant_id=team_a")
+            assert get_response.status_code == 200, get_response.text
+            assert get_response.json()["messages"][1]["citations"][0]["doc_id"] == "runbook"
+            delete_response = client.delete(f"/conversations/{conversation_id}?tenant_id=team_a")
+            assert delete_response.status_code == 200, delete_response.text
+            assert delete_response.json()["status"] == "deleted"
+        finally:
+            if old_runtime_dir is None:
+                os.environ.pop("RAG_RUNTIME_DIR", None)
+            else:
+                os.environ["RAG_RUNTIME_DIR"] = old_runtime_dir
 
     print("smoke_web_api_contract=ok")
 

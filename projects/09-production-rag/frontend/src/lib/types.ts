@@ -12,8 +12,21 @@ export type SourceItem = {
   current: boolean;
   created_at?: number | null;
   updated_at?: number | null;
+  child_doc_ids?: string[];
   selected?: boolean;
   error?: string;
+};
+
+export type SourceContent = {
+  doc_id: string;
+  title: string;
+  source_type: string;
+  source_uri: string;
+  doc_version: number;
+  child_doc_ids: string[];
+  guide: string;
+  tags: string[];
+  text: string;
 };
 
 export type Citation = {
@@ -36,6 +49,7 @@ export type ChatMessage = {
   requestId?: string;
   citations?: Citation[];
   status?: "sending" | "done" | "failed";
+  created_at?: number | null;
 };
 
 export type QueryResponse = {
@@ -62,6 +76,26 @@ export type MindMapArtifact = {
   updated_at: number;
   root?: MindMapNode | null;
   error?: string;
+};
+
+export type ConversationListItem = {
+  id: string;
+  tenant_id: string;
+  title: string;
+  message_count: number;
+  source_doc_ids: string[];
+  created_at: number;
+  updated_at: number;
+};
+
+export type Conversation = {
+  id: string;
+  tenant_id: string;
+  title: string;
+  messages: ChatMessage[];
+  source_doc_ids: string[];
+  created_at: number;
+  updated_at: number;
 };
 
 export type Settings = {

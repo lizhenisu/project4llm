@@ -1,4 +1,13 @@
-import type { MindMapArtifact, QueryResponse, Settings, SourceItem } from "./types";
+import type {
+  ChatMessage,
+  Conversation,
+  ConversationListItem,
+  MindMapArtifact,
+  QueryResponse,
+  Settings,
+  SourceContent,
+  SourceItem,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -12,6 +21,10 @@ export class ApiError extends Error {
 type RequestOptions = RequestInit & {
   settings: Settings;
   json?: unknown;
+};
+
+type ApiConversation = Omit<Conversation, "messages"> & {
+  messages: Array<Omit<ChatMessage, "requestId"> & { request_id?: string | null }>;
 };
 
 async function request<T>(path: string, options: RequestOptions): Promise<T> {
@@ -32,16 +45,28 @@ async function request<T>(path: string, options: RequestOptions): Promise<T> {
     body,
   });
   if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const payload = await response.json();
-      detail = typeof payload.detail === "string" ? payload.detail : JSON.stringify(payload);
-    } catch {
-      detail = await response.text();
-    }
+    const detail = await readErrorDetail(response);
     throw new ApiError(detail, response.status);
   }
   return (await response.json()) as T;
+}
+
+async function readErrorDetail(response: Response): Promise<string> {
+  const contentType = response.headers.get("content-type") ?? "";
+  const fallback = response.statusText || `HTTP ${response.status}`;
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = (await response.json()) as { detail?: unknown };
+      if (typeof payload.detail === "string") {
+        return payload.detail;
+      }
+      return JSON.stringify(payload);
+    } catch {
+      return fallback;
+    }
+  }
+  const text = await response.text();
+  return text || fallback;
 }
 
 export function health(settings: Settings) {
@@ -59,6 +84,13 @@ export async function listSources(settings: Settings): Promise<SourceItem[]> {
 export function getSource(settings: Settings, docId: string): Promise<SourceItem> {
   return request<SourceItem>(
     `/sources/${encodeURIComponent(docId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    { settings },
+  );
+}
+
+export function getSourceContent(settings: Settings, docId: string): Promise<SourceContent> {
+  return request<SourceContent>(
+    `/sources/content/${encodeURIComponent(docId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
     { settings },
   );
 }
@@ -124,6 +156,68 @@ export function sendFeedback(
       selected_doc_ids: selectedDocIds,
     },
   });
+}
+
+export async function listConversations(settings: Settings): Promise<ConversationListItem[]> {
+  const payload = await request<{ conversations: ConversationListItem[] }>(
+    `/conversations?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    { settings },
+  );
+  return payload.conversations;
+}
+
+export function getConversation(settings: Settings, conversationId: string): Promise<Conversation> {
+  return request<ApiConversation>(
+    `/conversations/${encodeURIComponent(conversationId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    { settings },
+  ).then(normalizeConversation);
+}
+
+export function saveConversation(
+  settings: Settings,
+  params: {
+    id?: string | null;
+    title: string;
+    messages: ChatMessage[];
+    sourceDocIds: string[];
+  },
+): Promise<Conversation> {
+  return request<ApiConversation>("/conversations", {
+    method: "POST",
+    settings,
+    json: {
+      id: params.id || null,
+      tenant_id: settings.tenantId,
+      title: params.title,
+      messages: params.messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        status: message.status || "done",
+        request_id: message.requestId || null,
+        citations: message.citations || [],
+        created_at: message.created_at || null,
+      })),
+      source_doc_ids: params.sourceDocIds,
+    },
+  }).then(normalizeConversation);
+}
+
+export function deleteConversation(settings: Settings, conversationId: string) {
+  return request<{ status: string; conversation_id: string }>(
+    `/conversations/${encodeURIComponent(conversationId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    { method: "DELETE", settings },
+  );
+}
+
+function normalizeConversation(conversation: ApiConversation): Conversation {
+  return {
+    ...conversation,
+    messages: conversation.messages.map((message) => ({
+      ...message,
+      requestId: message.request_id || undefined,
+    })),
+  };
 }
 
 export async function listArtifacts(settings: Settings): Promise<MindMapArtifact[]> {

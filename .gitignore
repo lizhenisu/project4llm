@@ -24,3 +24,5 @@ projects/09-production-rag/object_store/
 projects/09-production-rag/volumes/
 projects/09-production-rag/runtime/
 projects/09-production-rag/frontend/dist/
+projects/09-production-rag/frontend/playwright-report/
+projects/09-production-rag/frontend/test-results/

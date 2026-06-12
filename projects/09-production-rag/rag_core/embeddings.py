@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import math
+import re
 from pathlib import Path
 from typing import Protocol
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from rag_core.config import RagConfig, _resolve_model_path
 
@@ -22,6 +28,105 @@ class EmbeddingModel(Protocol):
 
 class ImageEmbeddingModel(EmbeddingModel, Protocol):
     def encode_images(self, image_paths: list[Path]) -> list[list[float]]: ...
+
+
+class HashEmbeddingModel:
+    def __init__(self, *, model_name: str, dim: int) -> None:
+        self._model_name = model_name
+        self._dim = dim
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        return [self._encode_one(text) for text in texts]
+
+    def tokenize(self, text: str) -> list[int]:
+        tokens = lexical_tokens(text)
+        return [stable_token_bucket(token, self._dim) for token in tokens]
+
+    def count_tokens(self, text: str) -> int:
+        return len(self.tokenize(text))
+
+    def _encode_one(self, text: str) -> list[float]:
+        vector = [0.0] * self._dim
+        tokens = lexical_tokens(text)
+        if not tokens:
+            return vector
+        for token in tokens:
+            bucket = stable_token_bucket(token, self._dim)
+            sign = 1.0 if stable_token_bucket(f"{token}:sign", 2) == 0 else -1.0
+            vector[bucket] += sign
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm == 0.0:
+            return vector
+        return [value / norm for value in vector]
+
+
+class SiliconFlowEmbeddingModel:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str | None,
+        model_name: str,
+        dim: int,
+        batch_size: int,
+    ) -> None:
+        if not api_key:
+            raise RuntimeError("SILICONFLOW_API_KEY must be configured for SiliconFlow embeddings.")
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._model_name = model_name
+        self._dim = dim
+        self._batch_size = max(1, batch_size)
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self._batch_size):
+            vectors.extend(self._embed_batch(texts[start : start + self._batch_size]))
+        for vector in vectors:
+            if len(vector) != self._dim:
+                raise ValueError(
+                    f"Embedding dim mismatch: expected {self._dim}, got {len(vector)}. "
+                    "Set EMBEDDING_DIM to match the SiliconFlow model."
+                )
+        return vectors
+
+    def tokenize(self, text: str) -> list[int]:
+        tokens = lexical_tokens(text)
+        return [stable_token_bucket(token, self._dim) for token in tokens]
+
+    def count_tokens(self, text: str) -> int:
+        return len(self.tokenize(text))
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        payload = {
+            "model": self._model_name,
+            "input": texts,
+        }
+        data = post_json(
+            siliconflow_url(self._base_url, "/embeddings"),
+            api_key=self._api_key,
+            payload=payload,
+        )
+        items = sorted(data.get("data", []), key=lambda item: item.get("index", 0))
+        return [list(item["embedding"]) for item in items]
 
 
 def zero_image_vector(config: RagConfig) -> list[float]:
@@ -229,6 +334,16 @@ class TransformersCLIPImageEmbeddingModel:
 
 
 def build_embedding_model(config: RagConfig) -> EmbeddingModel:
+    if config.embedding_backend == "hash":
+        return HashEmbeddingModel(model_name=config.embedding_model, dim=config.embedding_dim)
+    if config.embedding_backend == "siliconflow":
+        return SiliconFlowEmbeddingModel(
+            base_url=config.siliconflow_base_url,
+            api_key=config.siliconflow_api_key,
+            model_name=config.embedding_model,
+            dim=config.embedding_dim,
+            batch_size=config.embedding_batch_size,
+        )
     if config.embedding_backend == "bge":
         local_path = _resolve_model_path(config.embedding_model, ms_subdir="bge-m3")
         return TransformersBGEEmbeddingModel(
@@ -242,8 +357,45 @@ def build_embedding_model(config: RagConfig) -> EmbeddingModel:
         )
     raise ValueError(
         "Unsupported RAG_EMBEDDING_BACKEND="
-        f"{config.embedding_backend!r}. Use 'bge'."
+        f"{config.embedding_backend!r}. Use 'hash', 'siliconflow', or 'bge'."
     )
+
+
+def lexical_tokens(text: str) -> list[str]:
+    return re.findall(r"[\w\u4e00-\u9fff]+", text.lower())
+
+
+def stable_token_bucket(token: str, dim: int) -> int:
+    digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % dim
+
+
+def siliconflow_url(base_url: str, path: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        return f"{base}{path}"
+    return f"{base}/v1{path}"
+
+
+def post_json(url: str, *, api_key: str, payload: dict) -> dict:
+    body = json.dumps(payload).encode("utf-8")
+    request = Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=120) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"SiliconFlow API error {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"SiliconFlow API request failed: {exc.reason}") from exc
 
 
 def pooled_clip_features(features):

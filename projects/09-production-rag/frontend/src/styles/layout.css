@@ -149,6 +149,60 @@
   line-height: 1.3;
 }
 
+.chat-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-menu {
+  position: relative;
+}
+
+.chat-menu-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  width: 228px;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 14px 34px rgb(15 23 42 / 18%);
+  padding: 14px;
+}
+
+.chat-menu-popover > button {
+  display: grid;
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 7px 2px;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+}
+
+.chat-menu-popover > button:not(:disabled):hover {
+  background: var(--surface-muted);
+}
+
+.chat-menu-popover > button:disabled {
+  color: var(--text);
+  cursor: not-allowed;
+}
+
+.chat-menu-popover p {
+  margin: 4px 0 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.5;
+}
+
 .add-source-button {
   margin: 14px;
 }
@@ -239,6 +293,11 @@
   text-align: left;
 }
 
+.source-title:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
 .source-title span,
 .artifact-row strong {
   display: block;
@@ -262,6 +321,130 @@
 
 .error-text {
   color: var(--danger);
+}
+
+.source-reader-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 22;
+  display: grid;
+  justify-items: start;
+  background: rgb(30 31 28 / 18%);
+  padding: 0;
+}
+
+.source-reader {
+  display: grid;
+  grid-template-rows: 60px minmax(0, 1fr);
+  width: min(640px, 100vw);
+  height: 100vh;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 18px 0 42px rgb(15 23 42 / 16%);
+}
+
+.source-reader-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding: 0 20px;
+}
+
+.source-reader-header h2,
+.source-guide-title h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.source-reader-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 22px 20px 44px;
+}
+
+.source-reader-body h1 {
+  margin: 0 0 24px;
+  overflow-wrap: anywhere;
+  font-size: 26px;
+  line-height: 1.25;
+}
+
+.source-guide-card {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 34px;
+  border-radius: 16px;
+  background: #eef1fb;
+  padding: 18px 20px 20px;
+}
+
+.source-guide-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+}
+
+.source-guide-title svg:first-child {
+  color: var(--accent-strong);
+}
+
+.source-guide-card p {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.8;
+}
+
+.source-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.source-tags span {
+  max-width: 150px;
+  overflow: hidden;
+  border: 1px solid #d8deef;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 52%);
+  padding: 9px 15px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-document-text {
+  color: var(--text);
+}
+
+.source-document-text p {
+  margin: 0 0 22px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.72;
+}
+
+.source-loading {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.spin-icon {
+  margin-left: auto;
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .empty-state {
@@ -299,6 +482,32 @@
   display: flex;
   flex-direction: column;
   padding: 18px;
+}
+
+.chat-quick-actions {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 40px;
+  margin-bottom: 6px;
+}
+
+.chat-quick-actions button {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 8px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  padding: 0 14px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.chat-quick-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.9;
 }
 
 .overview {
@@ -766,5 +975,22 @@
 
   .node-children {
     grid-template-columns: 1fr;
+  }
+
+  .source-reader {
+    width: 100vw;
+  }
+
+  .source-reader-body {
+    padding: 20px 18px 38px;
+  }
+
+  .source-reader-body h1 {
+    font-size: 22px;
+  }
+
+  .source-guide-card p,
+  .source-document-text p {
+    font-size: 16px;
   }
 }

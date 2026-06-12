@@ -103,6 +103,9 @@ class RagConfig:
     llm_base_url: str | None
     llm_api_key: str | None
     llm_model: str
+    siliconflow_base_url: str
+    siliconflow_api_key: str | None
+    answer_backend: str
     chunk_size: int
     chunk_overlap: int
     reset_collection: bool
@@ -163,6 +166,12 @@ def load_config() -> RagConfig:
         llm_base_url=_newapi_base_url(),
         llm_api_key=os.environ.get("NEW_API_KEY") or None,
         llm_model=os.environ.get("LLM_MODEL", "gemini-3-flash-preview"),
+        siliconflow_base_url=os.environ.get(
+            "SILICONFLOW_URL",
+            "https://api.siliconflow.cn",
+        ).rstrip("/"),
+        siliconflow_api_key=os.environ.get("SILICONFLOW_API_KEY") or None,
+        answer_backend=os.environ.get("RAG_ANSWER_BACKEND", "llm").lower(),
         chunk_size=_env_int("RAG_CHUNK_SIZE", 700),
         chunk_overlap=_env_int("RAG_CHUNK_OVERLAP", 100),
         reset_collection=_env_bool("RAG_RESET_COLLECTION", False),

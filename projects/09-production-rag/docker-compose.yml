@@ -45,19 +45,20 @@ services:
       context: ../..
       dockerfile: projects/09-production-rag/Dockerfile
     container_name: rag-api
+    env_file:
+      - ../../.env
     environment:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
       RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
-      RAG_EMBEDDING_BACKEND: bge
-      RAG_RERANK_BACKEND: bge
       RAG_IMAGE_EMBEDDING_BACKEND: clip
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "512"
       RAG_RUNTIME_DIR: /app/projects/09-production-rag/runtime
-      RAG_QUERY_REWRITE_BACKEND: llm
+      RAG_QUERY_REWRITE_BACKEND: ${RAG_QUERY_REWRITE_BACKEND:-none}
       RAG_QUERY_REWRITE_HISTORY_TURNS: "6"
       RAG_QUERY_REWRITE_MAX_TOKENS: "256"
+      RAG_ANSWER_BACKEND: ${RAG_ANSWER_BACKEND:-extractive}
       NEW_API_URL: ${NEW_API_URL:-}
       NEW_API_KEY: ${NEW_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-gemini-3-flash-preview}
@@ -93,14 +94,14 @@ services:
     container_name: rag-ingest
     profiles: ["ingest"]
     command: ["./scripts/start_ingest.sh"]
+    env_file:
+      - ../../.env
     environment:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
       RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
       RAG_TEXT_INPUT: ${RAG_TEXT_INPUT:-}
       RAG_IMAGE_INPUT: ${RAG_IMAGE_INPUT:-}
-      RAG_EMBEDDING_BACKEND: bge
-      RAG_RERANK_BACKEND: bge
       RAG_IMAGE_EMBEDDING_BACKEND: clip
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "512"

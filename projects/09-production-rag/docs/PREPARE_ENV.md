@@ -132,6 +132,42 @@ npm install
 npm run build
 ```
 
+### 6.1 Playwright E2E 测试
+
+前端已配置 Playwright，用于验证来源列表、文档原文阅读、对话菜单等真实浏览器交互。
+
+首次运行前安装浏览器：
+
+```bash
+cd projects/09-production-rag/frontend
+npx playwright install chromium
+```
+
+如果系统缺少 Chromium 运行库，按 Playwright 提示安装依赖：
+
+```bash
+cd projects/09-production-rag/frontend
+sudo env "PATH=$PATH" npx playwright install-deps chromium
+```
+
+在 Ubuntu 26.04 上，当前 Playwright 版本尚未正式识别 `ubuntu26.04-x64`，可以使用 Ubuntu 24.04 兼容浏览器包：
+
+```bash
+cd projects/09-production-rag/frontend
+PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64 npx playwright install chromium
+sudo env "PATH=$PATH" PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64 npx playwright install-deps chromium
+npm run test:e2e:ubuntu26
+```
+
+如果 Node/npm 是通过 nvm 安装的，必须使用上面的 `sudo env "PATH=$PATH" ...` 写法；否则 `sudo` 后 root 的 `PATH` 中没有用户级 nvm 路径，会出现 `sudo: 'npx': command not found`。
+
+普通环境运行：
+
+```bash
+cd projects/09-production-rag/frontend
+npm run test:e2e
+```
+
 ## 7. 后端开发前置条件
 
 从仓库根目录：

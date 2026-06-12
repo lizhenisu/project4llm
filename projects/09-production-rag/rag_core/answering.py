@@ -50,6 +50,18 @@ def build_prompt(query: str, hits: list[SearchHit]) -> str:
 def generate_answer(config: RagConfig, query: str, hits: list[SearchHit]) -> AnswerGeneration:
     prompt = build_prompt(query, hits)
     start = perf_counter()
+    if config.answer_backend == "extractive":
+        return AnswerGeneration(
+            answer=extractive_answer(query, hits),
+            llm_model="extractive",
+            llm_backend="local",
+            latency_ms=elapsed_ms(start),
+            token_usage={},
+        )
+    if config.answer_backend != "llm":
+        raise ValueError(
+            f"Unsupported RAG_ANSWER_BACKEND={config.answer_backend!r}; use extractive/llm"
+        )
     if not config.llm_base_url or not config.llm_api_key:
         raise RuntimeError("NEW_API_URL/NEW_API_KEY must be configured for answer generation.")
 
@@ -73,6 +85,24 @@ def generate_answer(config: RagConfig, query: str, hits: list[SearchHit]) -> Ans
         latency_ms=elapsed_ms(start),
         token_usage=extract_usage(response),
     )
+
+
+def extractive_answer(query: str, hits: list[SearchHit]) -> str:
+    if not hits:
+        return "当前知识库没有足够证据。"
+    lines = [f"根据已检索到的资料，问题“{query}”可参考以下证据："]
+    for index, hit in enumerate(hits, start=1):
+        text = compact_preview(hit.text, limit=220)
+        lines.append(f"{index}. {text} [{index}]")
+    lines.append("以上为本地抽取式回答；配置 RAG_ANSWER_BACKEND=llm 后可启用生成式回答。")
+    return "\n".join(lines)
+
+
+def compact_preview(text: str, *, limit: int) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "..."
 
 
 def elapsed_ms(start: float) -> float:

@@ -1,6 +1,6 @@
-import { FileText, Globe2, Plus, Search, Sparkles, Trash2, Upload } from "lucide-react";
+import { FileText, Globe2, LoaderCircle, Plus, Search, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { useRef, useState } from "react";
-import type { SourceItem } from "../../lib/types";
+import type { SourceContent, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
 
 type Props = {
@@ -8,9 +8,24 @@ type Props = {
   onSourcesChange: (sources: SourceItem[]) => void;
   onUpload: (file: File) => void;
   onDeleteSource: (source: SourceItem) => void;
+  onOpenSource: (source: SourceItem) => void;
+  activeContent: SourceContent | null;
+  contentLoading: boolean;
+  contentError: string;
+  onCloseContent: () => void;
 };
 
-export function SourcePanel({ sources, onSourcesChange, onUpload, onDeleteSource }: Props) {
+export function SourcePanel({
+  sources,
+  onSourcesChange,
+  onUpload,
+  onDeleteSource,
+  onOpenSource,
+  activeContent,
+  contentLoading,
+  contentError,
+  onCloseContent,
+}: Props) {
   const [uploadOpen, setUploadOpen] = useState(false);
   const readySources = sources.filter((source) => source.status === "ready");
   const allSelected = readySources.length > 0 && readySources.every((source) => source.selected);
@@ -63,7 +78,12 @@ export function SourcePanel({ sources, onSourcesChange, onUpload, onDeleteSource
           {sources.map((source) => (
             <div className={`source-row status-${source.status}`} key={source.doc_id}>
               <FileText className="file-type-icon" size={20} />
-              <button type="button" className="source-title" onClick={() => toggle(source.doc_id)}>
+              <button
+                type="button"
+                className="source-title"
+                disabled={source.status !== "ready"}
+                onClick={() => onOpenSource(source)}
+              >
                 <span>{source.title}</span>
                 <small>
                   {source.source_type} · {source.chunk_count} chunks
@@ -90,7 +110,73 @@ export function SourcePanel({ sources, onSourcesChange, onUpload, onDeleteSource
         </div>
       )}
       {uploadOpen ? <SourceUploadDialog onClose={() => setUploadOpen(false)} onUpload={onUpload} /> : null}
+      {activeContent ? (
+        <SourceReader
+          content={activeContent}
+          loading={contentLoading}
+          error={contentError}
+          onClose={onCloseContent}
+        />
+      ) : null}
     </aside>
+  );
+}
+
+function SourceReader({
+  content,
+  loading,
+  error,
+  onClose,
+}: {
+  content: SourceContent;
+  loading: boolean;
+  error: string;
+  onClose: () => void;
+}) {
+  return (
+    <div className="source-reader-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="source-reader"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${content.title} 原始内容`}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="source-reader-header">
+          <h2>来源</h2>
+          <button className="icon-button" type="button" title="关闭" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </header>
+        <div className="source-reader-body">
+          <h1>{content.title}</h1>
+          <section className="source-guide-card">
+            <div className="source-guide-title">
+              <Sparkles size={20} />
+              <h2>来源指南</h2>
+              {loading ? <LoaderCircle className="spin-icon" size={18} /> : null}
+            </div>
+            {error ? <p className="error-text">{error}</p> : <p>{content.guide}</p>}
+            {content.tags.length > 0 ? (
+              <div className="source-tags">
+                {content.tags.map((tag) => (
+                  <span key={tag}>{tag}</span>
+                ))}
+              </div>
+            ) : null}
+          </section>
+          <article className="source-document-text">
+            {content.text ? (
+              content.text.split(/\n{2,}/).map((block, index) => <p key={`${index}-${block.slice(0, 16)}`}>{block}</p>)
+            ) : loading ? (
+              <p className="source-loading">正在加载原始内容...</p>
+            ) : (
+              <p className="source-loading">暂无可展示的原始内容。</p>
+            )}
+          </article>
+        </div>
+      </section>
+    </div>
   );
 }
 

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import shutil
 import uuid
+from collections import Counter
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from rag_core.config import RagConfig
 from rag_core.embeddings import build_embedding_model, zero_image_vector
@@ -17,10 +18,14 @@ from rag_core.milvus_store import (
     milvus_string_literal,
     upsert_entities,
 )
-from rag_core.object_store import archive_delete_tombstone, archive_source_documents
+from rag_core.object_store import (
+    archive_delete_tombstone,
+    archive_source_documents,
+    load_archived_source_documents,
+)
 from rag_core.pii import apply_pii_policy
 from rag_core.text_utils import chunk_document
-from rag_core.types import SourceDocument
+from rag_core.types import Chunk, SourceDocument
 from rag_core.versioning import load_current_versions, publish_current_versions, unpublish_current_version
 
 
@@ -40,6 +45,7 @@ class SourceSummary:
     current: bool
     created_at: int | None = None
     updated_at: int | None = None
+    child_doc_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,19 @@ class IngestSummary:
     sources: list[SourceSummary]
     document_count: int
     chunk_count: int
+
+
+@dataclass(frozen=True)
+class SourceContent:
+    doc_id: str
+    title: str
+    source_type: str
+    source_uri: str
+    doc_version: int
+    child_doc_ids: list[str]
+    guide: str
+    tags: list[str]
+    text: str
 
 
 def save_uploaded_file(
@@ -164,13 +183,61 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
     upsert_entities(client, collection_name=config.collection_name, entities=entities)
     archive_source_documents(config.object_store_dir, redacted_docs)
     publish_current_versions(config.object_store_dir, redacted_docs)
-    sources = list_sources(config, tenant_id=redacted_docs[0].tenant_id)
-    doc_ids = {doc.doc_id for doc in redacted_docs}
     return IngestSummary(
-        sources=[source for source in sources if source.doc_id in doc_ids],
+        sources=summarize_ingested_sources(redacted_docs, chunks),
         document_count=len(redacted_docs),
         chunk_count=len(chunks),
     )
+
+
+def summarize_ingested_sources(
+    docs: list[SourceDocument],
+    chunks: list[Chunk],
+) -> list[SourceSummary]:
+    chunk_counts = Counter((chunk.doc_id, chunk.chunk_index) for chunk in chunks)
+    grouped: dict[tuple[str, int], dict[str, Any]] = {}
+    for doc in docs:
+        document_id, title = source_document_identity(
+            doc_id=doc.doc_id,
+            title=doc.title,
+            source_uri=doc.source_uri,
+            metadata=doc.metadata,
+        )
+        key = (document_id, doc.doc_version)
+        item = grouped.setdefault(
+            key,
+            {
+                "doc_id": document_id,
+                "title": title,
+                "source_type": doc.source_type,
+                "source_uri": doc.source_uri,
+                "doc_version": doc.doc_version,
+                "acl_groups": set(),
+                "child_doc_ids": set(),
+                "chunk_keys": set(),
+            },
+        )
+        item["acl_groups"].update(doc.acl_groups)
+        item["child_doc_ids"].add(doc.doc_id)
+        for chunk_key, count in chunk_counts.items():
+            if chunk_key[0] == doc.doc_id and count > 0:
+                item["chunk_keys"].add(chunk_key)
+
+    return [
+        SourceSummary(
+            doc_id=str(item["doc_id"]),
+            title=str(item["title"]),
+            source_type=str(item["source_type"]),
+            source_uri=str(item["source_uri"]),
+            doc_version=int(item["doc_version"]),
+            chunk_count=len(item["chunk_keys"]),
+            acl_groups=sorted(item["acl_groups"]),
+            status="ready",
+            current=True,
+            child_doc_ids=sorted(item["child_doc_ids"]),
+        )
+        for item in grouped.values()
+    ]
 
 
 def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
@@ -189,27 +256,37 @@ def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
             "acl_groups",
             "created_at",
             "updated_at",
+            "metadata",
         ],
         limit=10000,
     )
     current_versions = load_current_versions(config.object_store_dir, tenant_id=tenant_id)
-    grouped: dict[tuple[str, int], dict] = defaultdict(lambda: {"chunk_indexes": set()})
+    grouped: dict[tuple[str, int], dict] = defaultdict(
+        lambda: {"chunk_keys": set(), "child_doc_ids": set(), "acl_groups": set()}
+    )
     for row in rows:
-        key = (str(row["doc_id"]), int(row["doc_version"]))
-        item = grouped[key]
-        item.update(
-            {
-                "doc_id": str(row["doc_id"]),
-                "doc_version": int(row["doc_version"]),
-                "title": str(row["title"]),
-                "source_type": str(row["source_type"]),
-                "source_uri": str(row["source_uri"]),
-                "acl_groups": list(row.get("acl_groups") or []),
-                "created_at": int(row["created_at"]) if row.get("created_at") else None,
-                "updated_at": int(row["updated_at"]) if row.get("updated_at") else None,
-            }
+        child_doc_id = str(row["doc_id"])
+        metadata = row.get("metadata") or {}
+        document_id, title = source_document_identity(
+            doc_id=child_doc_id,
+            title=str(row["title"]),
+            source_uri=str(row["source_uri"]),
+            metadata=metadata,
         )
-        item["chunk_indexes"].add(int(row["chunk_index"]))
+        key = (document_id, int(row["doc_version"]))
+        item = grouped[key]
+        item["doc_id"] = document_id
+        item["doc_version"] = int(row["doc_version"])
+        item["title"] = title
+        item["source_type"] = str(row["source_type"])
+        item["source_uri"] = str(row["source_uri"])
+        item["acl_groups"].update(list(row.get("acl_groups") or []))
+        item["child_doc_ids"].add(child_doc_id)
+        item["chunk_keys"].add((child_doc_id, int(row["chunk_index"])))
+        created_at = int(row["created_at"]) if row.get("created_at") else None
+        updated_at = int(row["updated_at"]) if row.get("updated_at") else None
+        item["created_at"] = min_timestamp(item.get("created_at"), created_at)
+        item["updated_at"] = max_timestamp(item.get("updated_at"), updated_at)
     summaries = [
         SourceSummary(
             doc_id=item["doc_id"],
@@ -217,12 +294,16 @@ def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
             source_type=item["source_type"],
             source_uri=item["source_uri"],
             doc_version=item["doc_version"],
-            chunk_count=len(item["chunk_indexes"]),
-            acl_groups=item["acl_groups"],
+            chunk_count=len(item["chunk_keys"]),
+            acl_groups=sorted(item["acl_groups"]),
             status="ready",
-            current=current_versions.get(item["doc_id"]) == item["doc_version"],
+            current=all(
+                current_versions.get(child_doc_id) == item["doc_version"]
+                for child_doc_id in item["child_doc_ids"]
+            ),
             created_at=item["created_at"],
             updated_at=item["updated_at"],
+            child_doc_ids=sorted(item["child_doc_ids"]),
         )
         for item in grouped.values()
     ]
@@ -240,12 +321,61 @@ def get_source(
     matches = [
         source
         for source in sources
-        if source.doc_id == doc_id and (doc_version is None or source.doc_version == doc_version)
+        if (source.doc_id == doc_id or doc_id in source.child_doc_ids)
+        and (doc_version is None or source.doc_version == doc_version)
     ]
     if not matches:
         return None
     current = [source for source in matches if source.current]
     return (current or matches)[0]
+
+
+def get_source_content(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    doc_id: str,
+    doc_version: int | None = None,
+) -> SourceContent | None:
+    source = get_source(config=config, tenant_id=tenant_id, doc_id=doc_id, doc_version=doc_version)
+    if source is None:
+        return None
+
+    child_ids = set(source.child_doc_ids or [source.doc_id])
+    archived_docs = load_archived_source_documents(config.object_store_dir)
+    docs = [
+        doc
+        for doc in archived_docs
+        if doc.tenant_id == tenant_id
+        and doc.doc_id in child_ids
+        and doc.doc_version == source.doc_version
+    ]
+    if not docs:
+        return SourceContent(
+            doc_id=source.doc_id,
+            title=source.title,
+            source_type=source.source_type,
+            source_uri=source.source_uri,
+            doc_version=source.doc_version,
+            child_doc_ids=source.child_doc_ids,
+            guide="未找到已归档的解析正文。可以重新上传该来源以恢复文档详情。",
+            tags=[],
+            text="",
+        )
+
+    docs = sorted(docs, key=source_document_sort_key)
+    text = "\n\n".join(source_document_text_block(doc) for doc in docs if doc.text.strip()).strip()
+    return SourceContent(
+        doc_id=source.doc_id,
+        title=source.title,
+        source_type=source.source_type,
+        source_uri=source.source_uri,
+        doc_version=source.doc_version,
+        child_doc_ids=source.child_doc_ids,
+        guide=build_source_guide(text),
+        tags=extract_source_tags(text),
+        text=text,
+    )
 
 
 def delete_source(
@@ -257,29 +387,39 @@ def delete_source(
 ) -> dict[str, object]:
     client = connect(config)
     ensure_collection(client, config, reset=False)
+    source = get_source(config=config, tenant_id=tenant_id, doc_id=doc_id, doc_version=doc_version)
+    target_doc_ids = source.child_doc_ids if source is not None else [doc_id]
     filter_expr = (
         f"tenant_id == {milvus_string_literal(tenant_id)} "
-        f"and doc_id == {milvus_string_literal(doc_id)}"
+        f"and doc_id in [{', '.join(milvus_string_literal(item) for item in target_doc_ids)}]"
     )
     if doc_version is not None:
         filter_expr += f" and doc_version == {doc_version}"
     result = client.delete(collection_name=config.collection_name, filter=filter_expr)
-    unpublished = unpublish_current_version(
-        config.object_store_dir,
-        tenant_id=tenant_id,
-        doc_id=doc_id,
-        doc_version=doc_version,
-    )
-    tombstoned = archive_delete_tombstone(
-        config.object_store_dir,
-        tenant_id=tenant_id,
-        doc_id=doc_id,
-        doc_version=doc_version,
-        reason="api_delete_source",
+    effective_version = doc_version if doc_version is not None else source.doc_version if source is not None else None
+    unpublished = {
+        target_doc_id: unpublish_current_version(
+            config.object_store_dir,
+            tenant_id=tenant_id,
+            doc_id=target_doc_id,
+            doc_version=effective_version,
+        )
+        for target_doc_id in target_doc_ids
+    }
+    tombstoned = sum(
+        archive_delete_tombstone(
+            config.object_store_dir,
+            tenant_id=tenant_id,
+            doc_id=target_doc_id,
+            doc_version=effective_version,
+            reason="api_delete_source",
+        )
+        for target_doc_id in target_doc_ids
     )
     return {
         "filter": filter_expr,
         "milvus": result,
+        "target_doc_ids": target_doc_ids,
         "unpublished": unpublished,
         "tombstoned": tombstoned,
     }
@@ -294,3 +434,87 @@ def safe_filename(filename: str) -> str:
     name = Path(filename).name.strip()
     cleaned = "".join(char if char.isalnum() or char in ".-_ ()[]" else "_" for char in name)
     return cleaned or "upload.txt"
+
+
+def source_document_identity(
+    *,
+    doc_id: str,
+    title: str,
+    source_uri: str,
+    metadata: dict[str, Any],
+) -> tuple[str, str]:
+    relative_path = str(metadata.get("relative_path") or "").strip()
+    if relative_path:
+        path = Path(relative_path)
+        return path.with_suffix("").as_posix(), path.name
+
+    source_name = Path(source_uri).name
+    if source_name:
+        return Path(source_name).with_suffix("").as_posix(), source_name
+
+    if "/page-" in doc_id:
+        return doc_id.rsplit("/page-", 1)[0], title.rsplit(" p", 1)[0]
+    return doc_id, title
+
+
+def min_timestamp(left: int | None, right: int | None) -> int | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return min(left, right)
+
+
+def max_timestamp(left: int | None, right: int | None) -> int | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
+
+
+def source_document_sort_key(doc: SourceDocument) -> tuple[int, str]:
+    page_no = doc.metadata.get("page_no")
+    if isinstance(page_no, int):
+        return page_no, doc.doc_id
+    if isinstance(page_no, str) and page_no.isdigit():
+        return int(page_no), doc.doc_id
+    return 0, doc.doc_id
+
+
+def source_document_text_block(doc: SourceDocument) -> str:
+    page_no = doc.metadata.get("page_no")
+    text = doc.text.strip()
+    if page_no is None:
+        return text
+    return f"第 {page_no} 页\n\n{text}"
+
+
+def build_source_guide(text: str, *, max_chars: int = 260) -> str:
+    paragraphs = [line.strip() for line in text.splitlines() if line.strip()]
+    if not paragraphs:
+        return "该来源暂无可展示的解析正文。"
+    guide = " ".join(paragraphs[:3])
+    return truncate_text(guide, max_chars)
+
+
+def extract_source_tags(text: str, *, limit: int = 5) -> list[str]:
+    tags: list[str] = []
+    for line in text.splitlines():
+        normalized = line.strip().strip("#").strip()
+        if not normalized or len(normalized) > 24:
+            continue
+        if normalized.startswith(("第 ", "第")) and normalized.endswith("页"):
+            continue
+        if normalized[0].isdigit() or normalized[0] in "一二三四五六七八九十":
+            tags.append(normalized)
+        if len(tags) >= limit:
+            break
+    return tags
+
+
+def truncate_text(text: str, max_chars: int) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 1].rstrip() + "…"

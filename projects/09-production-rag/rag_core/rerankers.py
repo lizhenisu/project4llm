@@ -4,12 +4,57 @@ from dataclasses import replace
 from typing import Protocol
 
 from rag_core.config import RagConfig, _resolve_model_path
-from rag_core.embeddings import resolve_device, resolve_torch_dtype
+from rag_core.embeddings import post_json, resolve_device, resolve_torch_dtype, siliconflow_url
 from rag_core.types import SearchHit
 
 
 class Reranker(Protocol):
     def rerank(self, query: str, hits: list[SearchHit], *, limit: int) -> list[SearchHit]: ...
+
+
+class PassthroughReranker:
+    def rerank(self, query: str, hits: list[SearchHit], *, limit: int) -> list[SearchHit]:
+        del query
+        return [replace(hit, rerank_score=hit.score) for hit in hits[:limit]]
+
+
+class SiliconFlowReranker:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str | None,
+        model_name: str,
+    ) -> None:
+        if not api_key:
+            raise RuntimeError("SILICONFLOW_API_KEY must be configured for SiliconFlow rerank.")
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._model_name = model_name
+
+    def rerank(self, query: str, hits: list[SearchHit], *, limit: int) -> list[SearchHit]:
+        if not hits:
+            return []
+        payload = {
+            "model": self._model_name,
+            "query": query,
+            "documents": [hit.text for hit in hits],
+            "return_documents": False,
+            "top_n": limit,
+        }
+        data = post_json(
+            siliconflow_url(self._base_url, "/rerank"),
+            api_key=self._api_key,
+            payload=payload,
+        )
+        reranked: list[SearchHit] = []
+        for result in data.get("results", []):
+            index = int(result.get("index", -1))
+            if index < 0 or index >= len(hits):
+                continue
+            score = result.get("relevance_score", result.get("score", 0.0))
+            reranked.append(replace(hits[index], rerank_score=float(score)))
+        return reranked[:limit]
 
 
 class TransformersBGEReranker:
@@ -74,6 +119,14 @@ class TransformersBGEReranker:
 
 
 def build_reranker(config: RagConfig) -> Reranker:
+    if config.rerank_backend == "none":
+        return PassthroughReranker()
+    if config.rerank_backend == "siliconflow":
+        return SiliconFlowReranker(
+            base_url=config.siliconflow_base_url,
+            api_key=config.siliconflow_api_key,
+            model_name=config.rerank_model,
+        )
     if config.rerank_backend == "bge":
         model_path = _resolve_model_path(config.rerank_model, ms_subdir="bge-reranker-v2-m3")
         return TransformersBGEReranker(
@@ -83,4 +136,6 @@ def build_reranker(config: RagConfig) -> Reranker:
             device=config.model_device,
             dtype=config.model_dtype,
         )
-    raise ValueError(f"Unsupported RAG_RERANK_BACKEND={config.rerank_backend!r}; use bge")
+    raise ValueError(
+        f"Unsupported RAG_RERANK_BACKEND={config.rerank_backend!r}; use none/siliconflow/bge"
+    )

@@ -28,6 +28,8 @@ def main() -> None:
         "RAG_IMAGE_EMBEDDING_BACKEND",
         "EMBEDDING_MODEL",
         "RERANK_MODEL",
+        "SILICONFLOW_URL",
+        "SILICONFLOW_API_KEY",
         "IMAGE_EMBEDDING_MODEL",
         "EMBEDDING_DIM",
         "IMAGE_EMBEDDING_DIM",
@@ -41,6 +43,7 @@ def main() -> None:
         "RAG_QUERY_REWRITE_BACKEND",
         "RAG_QUERY_REWRITE_HISTORY_TURNS",
         "RAG_QUERY_REWRITE_MAX_TOKENS",
+        "RAG_ANSWER_BACKEND",
         "RAG_MAX_CONTEXT_CHARS",
         "RAG_MAX_CHUNKS_PER_DOC",
         "NEW_API_URL",
@@ -70,6 +73,7 @@ def main() -> None:
     assert rag_api_env["MILVUS_URI"] == "http://milvus:19530"
     assert rag_api_env["RAG_OBJECT_STORE_DIR"] == EXPECTED_OBJECT_STORE_PATH
     assert rag_api_env["RAG_RUNTIME_DIR"] == EXPECTED_RUNTIME_PATH
+    assert "../../.env" in rag_api.get("env_file", [])
     assert rag_api_env["RAG_QUERY_REWRITE_HISTORY_TURNS"] == "6"
     assert rag_api_env["RAG_QUERY_REWRITE_MAX_TOKENS"] == "256"
     assert has_volume(rag_api["volumes"], EXPECTED_OBJECT_STORE_PATH)
@@ -79,6 +83,7 @@ def main() -> None:
     rag_ingest_env = rag_ingest["environment"]
     assert rag_ingest_env["MILVUS_URI"] == "http://milvus:19530"
     assert rag_ingest_env["RAG_OBJECT_STORE_DIR"] == EXPECTED_OBJECT_STORE_PATH
+    assert "../../.env" in rag_ingest.get("env_file", [])
     assert "RAG_TEXT_INPUT" in rag_ingest_env
     assert "RAG_IMAGE_INPUT" in rag_ingest_env
     assert has_volume(rag_ingest["volumes"], EXPECTED_OBJECT_STORE_PATH)

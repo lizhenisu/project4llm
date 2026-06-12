@@ -65,7 +65,7 @@ def main() -> None:
         try:
             build_reranker(replace(config, rerank_backend="lexical"))
         except ValueError as exc:
-            assert "use bge" in str(exc)
+            assert "use none/siliconflow/bge" in str(exc)
         else:
             raise AssertionError("lexical rerank backend should be rejected")
     finally:

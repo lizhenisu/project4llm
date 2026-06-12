@@ -1,4 +1,4 @@
-import { ArrowRight, Bot, Clipboard, Copy, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ArrowRight, Bot, Clipboard, Copy, MoreVertical, SlidersHorizontal, Sparkles, ThumbsDown, ThumbsUp } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage, SourceItem } from "../../lib/types";
@@ -8,12 +8,23 @@ type Props = {
   messages: ChatMessage[];
   selectedSources: SourceItem[];
   busy: boolean;
+  conversationTitle: string;
   onAsk: (query: string) => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
+  onDeleteConversation: () => void;
 };
 
-export function ChatPanel({ messages, selectedSources, busy, onAsk, onFeedback }: Props) {
+export function ChatPanel({
+  messages,
+  selectedSources,
+  busy,
+  conversationTitle,
+  onAsk,
+  onFeedback,
+  onDeleteConversation,
+}: Props) {
   const [draft, setDraft] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
   const canSend = draft.trim().length > 0 && selectedSources.length > 0 && !busy;
 
   function submit() {
@@ -25,9 +36,49 @@ export function ChatPanel({ messages, selectedSources, busy, onAsk, onFeedback }
   return (
     <section className="panel chat-panel">
       <div className="panel-header">
-        <h2>对话</h2>
+        <h2 title={conversationTitle}>对话</h2>
+        <div className="chat-header-actions">
+          <button className="icon-button" type="button" aria-label="对话设置" title="对话设置">
+            <SlidersHorizontal size={18} />
+          </button>
+          <div className="chat-menu">
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="更多"
+              title="更多"
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              <MoreVertical size={18} />
+            </button>
+            {menuOpen ? (
+              <div className="chat-menu-popover">
+                <button type="button" disabled>
+                  自定义笔记本
+                </button>
+                <button
+                  type="button"
+                  disabled={messages.length === 0}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onDeleteConversation();
+                  }}
+                >
+                  删除对话记录
+                </button>
+                <p>只有您自己能看到对话记录。</p>
+              </div>
+            ) : null}
+          </div>
+        </div>
       </div>
       <div className="chat-scroll">
+        <div className="chat-quick-actions">
+          <button type="button" disabled>
+            <Sparkles size={16} />
+            自定义
+          </button>
+        </div>
         {messages.length === 0 ? (
           selectedSources.length === 0 ? (
             <EmptyState

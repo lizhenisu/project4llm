@@ -95,6 +95,32 @@ RAG_IMAGE_INPUT=/data/image_docs.jsonl
 docker compose up -d milvus rag-api rag-web
 ```
 
+Compose 默认使用 SiliconFlow 托管的 embedding/rerank 模型，避免本机下载 BGE 权重，同时获得比 hash 更好的检索质量：
+
+- `RAG_EMBEDDING_BACKEND=siliconflow`
+- `EMBEDDING_MODEL=BAAI/bge-m3`
+- `RAG_RERANK_BACKEND=siliconflow`
+- `RERANK_MODEL=BAAI/bge-reranker-v2-m3`
+- `RAG_QUERY_REWRITE_BACKEND=none`
+- `RAG_ANSWER_BACKEND=extractive`
+
+需要完全离线演示时，在 `.env` 中切回本地轻量后端：
+
+```bash
+RAG_EMBEDDING_BACKEND=hash
+EMBEDDING_MODEL=hash-1024
+RAG_RERANK_BACKEND=none
+```
+
+需要生成式回答和 LLM 查询改写时，再打开外部 LLM：
+
+```bash
+RAG_QUERY_REWRITE_BACKEND=llm
+RAG_ANSWER_BACKEND=llm
+NEW_API_URL=http://your-newapi-server:3000
+NEW_API_KEY=your-api-key
+```
+
 访问：
 
 ```text

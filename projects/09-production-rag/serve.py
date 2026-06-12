@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from answer import answer_query
@@ -14,10 +15,24 @@ from rag_core.artifacts import (
 )
 from rag_core.auth import build_auth_context, validate_bearer_token
 from rag_core.config import load_config
+from rag_core.conversations import (
+    ConversationMessage,
+    delete_conversation,
+    list_conversations,
+    load_conversation,
+    save_conversation,
+)
 from rag_core.events import append_event, hit_event_summaries
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.readiness import readiness_report
-from rag_core.sources import delete_source, get_source, ingest_uploaded_path, list_sources, save_uploaded_file
+from rag_core.sources import (
+    delete_source,
+    get_source,
+    get_source_content,
+    ingest_uploaded_path,
+    list_sources,
+    save_uploaded_file,
+)
 from search_multimodal import retrieve_multimodal
 
 
@@ -89,6 +104,7 @@ class SourceResponse(BaseModel):
     current: bool
     created_at: int | None = None
     updated_at: int | None = None
+    child_doc_ids: list[str] = Field(default_factory=list)
 
 
 class SourceListResponse(BaseModel):
@@ -100,6 +116,18 @@ class SourceUploadResponse(BaseModel):
     sources: list[SourceResponse]
     document_count: int
     chunk_count: int
+
+
+class SourceContentResponse(BaseModel):
+    doc_id: str
+    title: str
+    source_type: str
+    source_uri: str
+    doc_version: int
+    child_doc_ids: list[str]
+    guide: str
+    tags: list[str]
+    text: str
 
 
 class DeleteSourceResponse(BaseModel):
@@ -137,9 +165,54 @@ class DeleteArtifactResponse(BaseModel):
     artifact_id: str
 
 
-def create_app():
-    from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+class ConversationMessageRequest(BaseModel):
+    id: str
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str
+    status: str = Field(default="done", pattern="^(sending|done|failed)$")
+    request_id: str | None = None
+    citations: list[HitResponse] = Field(default_factory=list)
+    created_at: int | None = None
 
+
+class ConversationUpsertRequest(BaseModel):
+    id: str | None = None
+    tenant_id: str = "team_a"
+    title: str = ""
+    messages: list[ConversationMessageRequest]
+    source_doc_ids: list[str] = Field(default_factory=list)
+
+
+class ConversationResponse(BaseModel):
+    id: str
+    tenant_id: str
+    title: str
+    messages: list[ConversationMessageRequest]
+    source_doc_ids: list[str]
+    created_at: int
+    updated_at: int
+
+
+class ConversationListItemResponse(BaseModel):
+    id: str
+    tenant_id: str
+    title: str
+    message_count: int
+    source_doc_ids: list[str]
+    created_at: int
+    updated_at: int
+
+
+class ConversationListResponse(BaseModel):
+    conversations: list[ConversationListItemResponse]
+
+
+class DeleteConversationResponse(BaseModel):
+    status: str
+    conversation_id: str
+
+
+def create_app():
     app = FastAPI(title="Production RAG", version="0.2.0")
 
     @app.get("/health")
@@ -221,6 +294,34 @@ def create_app():
             document_count=summary.document_count,
             chunk_count=summary.chunk_count,
         )
+
+    @app.get("/sources/content/{doc_id:path}", response_model=SourceContentResponse)
+    def source_content(
+        doc_id: str,
+        tenant_id: str = "team_a",
+        doc_version: int | None = None,
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> SourceContentResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=tenant_id,
+            acl_groups=[],
+        )
+        content = get_source_content(
+            config=config,
+            tenant_id=auth_context.tenant_id,
+            doc_id=doc_id,
+            doc_version=doc_version,
+        )
+        if content is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        return SourceContentResponse(**content.__dict__)
 
     @app.get("/sources/{doc_id:path}", response_model=SourceResponse)
     def source_detail(
@@ -371,6 +472,108 @@ def create_app():
         return FeedbackResponse(
             status="accepted",
             request_id=request.request_id,
+        )
+
+    @app.get("/conversations", response_model=ConversationListResponse)
+    def conversations(
+        tenant_id: str = "team_a",
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> ConversationListResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=tenant_id,
+            acl_groups=[],
+        )
+        return ConversationListResponse(
+            conversations=[
+                conversation_to_list_item(conversation)
+                for conversation in list_conversations(config, tenant_id=auth_context.tenant_id)
+            ]
+        )
+
+    @app.post("/conversations", response_model=ConversationResponse)
+    def upsert_conversation(
+        request: ConversationUpsertRequest,
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> ConversationResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=request.tenant_id,
+            acl_groups=[],
+        )
+        conversation = save_conversation(
+            config,
+            tenant_id=auth_context.tenant_id,
+            conversation_id=request.id,
+            title=request.title,
+            messages=[message_request_to_domain(message) for message in request.messages],
+            source_doc_ids=request.source_doc_ids,
+        )
+        return conversation_to_response(conversation)
+
+    @app.get("/conversations/{conversation_id}", response_model=ConversationResponse)
+    def get_conversation(
+        conversation_id: str,
+        tenant_id: str = "team_a",
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> ConversationResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=tenant_id,
+            acl_groups=[],
+        )
+        conversation = load_conversation(
+            config,
+            tenant_id=auth_context.tenant_id,
+            conversation_id=conversation_id,
+        )
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return conversation_to_response(conversation)
+
+    @app.delete("/conversations/{conversation_id}", response_model=DeleteConversationResponse)
+    def remove_conversation(
+        conversation_id: str,
+        tenant_id: str = "team_a",
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> DeleteConversationResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=tenant_id,
+            acl_groups=[],
+        )
+        removed = delete_conversation(
+            config,
+            tenant_id=auth_context.tenant_id,
+            conversation_id=conversation_id,
+        )
+        return DeleteConversationResponse(
+            status="deleted" if removed else "not_found",
+            conversation_id=conversation_id,
         )
 
     @app.get("/artifacts", response_model=ArtifactListResponse)
@@ -601,6 +804,7 @@ def source_to_response(source) -> SourceResponse:
         current=source.current,
         created_at=source.created_at,
         updated_at=source.updated_at,
+        child_doc_ids=source.child_doc_ids,
     )
 
 
@@ -615,6 +819,53 @@ def artifact_to_response(artifact) -> MindMapArtifactResponse:
         updated_at=artifact.updated_at,
         root=artifact.root,
         error=artifact.error,
+    )
+
+
+def message_request_to_domain(message: ConversationMessageRequest) -> ConversationMessage:
+    return ConversationMessage(
+        id=message.id,
+        role=message.role,  # type: ignore[arg-type]
+        content=message.content,
+        status=message.status,  # type: ignore[arg-type]
+        request_id=message.request_id,
+        citations=[citation.model_dump() for citation in message.citations],
+        created_at=message.created_at,
+    )
+
+
+def conversation_to_response(conversation) -> ConversationResponse:
+    return ConversationResponse(
+        id=conversation.id,
+        tenant_id=conversation.tenant_id,
+        title=conversation.title,
+        messages=[
+            ConversationMessageRequest(
+                id=message.id,
+                role=message.role,
+                content=message.content,
+                status=message.status,
+                request_id=message.request_id,
+                citations=[HitResponse(**citation) for citation in message.citations],
+                created_at=message.created_at,
+            )
+            for message in conversation.messages
+        ],
+        source_doc_ids=conversation.source_doc_ids,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+    )
+
+
+def conversation_to_list_item(conversation) -> ConversationListItemResponse:
+    return ConversationListItemResponse(
+        id=conversation.id,
+        tenant_id=conversation.tenant_id,
+        title=conversation.title,
+        message_count=len(conversation.messages),
+        source_doc_ids=conversation.source_doc_ids,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
     )
 
 
