@@ -12,12 +12,12 @@
 | 虚拟环境 | `.venv` 可激活 | 可用 |
 | uv | `uv 0.11.17` | 可用 |
 | Python 依赖 | `uv pip check` 通过 | 后端依赖健康 |
-| Node.js | `node` 不存在 | 需要安装 |
-| npm | 指向 Windows 路径，但不可用 | 需要安装 Linux 侧 npm |
-| Docker | CLI 可显示版本，但 `docker ps` 权限不足 | 需要加入 `docker` 组并重新进入 shell，或修复 Docker Desktop WSL 集成 |
-| Docker Compose | 可显示版本 | 仍需确认 daemon 可访问 |
+| Node.js | `node v24.16.0` | 可用 |
+| npm | `npm 11.13.0` | 可用 |
+| Docker | CLI 和 daemon 可访问 | 可用 |
+| Docker Compose | 可显示版本 | 可用 |
 
-后端 Python 部分目前不需要 sudo；前端 Node 工具链需要安装；Docker 需要修复当前用户访问 daemon 的权限或启用 Docker Desktop WSL 集成。
+后端 Python、前端 Node 工具链和 Docker 当前都可用。本文档仍保留安装建议，方便读者在自己的机器上复现环境准备过程。
 
 ## 2. 需要的工具
 
@@ -68,7 +68,7 @@ bash projects/09-production-rag/scripts/prepare_user_env.sh
 
 ## 4. Node/npm 准备建议
 
-当前环境里 `node` 不存在，`npm` 指向 Windows 路径但不可用。建议选择一种方式处理：
+如果环境里 `node` 不存在，或 `npm` 指向 Windows 路径但不可用，建议选择一种方式处理：
 
 ### 4.1 WSL 内安装 Node/npm
 
@@ -124,28 +124,12 @@ docker ps
 
 ## 6. 前端项目初始化前置条件
 
-开始 Phase 0 前，应满足：
+当前前端已经初始化完成。重新安装依赖时执行：
 
 ```bash
-node --version   # >= 20
-npm --version
-```
-
-然后才能执行：
-
-```bash
-cd projects/09-production-rag
-mkdir -p frontend
-cd frontend
-npm create vite@latest . -- --template react-ts
+cd projects/09-production-rag/frontend
 npm install
-npm install lucide-react react-markdown
-```
-
-如果后续使用 React Flow 做思维导图，再安装：
-
-```bash
-npm install @xyflow/react
+npm run build
 ```
 
 ## 7. 后端开发前置条件
@@ -177,12 +161,6 @@ docker ps
 ```
 
 然后在 `projects/09-production-rag` 下运行：
-
-```bash
-docker compose up -d milvus rag-api
-```
-
-等前端容器 `rag-web` 加入后，目标命令会变成：
 
 ```bash
 docker compose up -d milvus rag-api rag-web

@@ -32,6 +32,7 @@ def retrieve_and_rerank(
     context_limit: int,
     acl_groups: list[str] | None = None,
     doc_version: int | None = None,
+    doc_ids: list[str] | None = None,
     source_types: list[str] | None = None,
     history: list[str] | None = None,
     request_id: str | None = None,
@@ -56,6 +57,7 @@ def retrieve_and_rerank(
             current_versions={},
             embedding_model=embedding_model.model_name,
             source_types=source_types or [],
+            doc_ids=doc_ids or [],
             filter_expr=f'tenant_id == "{tenant_id}" and blocked_other_tenant == true',
             retrieval_mode="blocked_cross_tenant_query",
             candidate_count=0,
@@ -87,6 +89,7 @@ def retrieve_and_rerank(
         doc_version=doc_version,
         current_doc_versions=current_versions,
         embedding_model=embedding_model.model_name,
+        doc_ids=doc_ids,
         source_types=source_types,
     )
     search_start = perf_counter()
@@ -127,6 +130,7 @@ def retrieve_and_rerank(
         current_versions=current_versions,
         embedding_model=embedding_model.model_name,
         source_types=source_types or [],
+        doc_ids=doc_ids or [],
         filter_expr=filter_expr,
         retrieval_mode="hybrid_dense_sparse_rerank",
         candidate_count=len(candidates),

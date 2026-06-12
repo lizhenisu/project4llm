@@ -1,4 +1,4 @@
-.PHONY: schema serve check ingest-files ingest-tables rebuild stats monitor eval answer-eval release-gate benchmark smoke api-smoke deploy-smoke
+.PHONY: schema serve check ingest-files ingest-tables rebuild stats monitor eval answer-eval release-gate benchmark smoke api-smoke deploy-smoke frontend-install frontend-dev frontend-build compose-up compose-down
 
 schema:
 	python schema.py --reset
@@ -44,3 +44,18 @@ api-smoke:
 
 deploy-smoke:
 	python tests/smoke/smoke_deploy.py
+
+frontend-install:
+	cd frontend && npm install
+
+frontend-dev:
+	cd frontend && npm run dev -- --host 0.0.0.0
+
+frontend-build:
+	cd frontend && npm run build
+
+compose-up:
+	docker compose up -d milvus rag-api rag-web
+
+compose-down:
+	docker compose down

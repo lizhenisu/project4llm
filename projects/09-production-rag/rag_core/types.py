@@ -75,6 +75,7 @@ class TraceInfo:
     current_versions: dict[str, int]
     embedding_model: str
     source_types: list[str]
+    doc_ids: list[str]
     filter_expr: str
     retrieval_mode: str
     candidate_count: int

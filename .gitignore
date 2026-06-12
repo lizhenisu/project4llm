@@ -1,8 +1,10 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+*.tsbuildinfo
 build/
 dist/
+node_modules/
 wheels/
 *.egg-info
 
@@ -21,3 +23,4 @@ projects/09-production-rag/industrial_rag_demo.db/
 projects/09-production-rag/object_store/
 projects/09-production-rag/volumes/
 projects/09-production-rag/runtime/
+projects/09-production-rag/frontend/dist/
