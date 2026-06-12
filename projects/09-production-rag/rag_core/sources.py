@@ -229,6 +229,25 @@ def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
     return sorted(summaries, key=lambda item: (not item.current, item.title, item.doc_id))
 
 
+def get_source(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    doc_id: str,
+    doc_version: int | None = None,
+) -> SourceSummary | None:
+    sources = list_sources(config=config, tenant_id=tenant_id)
+    matches = [
+        source
+        for source in sources
+        if source.doc_id == doc_id and (doc_version is None or source.doc_version == doc_version)
+    ]
+    if not matches:
+        return None
+    current = [source for source in matches if source.current]
+    return (current or matches)[0]
+
+
 def delete_source(
     *,
     config: RagConfig,

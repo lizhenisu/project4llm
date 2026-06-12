@@ -23,6 +23,9 @@ from serve import (
 def main() -> None:
     app = create_app()
     routes = {route.path for route in app.routes}
+    methods_by_route: dict[str, set[str]] = {}
+    for route in app.routes:
+        methods_by_route.setdefault(route.path, set()).update(getattr(route, "methods", set()) or set())
     required_routes = {
         "/sources",
         "/sources/upload",
@@ -33,6 +36,14 @@ def main() -> None:
     }
     missing = sorted(required_routes - routes)
     assert not missing, missing
+    assert "GET" in methods_by_route["/sources"]
+    assert "POST" in methods_by_route["/sources/upload"]
+    assert "GET" in methods_by_route["/sources/{doc_id:path}"]
+    assert "DELETE" in methods_by_route["/sources/{doc_id:path}"]
+    assert "GET" in methods_by_route["/artifacts"]
+    assert "POST" in methods_by_route["/artifacts/mindmap"]
+    assert "GET" in methods_by_route["/artifacts/{artifact_id}"]
+    assert "DELETE" in methods_by_route["/artifacts/{artifact_id}"]
 
     source = SourceResponse(
         doc_id="runbook",

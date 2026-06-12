@@ -554,7 +554,13 @@
   position: absolute;
   top: 10px;
   right: 10px;
+  z-index: 2;
   gap: 5px;
+}
+
+.mindmap-zoom-layer {
+  transform-origin: top center;
+  transition: transform 120ms ease;
 }
 
 .mindmap-node {

@@ -56,6 +56,13 @@ export async function listSources(settings: Settings): Promise<SourceItem[]> {
   return payload.sources;
 }
 
+export function getSource(settings: Settings, docId: string): Promise<SourceItem> {
+  return request<SourceItem>(
+    `/sources/${encodeURIComponent(docId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    { settings },
+  );
+}
+
 export async function uploadSource(settings: Settings, file: File): Promise<SourceItem[]> {
   const form = new FormData();
   form.append("file", file);

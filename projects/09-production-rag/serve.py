@@ -17,7 +17,7 @@ from rag_core.config import load_config
 from rag_core.events import append_event, hit_event_summaries
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.readiness import readiness_report
-from rag_core.sources import delete_source, ingest_uploaded_path, list_sources, save_uploaded_file
+from rag_core.sources import delete_source, get_source, ingest_uploaded_path, list_sources, save_uploaded_file
 from search_multimodal import retrieve_multimodal
 
 
@@ -221,6 +221,34 @@ def create_app():
             document_count=summary.document_count,
             chunk_count=summary.chunk_count,
         )
+
+    @app.get("/sources/{doc_id:path}", response_model=SourceResponse)
+    def source_detail(
+        doc_id: str,
+        tenant_id: str = "team_a",
+        doc_version: int | None = None,
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> SourceResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=tenant_id,
+            acl_groups=[],
+        )
+        source = get_source(
+            config=config,
+            tenant_id=auth_context.tenant_id,
+            doc_id=doc_id,
+            doc_version=doc_version,
+        )
+        if source is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        return source_to_response(source)
 
     @app.delete("/sources/{doc_id:path}", response_model=DeleteSourceResponse)
     def remove_source(

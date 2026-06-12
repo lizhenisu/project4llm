@@ -15,6 +15,7 @@ import {
   Video,
   Volume2,
 } from "lucide-react";
+import { useRef, useState } from "react";
 import type { MindMapArtifact, MindMapNode, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
 
@@ -102,6 +103,28 @@ export function StudioPanel({
 }
 
 function MindMapDetail({ artifact, onBack }: { artifact: MindMapArtifact; onBack: () => void }) {
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [zoom, setZoom] = useState(1);
+
+  function zoomBy(delta: number) {
+    setZoom((value) => Math.min(1.6, Math.max(0.7, Number((value + delta).toFixed(2)))));
+  }
+
+  function fitView() {
+    setZoom(1);
+    canvasRef.current?.scrollTo({ top: 0, left: 0, behavior: "smooth" });
+  }
+
+  async function toggleFullscreen() {
+    const element = canvasRef.current;
+    if (!element) return;
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+      return;
+    }
+    await element.requestFullscreen();
+  }
+
   return (
     <aside className="panel studio-panel mindmap-detail">
       <div className="panel-header breadcrumb">
@@ -110,7 +133,7 @@ function MindMapDetail({ artifact, onBack }: { artifact: MindMapArtifact; onBack
           Studio
         </button>
         <span>应用</span>
-        <button type="button" className="row-icon" title="全屏">
+        <button type="button" className="row-icon" title="全屏" onClick={toggleFullscreen}>
           <Maximize2 size={18} />
         </button>
       </div>
@@ -118,16 +141,24 @@ function MindMapDetail({ artifact, onBack }: { artifact: MindMapArtifact; onBack
         <h2>{artifact.title}</h2>
         <button type="button">查看 {artifact.source_doc_ids.length} 个来源</button>
       </div>
-      <div className="mindmap-canvas">
+      <div className="mindmap-canvas" ref={canvasRef}>
         <div className="canvas-tools">
-          <button type="button">⌖</button>
-          <button type="button">+</button>
-          <button type="button">−</button>
+          <button type="button" title="适配视图" onClick={fitView}>
+            ⌖
+          </button>
+          <button type="button" title="放大" onClick={() => zoomBy(0.1)}>
+            +
+          </button>
+          <button type="button" title="缩小" onClick={() => zoomBy(-0.1)}>
+            −
+          </button>
           <button type="button" onClick={() => downloadArtifact(artifact)}>
             <Download size={17} />
           </button>
         </div>
-        {artifact.root ? <MindMapTree node={artifact.root} depth={0} /> : <p>暂无可展示的思维导图。</p>}
+        <div className="mindmap-zoom-layer" style={{ transform: `scale(${zoom})` }}>
+          {artifact.root ? <MindMapTree node={artifact.root} depth={0} /> : <p>暂无可展示的思维导图。</p>}
+        </div>
       </div>
       <div className="artifact-feedback">
         <button type="button">

@@ -2,7 +2,7 @@ FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV UV_SYSTEM_PYTHON=1
+ENV PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -21,4 +21,3 @@ WORKDIR /app/projects/09-production-rag
 EXPOSE 8008
 
 CMD ["./scripts/start_api.sh"]
-
