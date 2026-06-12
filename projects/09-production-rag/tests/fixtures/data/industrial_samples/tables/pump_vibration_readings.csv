@@ -1,0 +1,6 @@
+asset_id,timestamp,bearing_temp_c,vibration_mm_s,alarm_level,action
+P-101,2026-05-01T08:00:00,63,2.1,normal,continue monitoring
+P-101,2026-05-01T12:00:00,68,4.8,warning,inspect coupling alignment
+P-204,2026-05-01T08:00:00,71,7.4,critical,stop pump and inspect drive-end bearing
+P-204,2026-05-01T12:00:00,73,7.9,critical,replace bearing if vibration remains above 7.0 mm/s
+P-305,2026-05-01T08:00:00,58,3.2,normal,check again next shift

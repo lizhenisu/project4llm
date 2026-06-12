@@ -1,0 +1,4 @@
+{"query":"RAG 检索变慢时应该排查哪些环节？","tenant_id":"team_a","expected_doc_ids":["rag-runbook"],"answerable":true,"query_type":"ops"}
+{"query":"为什么 hybrid search 要同时用 dense 和 BM25？","tenant_id":"team_a","expected_doc_ids":["hybrid-search"],"answerable":true,"query_type":"hybrid"}
+{"query":"team_a 用户可以看到 team_b 的报销规则吗？","tenant_id":"team_a","expected_doc_ids":[],"answerable":false,"query_type":"permission"}
+

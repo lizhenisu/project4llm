@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+import argparse
+
+from rag_core.config import load_config
+from rag_core.embeddings import build_embedding_model
+from rag_core.milvus_store import build_filter_expr, connect, ensure_collection, sparse_search
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run metadata-filtered Milvus BM25 search.")
+    parser.add_argument("query", help="User query.")
+    parser.add_argument("--tenant-id", default="team_a")
+    parser.add_argument(
+        "--acl-group",
+        action="append",
+        default=[],
+        help="Allowed ACL group. Repeat to allow multiple groups.",
+    )
+    parser.add_argument("--doc-version", type=int)
+    parser.add_argument(
+        "--source-type",
+        action="append",
+        default=[],
+        help="Restrict retrieval to a source type. Repeat for multiple types.",
+    )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Print query tokens, sparse bucket count, and filter for teaching.",
+    )
+    parser.add_argument("--limit", type=int, default=5)
+    args = parser.parse_args()
+
+    config = load_config()
+    client = connect(config)
+    ensure_collection(client, config, reset=False)
+    model = build_embedding_model(config)
+    filter_expr = build_filter_expr(
+        tenant_id=args.tenant_id,
+        allowed_acl_groups=args.acl_group or None,
+        doc_version=args.doc_version,
+        embedding_model=model.model_name,
+        source_types=args.source_type or None,
+    )
+    hits = sparse_search(
+        client,
+        collection_name=config.collection_name,
+        query_text=args.query,
+        filter_expr=filter_expr,
+        limit=args.limit,
+    )
+
+    if args.explain:
+        print(f"query_token_count={model.count_tokens(args.query)}")
+        print(f"query_token_ids={model.tokenize(args.query)}")
+    print(f"filter: {filter_expr}")
+    for rank, hit in enumerate(hits, start=1):
+        print(
+            f"{rank}. score={hit.score:.4f} doc={hit.doc_id} "
+            f"chunk={hit.chunk_index} title={hit.title}"
+        )
+        print(hit.text[:240].replace("\n", " "))
+
+
+if __name__ == "__main__":
+    main()

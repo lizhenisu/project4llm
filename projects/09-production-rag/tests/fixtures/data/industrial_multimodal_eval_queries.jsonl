@@ -1,0 +1,2 @@
+{"query":"空压站仪表盘夜班压力 615 kPa 泄漏率 18% 应该先检查什么？","tenant_id":"team_a","acl_groups":["ops"],"source_types":["image"],"expected_doc_ids":["compressed-air-dashboard"],"answerable":true,"query_type":"multimodal"}
+{"query":"compressed air dashboard dryer pressure drop 42 kPa receiver storage","tenant_id":"team_a","acl_groups":["engineering"],"source_types":["image"],"expected_doc_ids":["compressed-air-dashboard"],"answerable":true,"query_type":"multimodal"}

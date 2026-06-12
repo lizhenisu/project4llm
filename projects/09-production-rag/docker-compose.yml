@@ -1,0 +1,100 @@
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: rag-etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - ./volumes/etcd:/etcd
+
+  minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    container_name: rag-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - ./volumes/minio:/minio_data
+
+  milvus:
+    image: milvusdb/milvus:v2.6.13
+    container_name: rag-milvus
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - ./volumes/milvus:/var/lib/milvus
+    depends_on:
+      - etcd
+      - minio
+
+  rag-api:
+    build:
+      context: ../..
+      dockerfile: projects/09-production-rag/Dockerfile
+    container_name: rag-api
+    environment:
+      MILVUS_URI: http://milvus:19530
+      RAG_COLLECTION: rag_chunks_v1
+      RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
+      RAG_EMBEDDING_BACKEND: bge
+      RAG_RERANK_BACKEND: bge
+      RAG_IMAGE_EMBEDDING_BACKEND: clip
+      EMBEDDING_DIM: "1024"
+      IMAGE_EMBEDDING_DIM: "512"
+      RAG_RUNTIME_DIR: /app/projects/09-production-rag/runtime
+      RAG_QUERY_REWRITE_BACKEND: llm
+      RAG_QUERY_REWRITE_HISTORY_TURNS: "6"
+      RAG_QUERY_REWRITE_MAX_TOKENS: "256"
+      NEW_API_URL: ${NEW_API_URL:-}
+      NEW_API_KEY: ${NEW_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gemini-3-flash-preview}
+    ports:
+      - "8008:8008"
+    volumes:
+      - ./runtime:/app/projects/09-production-rag/runtime
+      - ./object_store:/app/projects/09-production-rag/object_store
+    depends_on:
+      - milvus
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8008/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  rag-ingest:
+    build:
+      context: ../..
+      dockerfile: projects/09-production-rag/Dockerfile
+    container_name: rag-ingest
+    profiles: ["ingest"]
+    command: ["./scripts/start_ingest.sh"]
+    environment:
+      MILVUS_URI: http://milvus:19530
+      RAG_COLLECTION: rag_chunks_v1
+      RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
+      RAG_TEXT_INPUT: ${RAG_TEXT_INPUT:-}
+      RAG_IMAGE_INPUT: ${RAG_IMAGE_INPUT:-}
+      RAG_EMBEDDING_BACKEND: bge
+      RAG_RERANK_BACKEND: bge
+      RAG_IMAGE_EMBEDDING_BACKEND: clip
+      EMBEDDING_DIM: "1024"
+      IMAGE_EMBEDDING_DIM: "512"
+    volumes:
+      - ./object_store:/app/projects/09-production-rag/object_store
+      - ./ingest:/data:ro
+    depends_on:
+      - milvus

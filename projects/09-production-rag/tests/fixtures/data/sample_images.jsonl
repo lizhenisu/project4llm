@@ -1,0 +1,2 @@
+{"tenant_id":"team_a","doc_id":"dashboard-screenshot","doc_version":1,"source_uri":"images/rag-dashboard.png","title":"RAG 监控面板截图","ocr_text":"RAG Dashboard p95 latency recall@50 rerank latency error rate","caption":"一张 RAG 线上监控面板截图，展示检索延迟、召回率、rerank 耗时和错误率。","language":"zh","acl_groups":["support","ops"],"metadata":{"page_no":1,"bbox":[]}}
+
