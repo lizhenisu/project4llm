@@ -12,6 +12,12 @@
 - 上线门禁：`eval_retrieval.py`、`eval_answer.py`、`release_gate.py`、`benchmark_latency.py`
 - 测试和样例数据：`tests/`
 
+## 项目准备文档
+
+- `docs/EXECUTION_PLAN.md`：09 前后端分离、TypeScript 前端、部署和阶段执行计划。
+- `docs/PREPARE_ENV.md`：正式编码前的环境检查、Node/npm/Docker 准备建议。
+- `docs/frontend-design/`：前端参考图、UI 设计规格和 vibecoding 准备过程。
+
 ## 本地运行
 
 从仓库根目录激活环境：
