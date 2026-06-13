@@ -1,7 +1,7 @@
 import { ArrowRight, Bot, Copy, MoreVertical, ThumbsDown, ThumbsUp, Check } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import type { ChatMessage, SourceItem } from "../../lib/types";
+import type { ChatMessage, Citation, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
 
 type Props = {
@@ -297,11 +297,59 @@ function Citations({ message }: { message: ChatMessage }) {
       {message.citations?.map((citation, index) => (
         <details key={`${citation.doc_id}-${citation.chunk_index}`}>
           <summary>
-            {index + 1}. {citation.title} · chunk {citation.chunk_index}
+            {index + 1}. {formatCitationSummary(citation)}
           </summary>
           <p>{citation.text_preview || citation.source_uri}</p>
         </details>
       ))}
     </div>
   );
+}
+
+function formatCitationSummary(citation: Citation) {
+  const title = citationDisplayTitle(citation);
+  const location = citationLocation(citation);
+  return location ? `${title} · ${location}` : title;
+}
+
+function citationDisplayTitle(citation: Citation) {
+  const path = metadataString(citation.metadata, "relative_path") || citation.source_uri;
+  const filename = filenameFromPath(path);
+  if (filename) return filename;
+  return citation.title.replace(/\s+p\d+$/i, "");
+}
+
+function citationLocation(citation: Citation) {
+  const start = metadataNumber(citation.metadata, "page_start") ?? metadataNumber(citation.metadata, "page_no");
+  const end = metadataNumber(citation.metadata, "page_end");
+  if (start && end && end !== start) return `第 ${start}-${end} 页`;
+  if (start) return `第 ${start} 页`;
+
+  const titlePage = citation.title.match(/\bp(\d+)$/i)?.[1];
+  if (titlePage) return `第 ${titlePage} 页`;
+
+  const docPage = citation.doc_id.match(/\/page-(\d+)$/i)?.[1];
+  return docPage ? `第 ${docPage} 页` : "";
+}
+
+function metadataString(metadata: Record<string, unknown>, key: string) {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function metadataNumber(metadata: Record<string, unknown>, key: string) {
+  const value = metadata[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+  return null;
+}
+
+function filenameFromPath(path: string) {
+  const filename = path.split(/[\\/]/).filter(Boolean).pop();
+  if (!filename) return "";
+  try {
+    return decodeURIComponent(filename);
+  } catch {
+    return filename;
+  }
 }

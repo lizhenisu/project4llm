@@ -125,12 +125,11 @@ def row_restores_tombstone(row: dict, tombstone: dict) -> bool:
     return version is None or int(version) == int(row["doc_version"])
 
 
-def document_key(row: dict) -> tuple[str, str, int, str]:
+def document_key(row: dict) -> tuple[str, str, int]:
     return (
         str(row["tenant_id"]),
         str(row["doc_id"]),
         int(row["doc_version"]),
-        str(row["source_uri"]),
     )
 
 

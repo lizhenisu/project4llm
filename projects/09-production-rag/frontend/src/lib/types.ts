@@ -66,6 +66,13 @@ export type MindMapNode = {
   citationIds?: string[];
 };
 
+export type DataTableArtifact = {
+  title: string;
+  columns: string[];
+  rows: string[][];
+  summary?: string;
+};
+
 export type MindMapArtifact = {
   id: string;
   title: string;
@@ -74,7 +81,9 @@ export type MindMapArtifact = {
   source_doc_ids: string[];
   created_at: number;
   updated_at: number;
+  artifact_type?: "mindmap" | "table";
   root?: MindMapNode | null;
+  table?: DataTableArtifact | null;
   error?: string;
 };
 

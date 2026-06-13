@@ -4,7 +4,7 @@ import shutil
 import uuid
 from collections import Counter
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -24,6 +24,7 @@ from rag_core.object_store import (
     load_archived_source_documents,
 )
 from rag_core.pii import apply_pii_policy
+from rag_core.source_guides import get_or_create_source_guide, load_source_guide
 from rag_core.text_utils import chunk_document
 from rag_core.types import Chunk, SourceDocument
 from rag_core.versioning import load_current_versions, publish_current_versions, unpublish_current_version
@@ -97,15 +98,17 @@ def ingest_uploaded_path(
     language: str = "zh",
 ) -> IngestSummary:
     input_dir = path.parent
-    version = doc_version or next_doc_version(config, tenant_id=tenant_id, doc_id=path.stem)
     docs = load_documents_for_path(
         path,
         input_dir=input_dir,
         tenant_id=tenant_id,
-        doc_version=version,
+        doc_version=doc_version or 1,
         acl_groups=acl_groups or ["default"],
         language=language,
     )
+    if doc_version is None:
+        version = next_source_doc_version(config, docs)
+        docs = [replace(doc, doc_version=version) for doc in docs]
     return ingest_source_documents(config=config, docs=docs)
 
 
@@ -180,11 +183,13 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
         )
         for chunk, dense_vector in zip(chunks, dense_vectors, strict=True)
     ]
+    sources = summarize_ingested_sources(redacted_docs, chunks)
+    generate_ingested_source_guides(config=config, sources=sources, docs=redacted_docs)
     upsert_entities(client, collection_name=config.collection_name, entities=entities)
     archive_source_documents(config.object_store_dir, redacted_docs)
     publish_current_versions(config.object_store_dir, redacted_docs)
     return IngestSummary(
-        sources=summarize_ingested_sources(redacted_docs, chunks),
+        sources=sources,
         document_count=len(redacted_docs),
         chunk_count=len(chunks),
     )
@@ -238,6 +243,35 @@ def summarize_ingested_sources(
         )
         for item in grouped.values()
     ]
+
+
+def generate_ingested_source_guides(
+    *,
+    config: RagConfig,
+    sources: list[SourceSummary],
+    docs: list[SourceDocument],
+) -> None:
+    for source in sources:
+        child_ids = set(source.child_doc_ids or [source.doc_id])
+        source_docs = dedupe_source_documents(
+            [
+                doc
+                for doc in docs
+                if doc.doc_id in child_ids
+                and int(doc.doc_version) == int(source.doc_version)
+            ]
+        )
+        source_docs = sorted(source_docs, key=source_document_sort_key)
+        if not source_docs:
+            continue
+        get_or_create_source_guide(
+            config=config,
+            tenant_id=source_docs[0].tenant_id,
+            source_doc_id=source.doc_id,
+            doc_version=source.doc_version,
+            title=source.title,
+            docs=source_docs,
+        )
 
 
 def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
@@ -350,6 +384,7 @@ def get_source_content(
         and doc.doc_id in child_ids
         and doc.doc_version == source.doc_version
     ]
+    docs = dedupe_source_documents(docs)
     if not docs:
         return SourceContent(
             doc_id=source.doc_id,
@@ -365,6 +400,12 @@ def get_source_content(
 
     docs = sorted(docs, key=source_document_sort_key)
     text = "\n\n".join(source_document_text_block(doc) for doc in docs if doc.text.strip()).strip()
+    guide = load_source_guide(
+        config.object_store_dir,
+        tenant_id=tenant_id,
+        source_doc_id=source.doc_id,
+        doc_version=source.doc_version,
+    )
     return SourceContent(
         doc_id=source.doc_id,
         title=source.title,
@@ -372,7 +413,7 @@ def get_source_content(
         source_uri=source.source_uri,
         doc_version=source.doc_version,
         child_doc_ids=source.child_doc_ids,
-        guide=build_source_guide(text),
+        guide=guide or "来源指南尚未生成。请重新上传该来源以在入库准备流程中生成摘要。",
         tags=extract_source_tags(text),
         text=text,
     )
@@ -428,6 +469,45 @@ def delete_source(
 def next_doc_version(config: RagConfig, *, tenant_id: str, doc_id: str) -> int:
     current = load_current_versions(config.object_store_dir, tenant_id=tenant_id)
     return int(current.get(doc_id, 0)) + 1
+
+
+def next_source_doc_version(config: RagConfig, docs: list[SourceDocument]) -> int:
+    if not docs:
+        return 1
+    identities = {
+        (
+            doc.tenant_id,
+            source_document_identity(
+                doc_id=doc.doc_id,
+                title=doc.title,
+                source_uri=doc.source_uri,
+                metadata=doc.metadata,
+            )[0],
+        )
+        for doc in docs
+    }
+    max_version = 0
+    for archived in load_archived_source_documents(config.object_store_dir, include_deleted=True):
+        document_id, _ = source_document_identity(
+            doc_id=archived.doc_id,
+            title=archived.title,
+            source_uri=archived.source_uri,
+            metadata=archived.metadata,
+        )
+        if (archived.tenant_id, document_id) in identities:
+            max_version = max(max_version, int(archived.doc_version))
+    for doc in docs:
+        current = load_current_versions(config.object_store_dir, tenant_id=doc.tenant_id)
+        max_version = max(max_version, int(current.get(doc.doc_id, 0)))
+    return max_version + 1
+
+
+def dedupe_source_documents(docs: list[SourceDocument]) -> list[SourceDocument]:
+    unique = {
+        (doc.tenant_id, doc.doc_id, int(doc.doc_version)): doc
+        for doc in docs
+    }
+    return list(unique.values())
 
 
 def safe_filename(filename: str) -> str:
@@ -490,14 +570,6 @@ def source_document_text_block(doc: SourceDocument) -> str:
     return f"第 {page_no} 页\n\n{text}"
 
 
-def build_source_guide(text: str, *, max_chars: int = 260) -> str:
-    paragraphs = [line.strip() for line in text.splitlines() if line.strip()]
-    if not paragraphs:
-        return "该来源暂无可展示的解析正文。"
-    guide = " ".join(paragraphs[:3])
-    return truncate_text(guide, max_chars)
-
-
 def extract_source_tags(text: str, *, limit: int = 5) -> list[str]:
     tags: list[str] = []
     for line in text.splitlines():
@@ -511,10 +583,3 @@ def extract_source_tags(text: str, *, limit: int = 5) -> list[str]:
         if len(tags) >= limit:
             break
     return tags
-
-
-def truncate_text(text: str, max_chars: int) -> str:
-    normalized = " ".join(text.split())
-    if len(normalized) <= max_chars:
-        return normalized
-    return normalized[: max_chars - 1].rstrip() + "…"

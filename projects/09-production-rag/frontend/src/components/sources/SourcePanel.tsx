@@ -89,8 +89,10 @@ export function SourcePanel({
             <span>全选</span>
             <input type="checkbox" checked={allSelected} onChange={toggleAll} />
           </label>
-          {sources.map((source) => (
-            <div className={`source-row status-${source.status}`} key={source.doc_id}>
+          {sources.map((source) => {
+            const activeTask = source.status === "uploading" || source.status === "processing";
+            return (
+            <div className={`source-row status-${source.status}${activeTask ? " is-active-task" : ""}`} key={source.doc_id}>
               <FileText className="file-type-icon" size={20} />
               
               <div className="source-title" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "2px", overflow: "hidden" }}>
@@ -191,7 +193,8 @@ export function SourcePanel({
                 onChange={() => toggle(source.doc_id)}
               />
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
 

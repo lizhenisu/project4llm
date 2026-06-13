@@ -25,7 +25,7 @@ class FakeOpenAI:
         assert temperature == 0.2
         user_prompt = messages[-1]["content"]
         self.calls.append({"messages": messages, "temperature": temperature})
-        if "原文块:" in user_prompt:
+        if "原文块批次:" in user_prompt:
             content = {
                 "label": "局部主题",
                 "children": [
@@ -67,27 +67,38 @@ class FakeOpenAI:
 def main() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         config = make_config(Path(temp_dir))
-        archive_source_documents(
-            config.object_store_dir,
-            [
-                SourceDocument(
-                    tenant_id="team_a",
-                    doc_id="internship-guide/page-1",
-                    doc_version=1,
-                    source_type="pdf",
-                    source_uri="/tmp/internship-guide.pdf",
-                    title="创维 AI 研究院实习介绍资料",
-                    text=(
-                        "创维集团AI研究院实习介绍资料\n"
-                        "一、研究院概况\n"
-                        "定位：集团技术中枢与AI中台。\n"
-                        "使命：打造通用AI能力基座。\n"
-                        "工作模式：自由探索、深度攻坚、平台输出。\n"
-                    ),
-                    metadata={"relative_path": "创维 AI 研究院实习介绍资料.pdf", "page_no": 1},
-                )
-            ],
+        source_docs = [
+            SourceDocument(
+                tenant_id="team_a",
+                doc_id="internship-guide/page-1",
+                doc_version=1,
+                source_type="pdf",
+                source_uri="/tmp/internship-guide.pdf",
+                title="创维 AI 研究院实习介绍资料",
+                text=(
+                    "创维集团AI研究院实习介绍资料\n"
+                    "一、研究院概况\n"
+                    "定位：集团技术中枢与AI中台。\n"
+                    "使命：打造通用AI能力基座。\n"
+                    "工作模式：自由探索、深度攻坚、平台输出。\n"
+                ),
+                metadata={"relative_path": "创维 AI 研究院实习介绍资料.pdf", "page_no": 1},
+            )
+        ]
+        source_docs.extend(
+            SourceDocument(
+                tenant_id="team_a",
+                doc_id=f"internship-guide/page-{page_no}",
+                doc_version=1,
+                source_type="pdf",
+                source_uri="/tmp/internship-guide.pdf",
+                title="创维 AI 研究院实习介绍资料",
+                text=f"第 {page_no} 页补充资料：这是用于验证思维导图批处理的原文块。",
+                metadata={"relative_path": "创维 AI 研究院实习介绍资料.pdf", "page_no": page_no},
+            )
+            for page_no in range(2, 7)
         )
+        archive_source_documents(config.object_store_dir, source_docs)
 
         old_openai = sys.modules.get("openai")
         FakeOpenAI.calls = []
@@ -97,7 +108,7 @@ def main() -> None:
                 title="实习招聘思维导图",
                 config=config,
                 tenant_id="team_a",
-                source_doc_ids=["internship-guide/page-1"],
+                source_doc_ids=[doc.doc_id for doc in source_docs],
             )
         finally:
             if old_openai is None:
@@ -105,7 +116,17 @@ def main() -> None:
             else:
                 sys.modules["openai"] = old_openai
 
-    assert len(FakeOpenAI.calls) == 2
+    assert len(FakeOpenAI.calls) == 3
+    partial_prompts = [
+        call["messages"][-1]["content"]
+        for call in FakeOpenAI.calls
+        if "原文块批次:" in call["messages"][-1]["content"]
+    ]
+    assert len(partial_prompts) == 2
+    assert "第 1 页" in partial_prompts[0]
+    assert "第 5 页" in partial_prompts[0]
+    assert "第 6 页" not in partial_prompts[0]
+    assert "第 6 页" in partial_prompts[1]
     assert root["label"] == "实习招聘思维导图"
     assert [child["label"] for child in root["children"]] == ["研究院概况", "核心研究方向"]
     assert [child["label"] for child in root["children"][0]["children"]] == [

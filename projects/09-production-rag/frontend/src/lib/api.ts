@@ -9,6 +9,8 @@ import type {
   SourceItem,
 } from "./types";
 
+const RAG_CONTEXT_LIMIT = 5;
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -134,7 +136,7 @@ export function queryRag(
       acl_groups: settings.aclGroups,
       doc_ids: params.docIds,
       candidate_limit: 20,
-      context_limit: 5,
+      context_limit: RAG_CONTEXT_LIMIT,
     },
   });
 }
@@ -263,6 +265,25 @@ export function createMindMap(
       tenant_id: settings.tenantId,
       acl_groups: settings.aclGroups,
       source_doc_ids: sourceDocIds,
+      context_limit: RAG_CONTEXT_LIMIT,
+    },
+  });
+}
+
+export function createDataTable(
+  settings: Settings,
+  title: string,
+  sourceDocIds: string[],
+): Promise<MindMapArtifact> {
+  return request<MindMapArtifact>("/artifacts/table", {
+    method: "POST",
+    settings,
+    json: {
+      title,
+      tenant_id: settings.tenantId,
+      acl_groups: settings.aclGroups,
+      source_doc_ids: sourceDocIds,
+      context_limit: RAG_CONTEXT_LIMIT,
     },
   });
 }

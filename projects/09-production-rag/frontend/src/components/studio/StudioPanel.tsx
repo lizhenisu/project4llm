@@ -9,6 +9,7 @@ import {
   MoreVertical,
   FileText,
   RefreshCcw,
+  Table2,
 } from "lucide-react";
 import {
   Background,
@@ -32,7 +33,10 @@ type Props = {
   sources: SourceItem[];
   selectedSources: SourceItem[];
   activeArtifact: MindMapArtifact | null;
+  artifactGenerationLocked: boolean;
+  artifactGenerationLockReason: string;
   onCreateMindMap: () => void;
+  onCreateDataTable: () => void;
   onOpenArtifact: (artifact: MindMapArtifact) => void;
   onRenameArtifact: (artifact: MindMapArtifact, title: string) => void;
   onDeleteArtifact: (artifact: MindMapArtifact) => void;
@@ -41,7 +45,8 @@ type Props = {
 };
 
 const tools = [
-  { label: "思维导图", icon: Network, tone: "purple" },
+  { label: "思维导图", icon: Network, tone: "purple", kind: "mindmap" },
+  { label: "数据表格", icon: Table2, tone: "cyan", kind: "table" },
 ];
 
 export function StudioPanel({
@@ -49,7 +54,10 @@ export function StudioPanel({
   sources,
   selectedSources,
   activeArtifact,
+  artifactGenerationLocked,
+  artifactGenerationLockReason,
   onCreateMindMap,
+  onCreateDataTable,
   onOpenArtifact,
   onRenameArtifact,
   onDeleteArtifact,
@@ -98,6 +106,10 @@ export function StudioPanel({
     return parentSources.size;
   }
 
+  if (activeArtifact?.artifact_type === "table") {
+    return <TableDetail artifact={activeArtifact} sources={sources} onOpenSource={onOpenSource} onBack={onBack} />;
+  }
+
   if (activeArtifact) {
     return <MindMapDetail artifact={activeArtifact} sources={sources} onOpenSource={onOpenSource} onBack={onBack} />;
   }
@@ -110,14 +122,16 @@ export function StudioPanel({
       <div className="tool-grid">
         {tools.map((tool) => {
           const Icon = tool.icon;
+          const disabledReason =
+            selectedSources.length === 0 ? "请先选择来源" : artifactGenerationLockReason || `生成${tool.label}`;
           return (
             <button
               className={`tool-card tone-${tool.tone}`}
               type="button"
               key={tool.label}
-              disabled={selectedSources.length === 0}
-              title={selectedSources.length ? "生成思维导图" : "请先选择来源"}
-              onClick={onCreateMindMap}
+              disabled={selectedSources.length === 0 || artifactGenerationLocked}
+              title={disabledReason}
+              onClick={tool.kind === "table" ? onCreateDataTable : onCreateMindMap}
             >
               <Icon size={18} />
               <span>{tool.label}</span>
@@ -135,8 +149,22 @@ export function StudioPanel({
           />
         ) : (
           artifacts.map((artifact) => (
-            <div className="artifact-row" key={artifact.id}>
-              <Network size={22} onClick={() => !editingArtifactId && onOpenArtifact(artifact)} style={{ cursor: "pointer" }} />
+            <div className={`artifact-row${artifact.status === "generating" ? " is-active-task" : ""}`} key={artifact.id}>
+              {artifact.artifact_type === "table" ? (
+                <Table2
+                  className="tone-cyan"
+                  size={22}
+                  onClick={() => !editingArtifactId && onOpenArtifact(artifact)}
+                  style={{ cursor: "pointer" }}
+                />
+              ) : (
+                <Network
+                  className="tone-purple"
+                  size={22}
+                  onClick={() => !editingArtifactId && onOpenArtifact(artifact)}
+                  style={{ cursor: "pointer" }}
+                />
+              )}
               <div onClick={() => !editingArtifactId && onOpenArtifact(artifact)} style={{ cursor: "pointer", flex: 1, minWidth: 0 }}>
                 {editingArtifactId === artifact.id ? (
                   <input
@@ -164,7 +192,11 @@ export function StudioPanel({
                     onClick={(e) => e.stopPropagation()}
                   />
                 ) : (
-                  <strong>{artifact.status === "generating" ? "正在生成思维导图..." : artifact.title}</strong>
+                  <strong>
+                    {artifact.status === "generating"
+                      ? `正在生成${artifact.artifact_type === "table" ? "数据表格" : "思维导图"}...`
+                      : artifact.title}
+                  </strong>
                 )}
                 <small>
                   {getUniqueSourceCount(artifact)} 个来源 · {formatTime(artifact.updated_at)}
@@ -251,6 +283,120 @@ export function StudioPanel({
           </div>
         </div>
       )}
+    </aside>
+  );
+}
+
+function TableDetail({
+  artifact,
+  sources,
+  onOpenSource,
+  onBack,
+}: {
+  artifact: MindMapArtifact;
+  sources: SourceItem[];
+  onOpenSource: (source: SourceItem) => void;
+  onBack: () => void;
+}) {
+  const [showSources, setShowSources] = useState(false);
+  const artifactSources = useMemo(() => {
+    const parentSources = new Map<string, SourceItem>();
+    artifact.source_doc_ids.forEach((docId) => {
+      const parent = sources.find((source) => source.doc_id === docId || source.child_doc_ids?.includes(docId));
+      if (parent) parentSources.set(parent.doc_id, parent);
+    });
+    return Array.from(parentSources.values());
+  }, [artifact.source_doc_ids, sources]);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      const target = event.target as HTMLElement;
+      if (!target.closest(".source-popover-container")) {
+        setShowSources(false);
+      }
+    }
+    if (showSources) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showSources]);
+
+  const table = artifact.table;
+
+  return (
+    <aside className="panel studio-panel table-detail">
+      <div className="panel-header breadcrumb">
+        <button type="button" onClick={onBack}>
+          <ArrowLeft size={18} />
+          Studio
+        </button>
+        <span>数据表格</span>
+        <button type="button" className="row-icon" title="下载" onClick={() => downloadArtifact(artifact)}>
+          <Download size={17} />
+        </button>
+      </div>
+      <div className="table-title">
+        <div>
+          <h2>{artifact.title}</h2>
+          {table?.summary ? <p>{table.summary}</p> : null}
+        </div>
+        <div className="source-popover-container" style={{ position: "relative" }}>
+          <button type="button" onClick={() => setShowSources(!showSources)}>
+            查看 {artifactSources.length} 个来源
+          </button>
+          {showSources ? (
+            <div className="source-popover table-source-popover">
+              <div className="popover-header">
+                <div>
+                  <FileText size={16} /> 来源
+                </div>
+              </div>
+              <div className="popover-list">
+                {artifactSources.map((source) => (
+                  <button
+                    type="button"
+                    key={source.doc_id}
+                    onClick={() => {
+                      onOpenSource(source);
+                      setShowSources(false);
+                    }}
+                  >
+                    <FileText size={14} color="var(--danger)" />
+                    <span>{source.title}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div className="table-artifact-scroll">
+        {table && table.columns.length > 0 && table.rows.length > 0 ? (
+          <>
+            <h3 className="artifact-table-caption">{table.title}</h3>
+            <table className="artifact-table">
+              <thead>
+                <tr>
+                  {table.columns.map((column) => (
+                    <th key={column}>{column}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {table.rows.map((row, rowIndex) => (
+                  <tr key={`${rowIndex}-${row.join("|").slice(0, 24)}`}>
+                    {table.columns.map((column, columnIndex) => (
+                      <td key={`${column}-${columnIndex}`}>{row[columnIndex] || "未提及"}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : (
+          <EmptyState icon={<Table2 size={32} />} title="暂无可展示的数据表格。" text="请重新生成该表格。" />
+        )}
+      </div>
     </aside>
   );
 }

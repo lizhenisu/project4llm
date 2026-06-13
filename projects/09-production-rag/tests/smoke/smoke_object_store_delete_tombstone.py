@@ -37,6 +37,21 @@ def main() -> None:
         )
         archive_source_documents(object_store_dir, [v1, v2])
 
+        duplicate_v2 = SourceDocument(
+            tenant_id="team_a",
+            doc_id="delete-runbook",
+            doc_version=2,
+            source_type="md",
+            source_uri="memory://delete-runbook-v2-reupload",
+            title="Delete Runbook v2",
+            text="v2 重新上传后应覆盖同版本归档，而不是重复展示。",
+            acl_groups=["ops"],
+        )
+        archive_source_documents(object_store_dir, [duplicate_v2])
+        active_docs_before_delete = load_archived_source_documents(object_store_dir)
+        assert len(active_docs_before_delete) == 2
+        assert [doc for doc in active_docs_before_delete if doc.doc_version == 2][0].text.startswith("v2 重新上传")
+
         archive_delete_tombstone(
             object_store_dir,
             tenant_id="team_a",

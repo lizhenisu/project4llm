@@ -13,10 +13,12 @@ from rag_core.text_utils import now_ms
 
 
 ARTIFACTS_DIR = Path("artifacts")
-MINDMAP_CHUNK_CHARS = 3500
-MINDMAP_MAX_CHUNKS = 8
+DEFAULT_MINDMAP_BATCH_CHUNK_COUNT = 5
 MINDMAP_MAX_CHILDREN = 8
 MINDMAP_MAX_GRANDCHILDREN = 6
+TABLE_CHUNK_CHARS = 9000
+TABLE_MAX_ROWS = 24
+TABLE_MAX_COLUMNS = 8
 
 
 @dataclass(frozen=True)
@@ -28,7 +30,9 @@ class MindMapArtifact:
     source_doc_ids: list[str]
     created_at: int
     updated_at: int
+    artifact_type: str = "mindmap"
     root: dict[str, Any] | None = None
+    table: dict[str, Any] | None = None
     error: str = ""
 
 
@@ -71,6 +75,7 @@ def create_mindmap_artifact(
     source_doc_ids: list[str],
     acl_groups: list[str] | None,
     doc_version: int | None = None,
+    batch_chunk_count: int = DEFAULT_MINDMAP_BATCH_CHUNK_COUNT,
 ) -> MindMapArtifact:
     artifact_id = f"mindmap-{uuid.uuid4().hex[:12]}"
     timestamp = now_ms()
@@ -79,6 +84,7 @@ def create_mindmap_artifact(
         config=config,
         tenant_id=tenant_id,
         source_doc_ids=source_doc_ids,
+        batch_chunk_count=batch_chunk_count,
     )
     artifact = MindMapArtifact(
         id=artifact_id,
@@ -88,7 +94,40 @@ def create_mindmap_artifact(
         source_doc_ids=source_doc_ids,
         created_at=timestamp,
         updated_at=timestamp,
+        artifact_type="mindmap",
         root=root,
+    )
+    save_artifact(config, artifact)
+    return artifact
+
+
+def create_table_artifact(
+    config: RagConfig,
+    *,
+    title: str,
+    tenant_id: str,
+    source_doc_ids: list[str],
+    acl_groups: list[str] | None,
+    doc_version: int | None = None,
+) -> MindMapArtifact:
+    artifact_id = f"table-{uuid.uuid4().hex[:12]}"
+    timestamp = now_ms()
+    table = build_llm_table(
+        title=title or infer_table_title(source_doc_ids),
+        config=config,
+        tenant_id=tenant_id,
+        source_doc_ids=source_doc_ids,
+    )
+    artifact = MindMapArtifact(
+        id=artifact_id,
+        title=title or table.get("title") or infer_table_title(source_doc_ids),
+        status="ready",
+        tenant_id=tenant_id,
+        source_doc_ids=source_doc_ids,
+        created_at=timestamp,
+        updated_at=timestamp,
+        artifact_type="table",
+        table=table,
     )
     save_artifact(config, artifact)
     return artifact
@@ -100,12 +139,14 @@ def build_mindmap_root(
     config: RagConfig | None = None,
     tenant_id: str | None = None,
     source_doc_ids: list[str] | None = None,
+    batch_chunk_count: int = DEFAULT_MINDMAP_BATCH_CHUNK_COUNT,
 ) -> dict[str, Any]:
     return build_llm_outline(
         title=title,
         config=config,
         tenant_id=tenant_id,
         source_doc_ids=source_doc_ids or [],
+        batch_chunk_count=batch_chunk_count,
     )
 
 
@@ -115,6 +156,7 @@ def build_llm_outline(
     config: RagConfig | None,
     tenant_id: str | None,
     source_doc_ids: list[str],
+    batch_chunk_count: int = DEFAULT_MINDMAP_BATCH_CHUNK_COUNT,
 ) -> dict[str, Any] | None:
     if config is None or tenant_id is None or not source_doc_ids:
         raise ValueError("tenant_id and source_doc_ids are required for mind map generation.")
@@ -125,17 +167,47 @@ def build_llm_outline(
     if not docs:
         raise RuntimeError("No archived source documents found for LLM mind map generation.")
 
-    text = "\n\n".join(format_doc_for_mindmap(doc) for doc in docs if doc.text.strip()).strip()
-    chunks = split_mindmap_text(text, chunk_chars=MINDMAP_CHUNK_CHARS, max_chunks=MINDMAP_MAX_CHUNKS)
-    if not chunks:
+    batches = batch_mindmap_docs(docs, batch_chunk_count=batch_chunk_count)
+    if not batches:
         raise RuntimeError("Archived source documents are empty; cannot generate mind map.")
 
     partial_roots = [
-        generate_partial_mindmap_with_llm(config=config, title=title, chunk=chunk, index=index)
-        for index, chunk in enumerate(chunks, start=1)
+        generate_partial_mindmap_with_llm(
+            config=config,
+            title=title,
+            batch_text=batch_text,
+            index=index,
+            total=len(batches),
+        )
+        for index, batch_text in enumerate(batches, start=1)
     ]
     root = merge_mindmaps_with_llm(config=config, title=title, partial_roots=partial_roots)
     return normalize_mindmap_node(root, default_label=title or infer_title(source_doc_ids), node_id="root")
+
+
+def build_llm_table(
+    *,
+    title: str,
+    config: RagConfig | None,
+    tenant_id: str | None,
+    source_doc_ids: list[str],
+) -> dict[str, Any]:
+    if config is None or tenant_id is None or not source_doc_ids:
+        raise ValueError("tenant_id and source_doc_ids are required for table generation.")
+    if not config.llm_base_url or not config.llm_api_key:
+        raise RuntimeError("NEW_API_URL/NEW_API_KEY must be configured for LLM table generation.")
+
+    docs = load_selected_archived_docs(config=config, tenant_id=tenant_id, source_doc_ids=source_doc_ids)
+    if not docs:
+        raise RuntimeError("No archived source documents found for LLM table generation.")
+
+    text = "\n\n".join(format_doc_for_mindmap(doc) for doc in docs if doc.text.strip()).strip()
+    chunks = split_mindmap_text(text, chunk_chars=TABLE_CHUNK_CHARS, max_chunks=1)
+    if not chunks:
+        raise RuntimeError("Archived source documents are empty; cannot generate table.")
+
+    raw_table = generate_table_with_llm(config=config, title=title, source_text=chunks[0])
+    return normalize_table(raw_table, default_title=title)
 
 
 def load_selected_archived_docs(*, config: RagConfig, tenant_id: str, source_doc_ids: list[str]) -> list:
@@ -151,6 +223,15 @@ def load_selected_archived_docs(*, config: RagConfig, tenant_id: str, source_doc
 def format_doc_for_mindmap(doc) -> str:
     location = f"第 {source_page_no(doc)} 页" if source_page_no(doc) else doc.title
     return f"[{location}]\n{doc.text.strip()}"
+
+
+def batch_mindmap_docs(docs: list, *, batch_chunk_count: int) -> list[str]:
+    batch_size = max(1, batch_chunk_count)
+    formatted_docs = [format_doc_for_mindmap(doc) for doc in docs if doc.text.strip()]
+    return [
+        "\n\n".join(formatted_docs[start : start + batch_size])
+        for start in range(0, len(formatted_docs), batch_size)
+    ]
 
 
 def split_mindmap_text(text: str, *, chunk_chars: int, max_chunks: int) -> list[str]:
@@ -172,8 +253,15 @@ def split_mindmap_text(text: str, *, chunk_chars: int, max_chunks: int) -> list[
     return chunks
 
 
-def generate_partial_mindmap_with_llm(*, config: RagConfig, title: str, chunk: str, index: int) -> dict[str, Any]:
-    prompt = f"""你是知识库思维导图专家。请把下面第 {index} 个原文块整理为局部思维导图。
+def generate_partial_mindmap_with_llm(
+    *,
+    config: RagConfig,
+    title: str,
+    batch_text: str,
+    index: int,
+    total: int,
+) -> dict[str, Any]:
+    prompt = f"""你是知识库思维导图专家。请把下面第 {index}/{total} 批原文块整理为局部思维导图。
 
 要求:
 - 只依据原文，不编造。
@@ -184,8 +272,8 @@ def generate_partial_mindmap_with_llm(*, config: RagConfig, title: str, chunk: s
 
 总标题: {title}
 
-原文块:
-{chunk}
+原文块批次:
+{batch_text}
 """
     return call_mindmap_llm(
         config=config,
@@ -217,7 +305,34 @@ def merge_mindmaps_with_llm(*, config: RagConfig, title: str, partial_roots: lis
     )
 
 
+def generate_table_with_llm(*, config: RagConfig, title: str, source_text: str) -> dict[str, Any]:
+    prompt = f"""你是知识库数据表格专家。请把下面原文整理成一个适合阅读和比较的数据表格。
+
+要求:
+- 只依据原文，不编造。
+- 输出严格 JSON，不要 Markdown。
+- JSON schema: {{"title": "表格标题", "columns": ["列名1", "列名2"], "rows": [["单元格1", "单元格2"]], "summary": "一句话说明表格用途"}}
+- 根据资料内容选择最有价值的列，例如标题、作者、主题、主要发现、关键引文、城市、最佳时间、景点、费用、岗位、职责、要求等。
+- 列数 3-8 列，行数 3-24 行。
+- 单元格要简洁；没有证据的单元格填“未提及”。
+
+表格任务: {title}
+
+原文:
+{source_text}
+"""
+    return call_json_llm(
+        config=config,
+        system_prompt="你只输出合法 JSON。你擅长从文档中抽取结构化表格。",
+        user_prompt=prompt,
+    )
+
+
 def call_mindmap_llm(*, config: RagConfig, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+    return call_json_llm(config=config, system_prompt=system_prompt, user_prompt=user_prompt)
+
+
+def call_json_llm(*, config: RagConfig, system_prompt: str, user_prompt: str) -> dict[str, Any]:
     from openai import OpenAI
 
     client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
@@ -293,6 +408,34 @@ def clean_label(value: str) -> str:
     return value.strip().strip("：:，,。；;")[:80]
 
 
+def normalize_table(raw: dict[str, Any], *, default_title: str) -> dict[str, Any]:
+    columns = raw.get("columns") if isinstance(raw.get("columns"), list) else []
+    clean_columns = [clean_table_cell(column)[:40] for column in columns if clean_table_cell(column)]
+    clean_columns = clean_columns[:TABLE_MAX_COLUMNS]
+    if not clean_columns:
+        clean_columns = ["主题", "要点", "证据"]
+
+    rows = raw.get("rows") if isinstance(raw.get("rows"), list) else []
+    clean_rows: list[list[str]] = []
+    for row in rows[:TABLE_MAX_ROWS]:
+        values = row if isinstance(row, list) else []
+        clean_row = [clean_table_cell(value) for value in values[: len(clean_columns)]]
+        if len(clean_row) < len(clean_columns):
+            clean_row.extend(["未提及"] * (len(clean_columns) - len(clean_row)))
+        if any(cell and cell != "未提及" for cell in clean_row):
+            clean_rows.append(clean_row)
+    return {
+        "title": clean_table_cell(raw.get("title")) or default_title or "数据表格",
+        "columns": clean_columns,
+        "rows": clean_rows,
+        "summary": clean_table_cell(raw.get("summary")),
+    }
+
+
+def clean_table_cell(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()[:260]
+
+
 def source_page_no(doc) -> int:
     page_no = doc.metadata.get("page_no")
     if isinstance(page_no, int):
@@ -306,6 +449,12 @@ def infer_title(source_doc_ids: list[str]) -> str:
     if source_doc_ids:
         return source_doc_ids[0]
     return "思维导图"
+
+
+def infer_table_title(source_doc_ids: list[str]) -> str:
+    if source_doc_ids:
+        return f"{source_doc_ids[0]} 数据表格"
+    return "数据表格"
 
 
 def save_artifact(config: RagConfig, artifact: MindMapArtifact) -> None:
@@ -330,6 +479,8 @@ def artifact_from_row(row: dict[str, Any]) -> MindMapArtifact:
         source_doc_ids=list(row.get("source_doc_ids") or []),
         created_at=int(row.get("created_at") or 0),
         updated_at=int(row.get("updated_at") or 0),
+        artifact_type=str(row.get("artifact_type") or "mindmap"),
         root=row.get("root"),
+        table=row.get("table"),
         error=str(row.get("error") or ""),
     )

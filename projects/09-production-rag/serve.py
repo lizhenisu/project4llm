@@ -11,6 +11,7 @@ from answer import answer_query
 from answer_multimodal import answer_multimodal_query
 from rag_core.artifacts import (
     create_mindmap_artifact,
+    create_table_artifact,
     delete_artifact,
     list_artifacts,
     load_artifact,
@@ -145,6 +146,7 @@ class MindMapRequest(BaseModel):
     acl_groups: list[str] = Field(default_factory=list)
     source_doc_ids: list[str] = Field(default_factory=list)
     doc_version: int | None = None
+    context_limit: int = Field(default=5, ge=1, le=20)
 
 
 class MindMapArtifactResponse(BaseModel):
@@ -155,7 +157,9 @@ class MindMapArtifactResponse(BaseModel):
     source_doc_ids: list[str]
     created_at: int
     updated_at: int
+    artifact_type: str = "mindmap"
     root: dict[str, Any] | None = None
+    table: dict[str, Any] | None = None
     error: str = ""
 
 
@@ -636,6 +640,36 @@ def create_app():
                 source_doc_ids=request.source_doc_ids,
                 acl_groups=auth_context.acl_groups or request.acl_groups or None,
                 doc_version=request.doc_version,
+                batch_chunk_count=request.context_limit,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return artifact_to_response(artifact)
+
+    @app.post("/artifacts/table", response_model=MindMapArtifactResponse)
+    def create_table(
+        request: MindMapRequest,
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> MindMapArtifactResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=request.tenant_id,
+            acl_groups=request.acl_groups,
+        )
+        try:
+            artifact = create_table_artifact(
+                config,
+                title=request.title,
+                tenant_id=auth_context.tenant_id,
+                source_doc_ids=request.source_doc_ids,
+                acl_groups=auth_context.acl_groups or request.acl_groups or None,
+                doc_version=request.doc_version,
             )
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -868,7 +902,9 @@ def artifact_to_response(artifact) -> MindMapArtifactResponse:
         source_doc_ids=artifact.source_doc_ids,
         created_at=artifact.created_at,
         updated_at=artifact.updated_at,
+        artifact_type=artifact.artifact_type,
         root=artifact.root,
+        table=artifact.table,
         error=artifact.error,
     )
 

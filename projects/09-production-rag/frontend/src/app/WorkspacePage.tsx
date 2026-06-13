@@ -7,6 +7,7 @@ import { StudioPanel } from "../components/studio/StudioPanel";
 import { IconButton } from "../components/ui/IconButton";
 import { SettingsDialog } from "./SettingsDialog";
 import {
+  createDataTable,
   createMindMap,
   deleteConversation,
   deleteSource,
@@ -37,6 +38,7 @@ type ResizeHandle = "source-chat" | "chat-studio";
 const DEFAULT_LAYOUT: PanelLayout = { source: 24, chat: 46, studio: 30 };
 const MINDMAP_LAYOUT: PanelLayout = { source: 20, chat: 38, studio: 42 };
 const MIN_LAYOUT: PanelLayout = { source: 17, chat: 31, studio: 22 };
+const ARTIFACT_GENERATION_COOLDOWN_MS = 4_000;
 
 export function WorkspacePage() {
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
@@ -52,10 +54,15 @@ export function WorkspacePage() {
   const [sourceContentLoading, setSourceContentLoading] = useState(false);
   const [status, setStatus] = useState("未连接");
   const [busy, setBusy] = useState(false);
+  const [artifactGenerationBusy, setArtifactGenerationBusy] = useState(false);
+  const [artifactGenerationReadyAt, setArtifactGenerationReadyAt] = useState(0);
+  const [, setCooldownTick] = useState(0);
   const [panelLayout, setPanelLayout] = useState<PanelLayout>(DEFAULT_LAYOUT);
   const [typingMessageId, setTypingMessageId] = useState<string | null>(null);
   const gridRef = useRef<HTMLElement | null>(null);
   const studioListLayoutRef = useRef<PanelLayout | null>(null);
+  const artifactGenerationBusyRef = useRef(false);
+  const artifactGenerationReadyAtRef = useRef(0);
 
   const selectedSources = useMemo(() => sources.filter((source) => source.selected), [sources]);
   const selectedDocIds = useMemo(
@@ -65,6 +72,20 @@ export function WorkspacePage() {
       ),
     [selectedSources],
   );
+  const artifactCooldownRemainingMs = Math.max(0, artifactGenerationReadyAt - Date.now());
+  const artifactGenerationLocked = artifactGenerationBusy || artifactCooldownRemainingMs > 0;
+  const artifactGenerationLockReason = artifactGenerationBusy
+    ? "正在生成上一个 Studio 项"
+    : artifactCooldownRemainingMs > 0
+      ? `请等待 ${Math.ceil(artifactCooldownRemainingMs / 1000)} 秒后再生成`
+      : "";
+
+  useEffect(() => {
+    artifactGenerationReadyAtRef.current = artifactGenerationReadyAt;
+    if (artifactGenerationBusy || artifactGenerationReadyAt <= Date.now()) return;
+    const timer = window.setInterval(() => setCooldownTick((value) => value + 1), 250);
+    return () => window.clearInterval(timer);
+  }, [artifactGenerationBusy, artifactGenerationReadyAt]);
 
   useEffect(() => {
     saveSettings(settings);
@@ -278,22 +299,42 @@ export function WorkspacePage() {
     }
   }
 
+  function beginArtifactGeneration() {
+    const now = Date.now();
+    if (artifactGenerationBusyRef.current || now < artifactGenerationReadyAtRef.current) {
+      return false;
+    }
+    const readyAt = now + ARTIFACT_GENERATION_COOLDOWN_MS;
+    artifactGenerationBusyRef.current = true;
+    artifactGenerationReadyAtRef.current = readyAt;
+    setArtifactGenerationBusy(true);
+    setArtifactGenerationReadyAt(readyAt);
+    return true;
+  }
+
+  function finishArtifactGeneration() {
+    artifactGenerationBusyRef.current = false;
+    setArtifactGenerationBusy(false);
+  }
+
   async function handleCreateMindMap() {
-    if (selectedDocIds.length === 0) return;
+    if (selectedDocIds.length === 0 || !beginArtifactGeneration()) return;
+    const sourceDocIds = [...selectedDocIds];
     const title = selectedSources.length === 1 ? `${selectedSources[0].title} 思维导图` : "选中来源思维导图";
     const pendingArtifact: MindMapArtifact = {
       id: `pending-${Date.now()}`,
       title,
       status: "generating",
       tenant_id: settings.tenantId,
-      source_doc_ids: selectedDocIds,
+      source_doc_ids: sourceDocIds,
       created_at: Date.now(),
       updated_at: Date.now(),
+      artifact_type: "mindmap",
       root: null,
     };
     setArtifacts((items) => [pendingArtifact, ...items]);
     try {
-      const artifact = await createMindMap(settings, title, selectedDocIds);
+      const artifact = await createMindMap(settings, title, sourceDocIds);
       setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
       openArtifact(artifact);
     } catch (error) {
@@ -301,9 +342,44 @@ export function WorkspacePage() {
         items.map((item) =>
           item.id === pendingArtifact.id
             ? { ...item, status: "failed", error: error instanceof Error ? error.message : "生成失败" }
-            : item,
+          : item,
         ),
       );
+    } finally {
+      finishArtifactGeneration();
+    }
+  }
+
+  async function handleCreateDataTable() {
+    if (selectedDocIds.length === 0 || !beginArtifactGeneration()) return;
+    const sourceDocIds = [...selectedDocIds];
+    const title = selectedSources.length === 1 ? `${selectedSources[0].title} 数据表格` : "选中来源数据表格";
+    const pendingArtifact: MindMapArtifact = {
+      id: `pending-table-${Date.now()}`,
+      title,
+      status: "generating",
+      tenant_id: settings.tenantId,
+      source_doc_ids: sourceDocIds,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      artifact_type: "table",
+      table: null,
+    };
+    setArtifacts((items) => [pendingArtifact, ...items]);
+    try {
+      const artifact = await createDataTable(settings, title, sourceDocIds);
+      setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
+      openArtifact(artifact);
+    } catch (error) {
+      setArtifacts((items) =>
+        items.map((item) =>
+          item.id === pendingArtifact.id
+            ? { ...item, status: "failed", error: error instanceof Error ? error.message : "生成失败" }
+          : item,
+        ),
+      );
+    } finally {
+      finishArtifactGeneration();
     }
   }
 
@@ -406,7 +482,10 @@ export function WorkspacePage() {
           sources={sources}
           selectedSources={selectedSources}
           activeArtifact={activeArtifact}
+          artifactGenerationLocked={artifactGenerationLocked}
+          artifactGenerationLockReason={artifactGenerationLockReason}
           onCreateMindMap={handleCreateMindMap}
+          onCreateDataTable={handleCreateDataTable}
           onOpenArtifact={openArtifact}
           onRenameArtifact={handleRenameArtifact}
           onDeleteArtifact={handleDeleteArtifact}
