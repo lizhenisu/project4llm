@@ -57,7 +57,7 @@
 .primary-pill,
 .add-source-button,
 .chat-input button,
-.dialog-actions button,
+.dialog-actions button:not(.primary-pill),
 .upload-actions button,
 .artifact-feedback button,
 .mindmap-title button,
@@ -759,6 +759,7 @@ button:not(:disabled):active {
   padding: 9px 0;
   line-height: 1.5;
   resize: none;
+  outline: none;
 }
 
 .chat-input span {
@@ -981,6 +982,7 @@ button:not(:disabled):active {
   padding: 18px;
 }
 
+.delete-dialog,
 .upload-dialog,
 .settings-dialog {
   width: min(620px, 100%);
@@ -990,6 +992,7 @@ button:not(:disabled):active {
   box-shadow: var(--shadow);
 }
 
+.delete-dialog,
 .upload-dialog {
   position: relative;
   padding: 20px;
@@ -1180,4 +1183,8 @@ button:not(:disabled):active {
 
 .dropdown-menu button:hover {
   background: var(--surface-muted) !important;
+}
+
+.delete-dialog {
+  width: min(400px, 100%);
 }

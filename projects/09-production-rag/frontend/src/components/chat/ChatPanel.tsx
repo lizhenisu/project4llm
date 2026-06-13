@@ -1,4 +1,4 @@
-import { ArrowRight, Bot, Copy, MoreVertical, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ArrowRight, Bot, Copy, MoreVertical, ThumbsDown, ThumbsUp, Check } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage, SourceItem } from "../../lib/types";
@@ -32,6 +32,15 @@ export function ChatPanel({
   const [inputHeight, setInputHeight] = useState(46);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const canSend = draft.trim().length > 0 && selectedSources.length > 0 && !busy;
+
+  useEffect(() => {
+    function handleClickOutside() {
+      setMenuOpen(false);
+    }
+    document.addEventListener("click", handleClickOutside);
+    return () => document.removeEventListener("click", handleClickOutside);
+  }, []);
+
 
   function submit() {
     if (!canSend) return;
@@ -73,7 +82,10 @@ export function ChatPanel({
               type="button"
               aria-label="更多"
               title="更多"
-              onClick={() => setMenuOpen((open) => !open)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen((open) => !open);
+              }}
             >
               <MoreVertical size={18} />
             </button>
@@ -132,6 +144,8 @@ export function ChatPanel({
           onPointerDown={handlePointerDown}
         />
         <textarea
+          id="chat-input-textarea"
+          name="chat-message"
           ref={textareaRef}
           value={draft}
           placeholder={selectedSources.length ? "提问或创作内容" : "请先添加并选择来源"}
@@ -188,7 +202,11 @@ function AssistantMessage({
   onTypingComplete: () => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
 }) {
+  const [copied, setCopied] = useState(false);
+  const [feedbackRating, setFeedbackRating] = useState<1 | -1 | null>(null);
+  
   const { text, done } = useTypewriter(message.content, typing);
+
   const showControls = message.status !== "sending" && (message.status === "failed" || done);
   const className = [
     "assistant-message",
@@ -212,14 +230,32 @@ function AssistantMessage({
       {showControls && message.citations?.length ? <Citations message={message} /> : null}
       {showControls ? (
         <div className="message-actions">
-          <button type="button" onClick={() => navigator.clipboard?.writeText(message.content)}>
-            <Copy size={16} />
+          <button type="button" onClick={() => {
+            navigator.clipboard?.writeText(message.content);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          }}>
+            {copied ? <Check size={16} style={{ color: "var(--green)" }} /> : <Copy size={16} />}
           </button>
-          <button type="button" onClick={() => onFeedback(message, 1)}>
-            <ThumbsUp size={16} />
+          <button 
+            type="button" 
+            onClick={() => {
+              onFeedback(message, 1);
+              setFeedbackRating(1);
+            }}
+            style={{ color: feedbackRating === 1 ? "var(--green)" : "inherit" }}
+          >
+            <ThumbsUp size={16} fill={feedbackRating === 1 ? "currentColor" : "none"} />
           </button>
-          <button type="button" onClick={() => onFeedback(message, -1)}>
-            <ThumbsDown size={16} />
+          <button 
+            type="button" 
+            onClick={() => {
+              onFeedback(message, -1);
+              setFeedbackRating(-1);
+            }}
+            style={{ color: feedbackRating === -1 ? "var(--danger)" : "inherit" }}
+          >
+            <ThumbsDown size={16} fill={feedbackRating === -1 ? "currentColor" : "none"} />
           </button>
         </div>
       ) : null}

@@ -124,8 +124,10 @@ export function WorkspacePage() {
     setSources((items) => [temp, ...items]);
     try {
       const uploaded = await uploadSource(settings, file);
-      setSources((items) => mergeSelectedState(uploaded, items.filter((item) => item.doc_id !== temp.doc_id)));
-      await refresh();
+      setSources((items) => [
+        ...uploaded.map(item => ({ ...item, selected: true })), // Auto-select newly uploaded items
+        ...items.filter((item) => item.doc_id !== temp.doc_id)
+      ]);
     } catch (error) {
       setSources((items) =>
         items.map((item) =>
@@ -144,7 +146,6 @@ export function WorkspacePage() {
     }
     try {
       await deleteSource(settings, source.doc_id);
-      await refresh();
     } catch (error) {
       setSources((items) => [
         { ...source, status: "failed", error: error instanceof Error ? error.message : "删除失败" },
