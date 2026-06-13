@@ -74,8 +74,10 @@ def main() -> None:
     assert rag_api_env["RAG_OBJECT_STORE_DIR"] == EXPECTED_OBJECT_STORE_PATH
     assert rag_api_env["RAG_RUNTIME_DIR"] == EXPECTED_RUNTIME_PATH
     assert "../../.env" in rag_api.get("env_file", [])
+    assert rag_api_env["RAG_QUERY_REWRITE_BACKEND"] == "${RAG_QUERY_REWRITE_BACKEND:-llm}"
     assert rag_api_env["RAG_QUERY_REWRITE_HISTORY_TURNS"] == "6"
     assert rag_api_env["RAG_QUERY_REWRITE_MAX_TOKENS"] == "256"
+    assert rag_api_env["RAG_ANSWER_BACKEND"] == "${RAG_ANSWER_BACKEND:-llm}"
     assert has_volume(rag_api["volumes"], EXPECTED_OBJECT_STORE_PATH)
     assert has_volume(rag_api["volumes"], EXPECTED_RUNTIME_PATH)
 
@@ -93,7 +95,8 @@ def main() -> None:
     assert 'CMD ["./scripts/start_api.sh"]' in dockerfile
     assert "COPY projects/09-production-rag /app/projects/09-production-rag" in dockerfile
 
-    assert (PROJECT_DIR / "scripts" / "start_api.sh").exists()
+    start_api = (PROJECT_DIR / "scripts" / "start_api.sh").read_text(encoding="utf-8")
+    assert "python check_config.py" in start_api
     assert (PROJECT_DIR / "scripts" / "start_ingest.sh").exists()
 
     print("smoke_container_config=ok")

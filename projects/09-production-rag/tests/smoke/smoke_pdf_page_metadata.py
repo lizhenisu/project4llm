@@ -21,7 +21,7 @@ def run_smoke() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         pdf_path = root / "manual.pdf"
-        pdf_path.write_bytes(b"%PDF-1.4\n% teaching smoke placeholder\n")
+        pdf_path.write_bytes(b"%PDF-1.4\n% regression fixture\n")
 
         docs = io.load_file_documents(
             root,

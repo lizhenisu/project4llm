@@ -236,10 +236,6 @@ projects/09-production-rag/
 │       │   ├── auth.ts
 │       │   ├── storage.ts
 │       │   └── types.ts
-│       ├── mocks/
-│       │   ├── sources.ts
-│       │   ├── chat.ts
-│       │   └── mindmap.ts
 │       └── styles/
 │           ├── globals.css
 │           ├── layout.css
@@ -311,9 +307,9 @@ Studio 相关组件：
 - `storage.ts`：localStorage 配置持久化。
 - `types.ts`：后端响应和前端状态类型。
 
-### 5.6 `mocks/`
+### 5.6 `tests/e2e/`
 
-第一阶段静态 UI 使用 mock 数据，后续接 API 时仍可用于离线开发和 UI 回归。
+前端回归数据放在 Playwright 用例内，通过网络拦截构造 API 响应；运行时代码不保留 mock 数据目录。
 
 ## 6. 后端需要补齐的接口
 
@@ -631,9 +627,9 @@ npm run build
 
 1. 实现顶部栏。
 2. 实现三栏布局。
-3. 实现来源空状态和来源列表 mock。
+3. 实现来源空状态和来源列表。
 4. 实现上传弹窗静态交互。
-5. 实现对话空状态、有来源摘要状态、问答结果 mock。
+5. 实现对话空状态、有来源摘要状态、问答结果状态。
 6. 实现 Studio 功能卡片、列表、思维导图详情。
 7. 做桌面和移动端响应式。
 
@@ -786,6 +782,6 @@ docker compose logs --tail=100 rag-web
 3. 初始化 Vite React TypeScript。
 4. 加入 `lucide-react` 和 `react-markdown`。
 5. 建立组件目录。
-6. 先用 mock 数据做出三栏静态工作台。
+6. 先做出三栏静态工作台，并在接入 API 后删除运行时代码中的静态样例数据。
 
 只有当静态 UI 站稳之后，再开始补后端上传和 Artifact 接口。

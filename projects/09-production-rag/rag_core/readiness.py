@@ -31,7 +31,7 @@ REQUIRED_FIELDS = {
     "metadata",
 }
 
-SECRET_KEYS = {"milvus_token", "llm_api_key", "api_token"}
+SECRET_KEYS = {"milvus_token", "llm_api_key", "siliconflow_api_key", "api_token"}
 
 
 def readiness_report(config: RagConfig) -> dict[str, Any]:
@@ -45,6 +45,9 @@ def readiness_report(config: RagConfig) -> dict[str, Any]:
         "image_embedding_backend": config.image_embedding_backend,
         "image_embedding_dim": config.image_embedding_dim,
         "rerank_backend": config.rerank_backend,
+        "query_rewrite_backend": config.query_rewrite_backend,
+        "answer_backend": config.answer_backend,
+        "llm_model": config.llm_model,
         "require_auth_context": config.require_auth_context,
         "checks": {},
     }

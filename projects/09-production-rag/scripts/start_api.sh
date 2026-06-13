@@ -3,4 +3,5 @@ set -euo pipefail
 
 python wait_milvus.py
 python schema.py
+python check_config.py
 uvicorn serve:app --host 0.0.0.0 --port "${RAG_API_PORT:-8008}"

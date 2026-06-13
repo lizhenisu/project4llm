@@ -1,21 +1,23 @@
 import {
   ArrowLeft,
-  BarChart3,
   ChevronRight,
   Download,
-  FileQuestion,
-  FileText,
-  Flashlight,
   Maximize2,
   Network,
-  Presentation,
-  Rows3,
   ThumbsDown,
   ThumbsUp,
-  Video,
-  Volume2,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import {
+  Background,
+  Controls,
+  MarkerType,
+  MiniMap,
+  ReactFlow,
+  type Edge,
+  type Node,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+import { useMemo, useRef, useState } from "react";
 import type { MindMapArtifact, MindMapNode, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
 
@@ -29,15 +31,7 @@ type Props = {
 };
 
 const tools = [
-  { label: "音频概览", icon: Volume2, disabled: true, tone: "blue" },
-  { label: "演示文稿", icon: Presentation, disabled: true, tone: "olive" },
-  { label: "视频概览", icon: Video, disabled: true, tone: "green" },
-  { label: "思维导图", icon: Network, disabled: false, tone: "purple" },
-  { label: "报告", icon: FileText, disabled: true, tone: "gold" },
-  { label: "闪卡", icon: Flashlight, disabled: true, tone: "red" },
-  { label: "测验", icon: FileQuestion, disabled: true, tone: "cyan" },
-  { label: "信息图", icon: BarChart3, disabled: true, tone: "pink" },
-  { label: "数据表格", icon: Rows3, disabled: true, tone: "indigo" },
+  { label: "思维导图", icon: Network, tone: "purple" },
 ];
 
 export function StudioPanel({
@@ -65,9 +59,9 @@ export function StudioPanel({
               className={`tool-card tone-${tool.tone}`}
               type="button"
               key={tool.label}
-              disabled={tool.disabled || (!tool.disabled && selectedSources.length === 0)}
-              title={tool.disabled ? "即将支持" : selectedSources.length ? "生成思维导图" : "请先选择来源"}
-              onClick={tool.disabled ? undefined : onCreateMindMap}
+              disabled={selectedSources.length === 0}
+              title={selectedSources.length ? "生成思维导图" : "请先选择来源"}
+              onClick={onCreateMindMap}
             >
               <Icon size={18} />
               <span>{tool.label}</span>
@@ -104,16 +98,7 @@ export function StudioPanel({
 
 function MindMapDetail({ artifact, onBack }: { artifact: MindMapArtifact; onBack: () => void }) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  const [zoom, setZoom] = useState(1);
-
-  function zoomBy(delta: number) {
-    setZoom((value) => Math.min(1.6, Math.max(0.7, Number((value + delta).toFixed(2)))));
-  }
-
-  function fitView() {
-    setZoom(1);
-    canvasRef.current?.scrollTo({ top: 0, left: 0, behavior: "smooth" });
-  }
+  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(() => new Set());
 
   async function toggleFullscreen() {
     const element = canvasRef.current;
@@ -142,23 +127,30 @@ function MindMapDetail({ artifact, onBack }: { artifact: MindMapArtifact; onBack
         <button type="button">查看 {artifact.source_doc_ids.length} 个来源</button>
       </div>
       <div className="mindmap-canvas" ref={canvasRef}>
-        <div className="canvas-tools">
-          <button type="button" title="适配视图" onClick={fitView}>
-            ⌖
-          </button>
-          <button type="button" title="放大" onClick={() => zoomBy(0.1)}>
-            +
-          </button>
-          <button type="button" title="缩小" onClick={() => zoomBy(-0.1)}>
-            −
-          </button>
+        <div className="mindmap-download-action">
           <button type="button" onClick={() => downloadArtifact(artifact)}>
             <Download size={17} />
           </button>
         </div>
-        <div className="mindmap-zoom-layer" style={{ transform: `scale(${zoom})` }}>
-          {artifact.root ? <MindMapTree node={artifact.root} depth={0} /> : <p>暂无可展示的思维导图。</p>}
-        </div>
+        {artifact.root ? (
+          <InteractiveMindMap
+            root={artifact.root}
+            expandedNodeIds={expandedNodeIds}
+            onToggleNode={(nodeId) =>
+              setExpandedNodeIds((current) => {
+                const next = new Set(current);
+                if (next.has(nodeId)) {
+                  next.delete(nodeId);
+                } else {
+                  next.add(nodeId);
+                }
+                return next;
+              })
+            }
+          />
+        ) : (
+          <p>暂无可展示的思维导图。</p>
+        )}
       </div>
       <div className="artifact-feedback">
         <button type="button">
@@ -174,19 +166,124 @@ function MindMapDetail({ artifact, onBack }: { artifact: MindMapArtifact; onBack
   );
 }
 
-function MindMapTree({ node, depth }: { node: MindMapNode; depth: number }) {
-  return (
-    <div className={`mindmap-node depth-${Math.min(depth, 3)}`}>
-      <div className="node-label">{node.label}</div>
-      {node.children?.length ? (
-        <div className="node-children">
-          {node.children.map((child) => (
-            <MindMapTree node={child} depth={depth + 1} key={child.id} />
-          ))}
-        </div>
-      ) : null}
-    </div>
+function InteractiveMindMap({
+  root,
+  expandedNodeIds,
+  onToggleNode,
+}: {
+  root: MindMapNode;
+  expandedNodeIds: Set<string>;
+  onToggleNode: (nodeId: string) => void;
+}) {
+  const branches = root.children || [];
+  const { nodes, edges } = useMemo(
+    () => buildMindMapFlow(root, expandedNodeIds),
+    [root, expandedNodeIds],
   );
+
+  if (branches.length === 0) {
+    return <div className="mindmap-empty-node">{root.label}</div>;
+  }
+
+  return (
+    <ReactFlow
+      className="mindmap-flow"
+      nodes={nodes}
+      edges={edges}
+      nodesDraggable
+      nodesConnectable={false}
+      elementsSelectable
+      fitView
+      fitViewOptions={{ padding: 0.22, duration: 450 }}
+      minZoom={0.35}
+      maxZoom={1.8}
+      onNodeClick={(_, node) => {
+        if (node.data.canExpand) {
+          onToggleNode(node.id);
+        }
+      }}
+    >
+      <Background color="#dce4f0" gap={26} />
+      <Controls showInteractive={false} />
+      <MiniMap nodeStrokeWidth={3} />
+    </ReactFlow>
+  );
+}
+
+type MindMapFlowNodeData = {
+  label: string;
+  canExpand: boolean;
+  expanded: boolean;
+};
+
+function buildMindMapFlow(root: MindMapNode, expandedNodeIds: Set<string>): { nodes: Node<MindMapFlowNodeData>[]; edges: Edge[] } {
+  const nodes: Node<MindMapFlowNodeData>[] = [
+    {
+      id: root.id,
+      type: "default",
+      position: { x: 0, y: 0 },
+      data: { label: root.label, canExpand: false, expanded: false },
+      className: "mindmap-flow-node root",
+      draggable: true,
+    },
+  ];
+  const edges: Edge[] = [];
+  const branches = root.children || [];
+  const rowGap = 82;
+  const rootY = ((branches.length - 1) * rowGap) / 2;
+  nodes[0].position.y = rootY;
+
+  branches.forEach((branch, index) => {
+    const expanded = expandedNodeIds.has(branch.id);
+    const branchY = index * rowGap;
+    nodes.push({
+      id: branch.id,
+      type: "default",
+      position: { x: 330, y: branchY },
+      data: {
+        label: `${branch.label}${branch.children?.length ? ` ${expanded ? "⌄" : "›"}` : ""}`,
+        canExpand: Boolean(branch.children?.length),
+        expanded,
+      },
+      className: `mindmap-flow-node branch tone-${index % 6}`,
+      draggable: true,
+    });
+    edges.push(makeMindMapEdge(root.id, branch.id, `edge-${root.id}-${branch.id}`));
+
+    if (!expanded) {
+      return;
+    }
+    const children = branch.children || [];
+    const childStartY = branchY - ((children.length - 1) * 58) / 2;
+    children.forEach((child, childIndex) => {
+      nodes.push({
+        id: child.id,
+        type: "default",
+        position: { x: 690, y: childStartY + childIndex * 58 },
+        data: {
+          label: child.label,
+          canExpand: false,
+          expanded: false,
+        },
+        className: `mindmap-flow-node leaf tone-${childIndex % 6}`,
+        draggable: true,
+      });
+      edges.push(makeMindMapEdge(branch.id, child.id, `edge-${branch.id}-${child.id}`));
+    });
+  });
+  return { nodes, edges };
+}
+
+function makeMindMapEdge(source: string, target: string, id: string): Edge {
+  return {
+    id,
+    source,
+    target,
+    type: "smoothstep",
+    animated: false,
+    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#6b7cff" },
+    style: { stroke: "#6b7cff", strokeWidth: 2 },
+  };
 }
 
 function downloadArtifact(artifact: MindMapArtifact) {

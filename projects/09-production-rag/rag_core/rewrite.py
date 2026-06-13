@@ -13,12 +13,10 @@ def rewrite_query(
 ) -> RewriteResult:
     backend = config.query_rewrite_backend
     original = normalize_text(query)
-    if backend == "none":
-        return RewriteResult(original, original, backend)
     if backend == "llm":
         return RewriteResult(original, llm_rewrite(original, history or [], config), backend)
     raise ValueError(
-        f"Unsupported RAG_QUERY_REWRITE_BACKEND={backend!r}; use none/llm"
+        f"Unsupported RAG_QUERY_REWRITE_BACKEND={backend!r}; use llm"
     )
 
 
@@ -49,5 +47,7 @@ def llm_rewrite(query: str, history: list[str], config: RagConfig) -> str:
         ],
         max_tokens=max(1, config.query_rewrite_max_tokens),
     )
-    rewritten = response.choices[0].message.content or query
+    rewritten = response.choices[0].message.content or ""
+    if not rewritten.strip():
+        raise RuntimeError("LLM query rewrite returned empty content.")
     return normalize_text(rewritten)

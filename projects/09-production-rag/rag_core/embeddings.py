@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import math
 import re
 from pathlib import Path
 from typing import Protocol
@@ -28,44 +26,6 @@ class EmbeddingModel(Protocol):
 
 class ImageEmbeddingModel(EmbeddingModel, Protocol):
     def encode_images(self, image_paths: list[Path]) -> list[list[float]]: ...
-
-
-class HashEmbeddingModel:
-    def __init__(self, *, model_name: str, dim: int) -> None:
-        self._model_name = model_name
-        self._dim = dim
-
-    @property
-    def dim(self) -> int:
-        return self._dim
-
-    @property
-    def model_name(self) -> str:
-        return self._model_name
-
-    def encode(self, texts: list[str]) -> list[list[float]]:
-        return [self._encode_one(text) for text in texts]
-
-    def tokenize(self, text: str) -> list[int]:
-        tokens = lexical_tokens(text)
-        return [stable_token_bucket(token, self._dim) for token in tokens]
-
-    def count_tokens(self, text: str) -> int:
-        return len(self.tokenize(text))
-
-    def _encode_one(self, text: str) -> list[float]:
-        vector = [0.0] * self._dim
-        tokens = lexical_tokens(text)
-        if not tokens:
-            return vector
-        for token in tokens:
-            bucket = stable_token_bucket(token, self._dim)
-            sign = 1.0 if stable_token_bucket(f"{token}:sign", 2) == 0 else -1.0
-            vector[bucket] += sign
-        norm = math.sqrt(sum(value * value for value in vector))
-        if norm == 0.0:
-            return vector
-        return [value / norm for value in vector]
 
 
 class SiliconFlowEmbeddingModel:
@@ -108,7 +68,7 @@ class SiliconFlowEmbeddingModel:
 
     def tokenize(self, text: str) -> list[int]:
         tokens = lexical_tokens(text)
-        return [stable_token_bucket(token, self._dim) for token in tokens]
+        return list(range(len(tokens)))
 
     def count_tokens(self, text: str) -> int:
         return len(self.tokenize(text))
@@ -334,8 +294,6 @@ class TransformersCLIPImageEmbeddingModel:
 
 
 def build_embedding_model(config: RagConfig) -> EmbeddingModel:
-    if config.embedding_backend == "hash":
-        return HashEmbeddingModel(model_name=config.embedding_model, dim=config.embedding_dim)
     if config.embedding_backend == "siliconflow":
         return SiliconFlowEmbeddingModel(
             base_url=config.siliconflow_base_url,
@@ -357,17 +315,12 @@ def build_embedding_model(config: RagConfig) -> EmbeddingModel:
         )
     raise ValueError(
         "Unsupported RAG_EMBEDDING_BACKEND="
-        f"{config.embedding_backend!r}. Use 'hash', 'siliconflow', or 'bge'."
+        f"{config.embedding_backend!r}. Use 'siliconflow' or 'bge'."
     )
 
 
 def lexical_tokens(text: str) -> list[str]:
     return re.findall(r"[\w\u4e00-\u9fff]+", text.lower())
-
-
-def stable_token_bucket(token: str, dim: int) -> int:
-    digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, "big") % dim
 
 
 def siliconflow_url(base_url: str, path: str) -> str:

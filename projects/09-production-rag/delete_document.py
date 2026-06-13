@@ -23,11 +23,6 @@ def main() -> None:
         action="store_true",
         help="Do not update current_versions.json after deleting chunks.",
     )
-    parser.add_argument(
-        "--skip-object-store-tombstone",
-        action="store_true",
-        help="Do not write a delete tombstone to the archived canonical object store.",
-    )
     args = parser.parse_args()
 
     if not args.yes:
@@ -54,13 +49,12 @@ def main() -> None:
             doc_version=args.doc_version,
         )
     tombstoned = 0
-    if not args.skip_object_store_tombstone:
-        tombstoned = archive_delete_tombstone(
-            config.object_store_dir,
-            tenant_id=args.tenant_id,
-            doc_id=args.doc_id,
-            doc_version=args.doc_version,
-        )
+    tombstoned = archive_delete_tombstone(
+        config.object_store_dir,
+        tenant_id=args.tenant_id,
+        doc_id=args.doc_id,
+        doc_version=args.doc_version,
+    )
     print(f"delete_filter: {filter_expr}")
     print(f"unpublished_current_version: {unpublished}")
     print(f"archived_delete_tombstones: {tombstoned}")

@@ -615,14 +615,17 @@ def create_app():
             tenant_id=request.tenant_id,
             acl_groups=request.acl_groups,
         )
-        artifact = create_mindmap_artifact(
-            config,
-            title=request.title,
-            tenant_id=auth_context.tenant_id,
-            source_doc_ids=request.source_doc_ids,
-            acl_groups=auth_context.acl_groups or request.acl_groups or None,
-            doc_version=request.doc_version,
-        )
+        try:
+            artifact = create_mindmap_artifact(
+                config,
+                title=request.title,
+                tenant_id=auth_context.tenant_id,
+                source_doc_ids=request.source_doc_ids,
+                acl_groups=auth_context.acl_groups or request.acl_groups or None,
+                doc_version=request.doc_version,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return artifact_to_response(artifact)
 
     @app.get("/artifacts/{artifact_id}", response_model=MindMapArtifactResponse)

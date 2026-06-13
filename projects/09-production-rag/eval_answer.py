@@ -117,8 +117,8 @@ def evaluate_answers(
         # 否则只要有 expected doc/chunk，就默认它是可回答问题。
         answerable = bool(row.get("answerable", bool(expected)))
 
-        # refusal 的判断是教学版规则：回答中包含固定拒答文案
-        # “当前知识库没有足够证据” 就认为模型拒答。
+        # refusal 判断采用产品约定的固定拒答文案：
+        # 回答包含“当前知识库没有足够证据”即认为模型拒答。
         refused = is_refusal(result.answer)
 
         # Citation Accuracy:
@@ -134,7 +134,7 @@ def evaluate_answers(
         # Answer Correctness:
         #   correctness = 回答中命中的 expected_answer_terms 数 / expected_answer_terms 总数。
         # 这是一个轻量关键词覆盖指标，不等价于真正的语义正确性；
-        # 它适合教学 smoke test，因为可解释、稳定、无需再调用 judge LLM。
+        # 它适合回归门禁，因为可解释、稳定、无需再调用 judge LLM。
         correctness_scores.append(
             term_coverage(result.answer, list(row.get("expected_answer_terms", [])))
         )

@@ -98,8 +98,8 @@ def main() -> None:
     print()
     print("=" * 60)
     print("模型下载并验证完成！")
-    print("运行教学 walkthrough:")
-    print("  python projects/09-production-rag/walkthrough_core_rag.py")
+    print("可继续执行生产冒烟验证:")
+    print("  cd projects/09-production-rag && make model-smoke")
     print("=" * 60)
 
 

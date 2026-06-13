@@ -3,6 +3,18 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.indexOf("@xyflow/react") >= 0 || id.indexOf("@xyflow/system") >= 0) {
+            return "mindmap-flow";
+          }
+          return undefined;
+        },
+      },
+    },
+  },
   server: {
     host: "0.0.0.0",
     port: 5173,

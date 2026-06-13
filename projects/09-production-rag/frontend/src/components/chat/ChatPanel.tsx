@@ -1,5 +1,5 @@
-import { ArrowRight, Bot, Clipboard, Copy, MoreVertical, SlidersHorizontal, Sparkles, ThumbsDown, ThumbsUp } from "lucide-react";
-import { useState } from "react";
+import { ArrowRight, Bot, Copy, MoreVertical, ThumbsDown, ThumbsUp } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
@@ -9,6 +9,8 @@ type Props = {
   selectedSources: SourceItem[];
   busy: boolean;
   conversationTitle: string;
+  typingMessageId: string | null;
+  onTypingComplete: () => void;
   onAsk: (query: string) => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
   onDeleteConversation: () => void;
@@ -19,6 +21,8 @@ export function ChatPanel({
   selectedSources,
   busy,
   conversationTitle,
+  typingMessageId,
+  onTypingComplete,
   onAsk,
   onFeedback,
   onDeleteConversation,
@@ -38,9 +42,6 @@ export function ChatPanel({
       <div className="panel-header">
         <h2 title={conversationTitle}>对话</h2>
         <div className="chat-header-actions">
-          <button className="icon-button" type="button" aria-label="对话设置" title="对话设置">
-            <SlidersHorizontal size={18} />
-          </button>
           <div className="chat-menu">
             <button
               className="icon-button"
@@ -53,9 +54,6 @@ export function ChatPanel({
             </button>
             {menuOpen ? (
               <div className="chat-menu-popover">
-                <button type="button" disabled>
-                  自定义笔记本
-                </button>
                 <button
                   type="button"
                   disabled={messages.length === 0}
@@ -73,12 +71,6 @@ export function ChatPanel({
         </div>
       </div>
       <div className="chat-scroll">
-        <div className="chat-quick-actions">
-          <button type="button" disabled>
-            <Sparkles size={16} />
-            自定义
-          </button>
-        </div>
         {messages.length === 0 ? (
           selectedSources.length === 0 ? (
             <EmptyState
@@ -97,25 +89,13 @@ export function ChatPanel({
                   {message.content}
                 </div>
               ) : (
-                <article className={`assistant-message ${message.status === "failed" ? "failed" : ""}`} key={message.id}>
-                  <ReactMarkdown>{message.content}</ReactMarkdown>
-                  {message.citations?.length ? <Citations message={message} /> : null}
-                  <div className="message-actions">
-                    <button type="button" disabled>
-                      <Clipboard size={16} />
-                      保存到笔记
-                    </button>
-                    <button type="button" onClick={() => navigator.clipboard?.writeText(message.content)}>
-                      <Copy size={16} />
-                    </button>
-                    <button type="button" onClick={() => onFeedback(message, 1)}>
-                      <ThumbsUp size={16} />
-                    </button>
-                    <button type="button" onClick={() => onFeedback(message, -1)}>
-                      <ThumbsDown size={16} />
-                    </button>
-                  </div>
-                </article>
+                <AssistantMessage
+                  key={message.id}
+                  message={message}
+                  typing={message.id === typingMessageId && message.status === "done"}
+                  onTypingComplete={onTypingComplete}
+                  onFeedback={onFeedback}
+                />
               ),
             )}
           </div>
@@ -164,6 +144,84 @@ function Overview({ sources, onAsk }: { sources: SourceItem[]; onAsk: (query: st
       </div>
     </div>
   );
+}
+
+function AssistantMessage({
+  message,
+  typing,
+  onTypingComplete,
+  onFeedback,
+}: {
+  message: ChatMessage;
+  typing: boolean;
+  onTypingComplete: () => void;
+  onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
+}) {
+  const { text, done } = useTypewriter(message.content, typing);
+  const showControls = message.status !== "sending" && (message.status === "failed" || done);
+  const className = [
+    "assistant-message",
+    message.status === "failed" ? "failed" : "",
+    message.status === "sending" ? "sending" : "",
+    typing && !done ? "typing" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  useEffect(() => {
+    if (typing && done) {
+      onTypingComplete();
+    }
+  }, [done, onTypingComplete, typing]);
+
+  return (
+    <article className={className}>
+      <ReactMarkdown>{text}</ReactMarkdown>
+      {typing && !done ? <span className="type-caret" aria-hidden="true" /> : null}
+      {showControls && message.citations?.length ? <Citations message={message} /> : null}
+      {showControls ? (
+        <div className="message-actions">
+          <button type="button" onClick={() => navigator.clipboard?.writeText(message.content)}>
+            <Copy size={16} />
+          </button>
+          <button type="button" onClick={() => onFeedback(message, 1)}>
+            <ThumbsUp size={16} />
+          </button>
+          <button type="button" onClick={() => onFeedback(message, -1)}>
+            <ThumbsDown size={16} />
+          </button>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function useTypewriter(content: string, enabled: boolean) {
+  const [visibleLength, setVisibleLength] = useState(() => (enabled ? 0 : content.length));
+  const step = useMemo(() => Math.max(2, Math.ceil(content.length / 140)), [content.length]);
+
+  useEffect(() => {
+    if (!enabled) {
+      setVisibleLength(content.length);
+      return;
+    }
+    setVisibleLength(0);
+  }, [content, enabled]);
+
+  useEffect(() => {
+    if (!enabled || visibleLength >= content.length) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setVisibleLength((length) => Math.min(content.length, length + step));
+    }, 16);
+    return () => window.clearTimeout(timer);
+  }, [content.length, enabled, step, visibleLength]);
+
+  return {
+    text: content.slice(0, visibleLength),
+    done: visibleLength >= content.length,
+  };
 }
 
 function Citations({ message }: { message: ChatMessage }) {

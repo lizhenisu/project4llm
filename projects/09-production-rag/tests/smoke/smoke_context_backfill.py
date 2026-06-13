@@ -67,7 +67,7 @@ def test_text_pipeline_backfills_after_doc_limit() -> None:
         patch("rag_core.pipeline.build_embedding_model", return_value=FakeEmbeddingModel()),
         patch(
             "rag_core.pipeline.rewrite_query",
-            return_value=RewriteResult("query", "query", "none"),
+            return_value=RewriteResult("query", "query", "llm"),
         ),
         patch("rag_core.pipeline.mentions_other_tenant", return_value=False),
         patch("rag_core.pipeline.load_current_versions", return_value={}),
@@ -104,7 +104,7 @@ def test_multimodal_pipeline_backfills_after_doc_limit() -> None:
         ),
         patch(
             "search_multimodal.rewrite_query",
-            return_value=RewriteResult("query", "query", "none"),
+            return_value=RewriteResult("query", "query", "llm"),
         ),
         patch("search_multimodal.mentions_other_tenant", return_value=False),
         patch("search_multimodal.load_current_versions", return_value={}),

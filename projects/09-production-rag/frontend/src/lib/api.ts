@@ -53,7 +53,7 @@ async function request<T>(path: string, options: RequestOptions): Promise<T> {
 
 async function readErrorDetail(response: Response): Promise<string> {
   const contentType = response.headers.get("content-type") ?? "";
-  const fallback = response.statusText || `HTTP ${response.status}`;
+  const defaultMessage = response.statusText || `HTTP ${response.status}`;
   if (contentType.includes("application/json")) {
     try {
       const payload = (await response.json()) as { detail?: unknown };
@@ -62,11 +62,11 @@ async function readErrorDetail(response: Response): Promise<string> {
       }
       return JSON.stringify(payload);
     } catch {
-      return fallback;
+      return defaultMessage;
     }
   }
   const text = await response.text();
-  return text || fallback;
+  return text || defaultMessage;
 }
 
 export function health(settings: Settings) {

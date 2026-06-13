@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { Bot, Grid3X3, Plus, Settings as SettingsIcon, Share2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Dispatch, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
+import { Bot, Settings as SettingsIcon } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -23,6 +24,18 @@ import {
 import { defaultSettings, loadSettings, saveSettings } from "../lib/storage";
 import type { ChatMessage, MindMapArtifact, Settings, SourceContent, SourceItem } from "../lib/types";
 
+type PanelLayout = {
+  source: number;
+  chat: number;
+  studio: number;
+};
+
+type ResizeHandle = "source-chat" | "chat-studio";
+
+const DEFAULT_LAYOUT: PanelLayout = { source: 24, chat: 46, studio: 30 };
+const MINDMAP_LAYOUT: PanelLayout = { source: 20, chat: 38, studio: 42 };
+const MIN_LAYOUT: PanelLayout = { source: 17, chat: 31, studio: 22 };
+
 export function WorkspacePage() {
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -37,6 +50,9 @@ export function WorkspacePage() {
   const [sourceContentLoading, setSourceContentLoading] = useState(false);
   const [status, setStatus] = useState("未连接");
   const [busy, setBusy] = useState(false);
+  const [panelLayout, setPanelLayout] = useState<PanelLayout>(DEFAULT_LAYOUT);
+  const [typingMessageId, setTypingMessageId] = useState<string | null>(null);
+  const gridRef = useRef<HTMLElement | null>(null);
 
   const selectedSources = useMemo(() => sources.filter((source) => source.selected), [sources]);
   const selectedDocIds = useMemo(
@@ -51,6 +67,12 @@ export function WorkspacePage() {
     saveSettings(settings);
     void refresh(settings);
   }, [settings]);
+
+  useEffect(() => {
+    if (activeArtifact) {
+      setPanelLayout((layout) => (layout.studio >= MINDMAP_LAYOUT.studio ? layout : MINDMAP_LAYOUT));
+    }
+  }, [activeArtifact]);
 
   async function refresh(nextSettings = settings) {
     try {
@@ -177,6 +199,7 @@ export function WorkspacePage() {
     };
     const baseMessages = [...messages, userMessage, pending];
     setMessages(baseMessages);
+    setTypingMessageId(null);
     setBusy(true);
     try {
       const response = await queryRag(settings, {
@@ -196,6 +219,7 @@ export function WorkspacePage() {
             : item,
       );
       setMessages(nextMessages);
+      setTypingMessageId(pending.id);
       await persistConversation(nextMessages);
     } catch (error) {
       const failedMessages: ChatMessage[] = baseMessages.map((item) =>
@@ -204,6 +228,7 @@ export function WorkspacePage() {
             : item,
       );
       setMessages(failedMessages);
+      setTypingMessageId(null);
       await persistConversation(failedMessages);
     } finally {
       setBusy(false);
@@ -240,7 +265,7 @@ export function WorkspacePage() {
   async function handleCreateMindMap() {
     if (selectedDocIds.length === 0) return;
     const title = selectedSources.length === 1 ? `${selectedSources[0].title} 思维导图` : "选中来源思维导图";
-    const placeholder: MindMapArtifact = {
+    const pendingArtifact: MindMapArtifact = {
       id: `pending-${Date.now()}`,
       title,
       status: "generating",
@@ -250,15 +275,15 @@ export function WorkspacePage() {
       updated_at: Date.now(),
       root: null,
     };
-    setArtifacts((items) => [placeholder, ...items]);
+    setArtifacts((items) => [pendingArtifact, ...items]);
     try {
       const artifact = await createMindMap(settings, title, selectedDocIds);
-      setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== placeholder.id)]);
+      setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
       setActiveArtifact(artifact);
     } catch (error) {
       setArtifacts((items) =>
         items.map((item) =>
-          item.id === placeholder.id
+          item.id === pendingArtifact.id
             ? { ...item, status: "failed", error: error instanceof Error ? error.message : "生成失败" }
             : item,
         ),
@@ -276,23 +301,19 @@ export function WorkspacePage() {
           <span>未命名的知识库</span>
         </div>
         <div className="topbar-actions">
-          <button className="primary-pill" type="button" disabled>
-            <Plus size={16} />
-            创建知识库
-          </button>
-          <IconButton label="分享" disabled>
-            <Share2 size={18} />
-          </IconButton>
           <IconButton label="设置" onClick={() => setSettingsOpen(true)}>
             <SettingsIcon size={18} />
-          </IconButton>
-          <IconButton label="应用" disabled>
-            <Grid3X3 size={18} />
           </IconButton>
           <div className="avatar" aria-label="用户头像" />
         </div>
       </header>
-      <main className="workspace-grid">
+      <main
+        className={`workspace-grid ${activeArtifact ? "mindmap-expanded" : ""}`}
+        ref={gridRef}
+        style={{
+          gridTemplateColumns: `${panelLayout.source}fr 10px ${panelLayout.chat}fr 10px ${panelLayout.studio}fr`,
+        }}
+      >
         <SourcePanel
           sources={sources}
           onSourcesChange={setSources}
@@ -307,14 +328,24 @@ export function WorkspacePage() {
             setSourceContentError("");
           }}
         />
+        <ResizeDivider
+          label="调整来源和对话宽度"
+          onPointerDown={(event) => startPanelResize(event, "source-chat", gridRef, panelLayout, setPanelLayout)}
+        />
         <ChatPanel
           messages={messages}
           selectedSources={selectedSources}
           busy={busy}
           conversationTitle={conversationTitle}
+          typingMessageId={typingMessageId}
+          onTypingComplete={() => setTypingMessageId(null)}
           onAsk={handleAsk}
           onFeedback={handleFeedback}
           onDeleteConversation={handleDeleteConversation}
+        />
+        <ResizeDivider
+          label="调整对话和 Studio 宽度"
+          onPointerDown={(event) => startPanelResize(event, "chat-studio", gridRef, panelLayout, setPanelLayout)}
         />
         <StudioPanel
           artifacts={artifacts}
@@ -356,4 +387,97 @@ function mergeSelectedState(next: SourceItem[], current: SourceItem[]) {
     ...item,
     selected: selected.get(item.doc_id) ?? item.current,
   }));
+}
+
+function ResizeDivider({
+  label,
+  onPointerDown,
+}: {
+  label: string;
+  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <button
+      className="panel-resizer"
+      type="button"
+      aria-label={label}
+      title={label}
+      role="separator"
+      aria-orientation="vertical"
+      onPointerDown={onPointerDown}
+    />
+  );
+}
+
+function startPanelResize(
+  event: ReactPointerEvent<HTMLButtonElement>,
+  handle: ResizeHandle,
+  gridRef: RefObject<HTMLElement | null>,
+  initialLayout: PanelLayout,
+  setPanelLayout: Dispatch<SetStateAction<PanelLayout>>,
+) {
+  const grid = gridRef.current;
+  if (!grid) return;
+  const bounds = grid.getBoundingClientRect();
+  const startX = event.clientX;
+  const pointerId = event.pointerId;
+  const width = Math.max(1, bounds.width);
+  const target = event.currentTarget;
+  target.setPointerCapture(pointerId);
+  document.body.classList.add("is-resizing-panels");
+
+  function applyDelta(clientX: number) {
+    const deltaPercent = ((clientX - startX) / width) * 100;
+    setPanelLayout(normalizePanelLayout(applyResizeDelta(initialLayout, handle, deltaPercent)));
+  }
+
+  function onPointerMove(moveEvent: PointerEvent) {
+    applyDelta(moveEvent.clientX);
+  }
+
+  function onPointerUp(upEvent: PointerEvent) {
+    applyDelta(upEvent.clientX);
+    document.body.classList.remove("is-resizing-panels");
+    if (target.hasPointerCapture(pointerId)) {
+      target.releasePointerCapture(pointerId);
+    }
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerUp);
+  }
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", onPointerUp);
+}
+
+function applyResizeDelta(layout: PanelLayout, handle: ResizeHandle, delta: number): PanelLayout {
+  if (handle === "source-chat") {
+    return {
+      ...layout,
+      source: layout.source + delta,
+      chat: layout.chat - delta,
+    };
+  }
+  return {
+    ...layout,
+    chat: layout.chat + delta,
+    studio: layout.studio - delta,
+  };
+}
+
+function normalizePanelLayout(layout: PanelLayout): PanelLayout {
+  const source = Math.max(MIN_LAYOUT.source, layout.source);
+  const chat = Math.max(MIN_LAYOUT.chat, layout.chat);
+  const studio = Math.max(MIN_LAYOUT.studio, layout.studio);
+  const total = source + chat + studio;
+  return {
+    source: roundRatio((source / total) * 100),
+    chat: roundRatio((chat / total) * 100),
+    studio: roundRatio((studio / total) * 100),
+  };
+}
+
+function roundRatio(value: number) {
+  return Math.round(value * 10) / 10;
 }

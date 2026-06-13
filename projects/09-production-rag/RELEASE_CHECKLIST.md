@@ -1,8 +1,8 @@
 # Industrial RAG Release Checklist
 
-目标：把教学可跑版本推进到可上线版本前，用这份清单逐项验收。
+目标：用这份清单验证 09 是否达到可上线、可观测、可回归的生产发布标准。
 
-## 1. 本地教学验收
+## 1. 本地生产回归验收
 
 ```bash
 source ../../.venv/bin/activate
@@ -114,7 +114,7 @@ make milvus-smoke
 - PDF/HTML/Markdown/TXT 目录可通过 `ingest_files.py` 统一入库
 - CSV/TSV 表格可通过 `ingest_tables.py` 转 compact markdown table 入库，并保留列名、行数、行范围和来源路径 metadata
 - chunk 过程会保留 markdown table 和 fenced code block 的结构，不会先把全文压成一行再切碎
-- `sweep_chunking.py` 能用临时 collection 对多组 chunk_size/overlap 输出 chunk 数、recall/MRR/nDCG 和 p95 latency
+- `sweep_chunking.py` 能用隔离 collection 对多组 chunk_size/overlap 输出 chunk 数、recall/MRR/nDCG 和 p95 latency
 - context packing 会在 `max_chunks_per_doc`、分数阈值或命中上限生效时继续从后续候选补位，而不是先把候选截断成固定 topK
 - HNSW `M/efConstruction/ef` 和 sparse `drop_ratio_*` 参数能通过环境变量配置；建索引参数和查询参数的生效边界在 README 中明确说明
 - 多模态检索会融合 OCR/caption text hybrid 通道和 `image_dense_vector` 通道，并在结果 metadata 中记录通道 rank
@@ -179,16 +179,16 @@ RAG_API_URL=http://127.0.0.1:8008 make deploy-smoke
 - `/ready` 返回 `status=ok`，schema 字段和向量维度与当前配置一致
 - hybrid search、ACL filter、image search 均能返回预期结果
 - `smoke_deploy_contract=ok`
-- `smoke_deploy=ok`，且在未设置 `RAG_API_URL` 时可自起临时 API 覆盖 `/ready`、`/search`、`/query`、`/feedback` 和可选 auth header；本地自启路径使用 `RAG_MILVUS_URI` 指向独立 Milvus Lite 文件；设置 `RAG_API_URL` 后可改为验证外部部署
+- `smoke_deploy=ok`；设置 `RAG_API_URL` 时验证外部部署，未设置时启动隔离 API 进程覆盖 `/ready`、`/search`、`/query`、`/feedback` 和可选 auth header
 
-## 3. 真实模型验收
+## 3. 托管模型验收
 
 ```bash
-export HF_ENDPOINT=https://hf-mirror.com
-export RAG_EMBEDDING_BACKEND=bge
-export RAG_RERANK_BACKEND=bge
+export RAG_EMBEDDING_BACKEND=siliconflow
+export RAG_RERANK_BACKEND=siliconflow
 export EMBEDDING_MODEL=BAAI/bge-m3
 export RERANK_MODEL=BAAI/bge-reranker-v2-m3
+export SILICONFLOW_API_KEY=...
 export RAG_RUN_MODEL_SMOKE=1
 make model-smoke
 ```
@@ -229,7 +229,7 @@ python answer.py "RAG 检索变慢时应该排查什么" --tenant-id team_a --ac
 
 ```bash
 rg -n "NEW_API_KEY=.*[A-Za-z0-9_-]{20,}|172\\.31\\." .
-git status --ignored --short runtime industrial_rag_demo.db volumes
+git status --ignored --short runtime production_rag.db volumes
 ```
 
 通过标准：

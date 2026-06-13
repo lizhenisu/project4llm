@@ -1,6 +1,6 @@
 # 09-production-rag
 
-目标：在 `08-industrial-rag` 后端能力基础上，演进成一个可部署到服务器的完整 RAG 系统。09 不再以教学 walkthrough 为主，而是面向真实上线形态组织：TypeScript 前端、FastAPI 后端、入库任务、运维工具、发布门禁和 Docker Compose 部署。
+目标：在 `08-industrial-rag` 后端能力基础上，演进成一个可部署到服务器的完整 RAG 系统。09 面向真实上线形态组织：TypeScript 前端、FastAPI 后端、入库任务、运维工具、发布门禁和 Docker Compose 部署。
 
 ## 当前状态
 
@@ -87,7 +87,7 @@ RAG_TEXT_INPUT=/data/source_docs.jsonl
 RAG_IMAGE_INPUT=/data/image_docs.jsonl
 ```
 
-未设置对应变量时，`scripts/start_ingest.sh` 会跳过对应入库步骤。
+运行入库 profile 时需要显式提供待入库输入，避免生产任务无输入却静默完成。
 
 ## Docker Compose
 
@@ -95,30 +95,23 @@ RAG_IMAGE_INPUT=/data/image_docs.jsonl
 docker compose up -d milvus rag-api rag-web
 ```
 
-Compose 默认使用 SiliconFlow 托管的 embedding/rerank 模型，避免本机下载 BGE 权重，同时获得比 hash 更好的检索质量：
+Compose 默认使用 SiliconFlow 托管的 embedding/rerank 模型，并要求配置兼容 OpenAI API 的 LLM，用于查询改写、生成式回答和 Studio 思维导图：
 
 - `RAG_EMBEDDING_BACKEND=siliconflow`
 - `EMBEDDING_MODEL=BAAI/bge-m3`
 - `RAG_RERANK_BACKEND=siliconflow`
 - `RERANK_MODEL=BAAI/bge-reranker-v2-m3`
-- `RAG_QUERY_REWRITE_BACKEND=none`
-- `RAG_ANSWER_BACKEND=extractive`
+- `RAG_QUERY_REWRITE_BACKEND=llm`
+- `RAG_ANSWER_BACKEND=llm`
+- `NEW_API_URL` / `NEW_API_KEY` / `LLM_MODEL`
+- `SILICONFLOW_API_KEY`
 
-需要完全离线演示时，在 `.env` 中切回本地轻量后端：
-
-```bash
-RAG_EMBEDDING_BACKEND=hash
-EMBEDDING_MODEL=hash-1024
-RAG_RERANK_BACKEND=none
-```
-
-需要生成式回答和 LLM 查询改写时，再打开外部 LLM：
+LLM 配置示例：
 
 ```bash
-RAG_QUERY_REWRITE_BACKEND=llm
-RAG_ANSWER_BACKEND=llm
 NEW_API_URL=http://your-newapi-server:3000
 NEW_API_KEY=your-api-key
+LLM_MODEL=your-model
 ```
 
 访问：
@@ -138,5 +131,5 @@ docker compose --profile ingest run --rm rag-ingest
 - 上传 PDF、Markdown、TXT、HTML、CSV、TSV 来源。
 - 选择一个或多个来源进行带引用问答。
 - 对回答进行点赞/点踩反馈。
-- 基于已选来源生成并下载思维导图 Artifact。
+- 基于已选来源调用 LLM 生成、展示并下载思维导图 Artifact。
 - 在设置里切换 API 地址、Token、Tenant 和 ACL Groups。

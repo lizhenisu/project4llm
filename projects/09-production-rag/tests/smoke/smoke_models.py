@@ -26,7 +26,6 @@ def main() -> None:
             "RAG_OBJECT_STORE_DIR": str(Path(tmp) / "object_store"),
             "RAG_RUNTIME_DIR": str(Path(tmp) / "runtime"),
             "RAG_COLLECTION": "rag_smoke_models",
-            "RAG_QUERY_REWRITE_BACKEND": "none",
         }
         with temporary_env(env_overrides):
             run_model_smoke()

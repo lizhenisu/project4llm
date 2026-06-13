@@ -172,8 +172,7 @@ def evaluate_retrieval(*, input_path: Path, limit: int, mode: str) -> dict[str, 
     )
 
     # Recall@K = top-K 至少命中一次的有答案 query 数 / 有答案 query 总数。
-    # 注意：这不是“命中的相关文档数 / 所有相关文档数”的细粒度 recall，
-    # 而是教学评测里常见的 query-level hit rate。
+    # 注意：这是 query-level hit rate，不是“命中的相关文档数 / 所有相关文档数”的细粒度 recall。
     recall = recall_hits / answerable_count if answerable_count else 0.0
 
     # MRR@K = 每条有答案 query 的 Reciprocal Rank 平均值。

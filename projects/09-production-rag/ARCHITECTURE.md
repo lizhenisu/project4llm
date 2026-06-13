@@ -30,8 +30,7 @@ projects/09-production-rag/
 ├── scripts/                  # container entrypoints
 ├── tests/
 │   ├── fixtures/data/        # sample and eval fixtures
-│   ├── smoke/                # smoke checks moved out of production root
-│   └── walkthrough/          # legacy walkthroughs kept as test/demo assets
+│   └── smoke/                # production contract and regression checks
 ├── Dockerfile
 ├── docker-compose.yml        # milvus + api + web
 ├── serve.py
@@ -45,7 +44,7 @@ projects/09-production-rag/
 ## Production Boundary
 
 - Runtime data is generated under `runtime/`, `object_store/`, `volumes/`, or the configured external services.
-- Sample and eval data live under `tests/fixtures/data/`.
+- Sample and eval data live under `tests/fixtures/data/` and are used only by explicit test/evaluation commands.
 - `ingest_text.py` and `ingest_image.py` require explicit `--input`; they no longer default to fixtures.
 - `scripts/start_ingest.sh` reads `RAG_TEXT_INPUT` and `RAG_IMAGE_INPUT` when running in containers.
 - Uploaded sources are saved under `object_store/uploads/<tenant>/<upload-id>/` before ingestion.

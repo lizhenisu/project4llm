@@ -1,4 +1,4 @@
-import { FileText, Globe2, LoaderCircle, Plus, Search, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { FileText, LoaderCircle, Plus, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { useRef, useState } from "react";
 import type { SourceContent, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
@@ -49,20 +49,6 @@ export function SourcePanel({
         <Plus size={17} />
         添加来源
       </button>
-      <div className="source-search disabled-block">
-        <span>在网络中搜索新来源</span>
-        <div className="search-controls">
-          <button type="button" disabled>
-            <Globe2 size={16} />
-            Web
-          </button>
-          <button type="button" disabled>
-            <Sparkles size={16} />
-            Fast Research
-          </button>
-          <Search className="muted-icon" size={20} />
-        </div>
-      </div>
       {sources.length === 0 ? (
         <EmptyState
           icon={<FileText size={28} />}
@@ -218,15 +204,6 @@ function SourceUploadDialog({ onClose, onUpload }: { onClose: () => void; onUplo
           <div className="upload-actions">
             <button type="button" onClick={() => inputRef.current?.click()}>
               上传文件
-            </button>
-            <button type="button" disabled>
-              粘贴文本
-            </button>
-            <button type="button" disabled>
-              网站
-            </button>
-            <button type="button" disabled>
-              云端硬盘
             </button>
           </div>
           <input ref={inputRef} type="file" hidden onChange={(event) => handleFiles(event.target.files)} />

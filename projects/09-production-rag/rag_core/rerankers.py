@@ -12,12 +12,6 @@ class Reranker(Protocol):
     def rerank(self, query: str, hits: list[SearchHit], *, limit: int) -> list[SearchHit]: ...
 
 
-class PassthroughReranker:
-    def rerank(self, query: str, hits: list[SearchHit], *, limit: int) -> list[SearchHit]:
-        del query
-        return [replace(hit, rerank_score=hit.score) for hit in hits[:limit]]
-
-
 class SiliconFlowReranker:
     def __init__(
         self,
@@ -119,8 +113,6 @@ class TransformersBGEReranker:
 
 
 def build_reranker(config: RagConfig) -> Reranker:
-    if config.rerank_backend == "none":
-        return PassthroughReranker()
     if config.rerank_backend == "siliconflow":
         return SiliconFlowReranker(
             base_url=config.siliconflow_base_url,
@@ -137,5 +129,5 @@ def build_reranker(config: RagConfig) -> Reranker:
             dtype=config.model_dtype,
         )
     raise ValueError(
-        f"Unsupported RAG_RERANK_BACKEND={config.rerank_backend!r}; use none/siliconflow/bge"
+        f"Unsupported RAG_RERANK_BACKEND={config.rerank_backend!r}; use siliconflow/bge"
     )

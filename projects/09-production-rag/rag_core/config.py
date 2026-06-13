@@ -10,7 +10,7 @@ DATA_DIR = PROJECT_DIR / "data"
 FIXTURE_DATA_DIR = PROJECT_DIR / "tests" / "fixtures" / "data"
 RUNTIME_DIR = PROJECT_DIR / "runtime"
 OBJECT_STORE_DIR = PROJECT_DIR / "object_store"
-DEFAULT_MILVUS_DB = PROJECT_DIR / "industrial_rag_demo.db"
+DEFAULT_MILVUS_DB = PROJECT_DIR / "production_rag.db"
 MODELSCOPE_CACHE = Path.home() / ".cache" / "modelscope" / "hub" / "models" / "BAAI"
 _ENV_LOADED = False
 
@@ -80,6 +80,12 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
+def _validate_backend(name: str, value: str, allowed: set[str]) -> None:
+    if value not in allowed:
+        allowed_text = "/".join(sorted(allowed))
+        raise ValueError(f"Unsupported {name}={value!r}; use {allowed_text}")
+
+
 @dataclass(frozen=True)
 class RagConfig:
     milvus_uri: str
@@ -132,8 +138,16 @@ class RagConfig:
 
 def load_config() -> RagConfig:
     load_dotenv_if_present()
-    embedding_backend = os.environ.get("RAG_EMBEDDING_BACKEND", "bge").lower()
+    embedding_backend = os.environ.get("RAG_EMBEDDING_BACKEND", "siliconflow").lower()
     image_backend = os.environ.get("RAG_IMAGE_EMBEDDING_BACKEND", "clip").lower()
+    rerank_backend = os.environ.get("RAG_RERANK_BACKEND", "siliconflow").lower()
+    answer_backend = os.environ.get("RAG_ANSWER_BACKEND", "llm").lower()
+    query_rewrite_backend = os.environ.get("RAG_QUERY_REWRITE_BACKEND", "llm").lower()
+    _validate_backend("RAG_EMBEDDING_BACKEND", embedding_backend, {"siliconflow", "bge"})
+    _validate_backend("RAG_IMAGE_EMBEDDING_BACKEND", image_backend, {"clip"})
+    _validate_backend("RAG_RERANK_BACKEND", rerank_backend, {"siliconflow", "bge"})
+    _validate_backend("RAG_ANSWER_BACKEND", answer_backend, {"llm"})
+    _validate_backend("RAG_QUERY_REWRITE_BACKEND", query_rewrite_backend, {"llm"})
     embedding_dim = _env_int("EMBEDDING_DIM", 1024)
     milvus_uri = (
         os.environ.get("RAG_MILVUS_URI")
@@ -151,7 +165,7 @@ def load_config() -> RagConfig:
         embedding_batch_size=_env_int("RAG_EMBED_BATCH_SIZE", 8),
         embedding_max_length=_env_int("RAG_EMBED_MAX_LENGTH", 8192),
         rerank_model=os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"),
-        rerank_backend=os.environ.get("RAG_RERANK_BACKEND", "bge").lower(),
+        rerank_backend=rerank_backend,
         rerank_batch_size=_env_int("RAG_RERANK_BATCH_SIZE", 8),
         rerank_max_length=_env_int("RAG_RERANK_MAX_LENGTH", 1024),
         image_embedding_backend=image_backend,
@@ -171,7 +185,7 @@ def load_config() -> RagConfig:
             "https://api.siliconflow.cn",
         ).rstrip("/"),
         siliconflow_api_key=os.environ.get("SILICONFLOW_API_KEY") or None,
-        answer_backend=os.environ.get("RAG_ANSWER_BACKEND", "llm").lower(),
+        answer_backend=answer_backend,
         chunk_size=_env_int("RAG_CHUNK_SIZE", 700),
         chunk_overlap=_env_int("RAG_CHUNK_OVERLAP", 100),
         reset_collection=_env_bool("RAG_RESET_COLLECTION", False),
@@ -183,7 +197,7 @@ def load_config() -> RagConfig:
         max_context_chars=_env_int("RAG_MAX_CONTEXT_CHARS", 6000),
         max_chunks_per_doc=_env_int("RAG_MAX_CHUNKS_PER_DOC", 2),
         min_rerank_score=_env_float_or_none("RAG_MIN_RERANK_SCORE"),
-        query_rewrite_backend=os.environ.get("RAG_QUERY_REWRITE_BACKEND", "llm").lower(),
+        query_rewrite_backend=query_rewrite_backend,
         query_rewrite_history_turns=_env_int("RAG_QUERY_REWRITE_HISTORY_TURNS", 6),
         query_rewrite_max_tokens=_env_int("RAG_QUERY_REWRITE_MAX_TOKENS", 256),
         require_auth_context=_env_bool("RAG_REQUIRE_AUTH_CONTEXT", False),

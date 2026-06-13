@@ -55,7 +55,7 @@ def retrieve_multimodal(
     query_path = Path(query)
     if query_path.exists() and query_path.is_file():
         rewritten_query = str(query_path)
-        rewrite_backend = "none"
+        rewrite_backend = "file-path"
         rewrite_ms = 0.0
     else:
         rewrite_start = perf_counter()
