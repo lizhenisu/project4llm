@@ -140,6 +140,15 @@ test("expands second-level mind map topics to reveal child outline items", async
   expect(chatAfter?.y).toBeTruthy();
   expect(Math.abs(studioAfter!.y - chatAfter!.y)).toBeLessThan(12);
   expect(studioAfter!.x).toBeGreaterThan(chatAfter!.x + 80);
+
+  await page.getByRole("button", { name: "Studio" }).click();
+  await expect
+    .poll(async () => (await page.locator(".studio-panel").boundingBox())?.width ?? 0)
+    .toBeLessThan(studioAfter!.width - 40);
+  const studioRestored = await page.locator(".studio-panel").boundingBox();
+  expect(studioRestored?.width).toBeTruthy();
+  expect(Math.abs(studioRestored!.width - studioBefore!.width)).toBeLessThan(32);
+  await expect(page.getByRole("button", { name: /实习招聘思维导图/ })).toBeVisible();
 });
 
 test("resizes source and chat panels by dragging the divider", async ({ page }) => {

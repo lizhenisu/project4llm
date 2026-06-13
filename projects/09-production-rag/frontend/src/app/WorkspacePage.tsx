@@ -53,6 +53,7 @@ export function WorkspacePage() {
   const [panelLayout, setPanelLayout] = useState<PanelLayout>(DEFAULT_LAYOUT);
   const [typingMessageId, setTypingMessageId] = useState<string | null>(null);
   const gridRef = useRef<HTMLElement | null>(null);
+  const studioListLayoutRef = useRef<PanelLayout | null>(null);
 
   const selectedSources = useMemo(() => sources.filter((source) => source.selected), [sources]);
   const selectedDocIds = useMemo(
@@ -67,12 +68,6 @@ export function WorkspacePage() {
     saveSettings(settings);
     void refresh(settings);
   }, [settings]);
-
-  useEffect(() => {
-    if (activeArtifact) {
-      setPanelLayout((layout) => (layout.studio >= MINDMAP_LAYOUT.studio ? layout : MINDMAP_LAYOUT));
-    }
-  }, [activeArtifact]);
 
   async function refresh(nextSettings = settings) {
     try {
@@ -262,6 +257,24 @@ export function WorkspacePage() {
     await sendFeedback(settings, message.requestId, rating, selectedDocIds);
   }
 
+  function openArtifact(artifact: MindMapArtifact) {
+    setPanelLayout((layout) => {
+      if (!activeArtifact) {
+        studioListLayoutRef.current = layout;
+      }
+      return layout.studio >= MINDMAP_LAYOUT.studio ? layout : MINDMAP_LAYOUT;
+    });
+    setActiveArtifact(artifact);
+  }
+
+  function backToStudioList() {
+    setActiveArtifact(null);
+    if (studioListLayoutRef.current) {
+      setPanelLayout(studioListLayoutRef.current);
+      studioListLayoutRef.current = null;
+    }
+  }
+
   async function handleCreateMindMap() {
     if (selectedDocIds.length === 0) return;
     const title = selectedSources.length === 1 ? `${selectedSources[0].title} 思维导图` : "选中来源思维导图";
@@ -279,7 +292,7 @@ export function WorkspacePage() {
     try {
       const artifact = await createMindMap(settings, title, selectedDocIds);
       setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
-      setActiveArtifact(artifact);
+      openArtifact(artifact);
     } catch (error) {
       setArtifacts((items) =>
         items.map((item) =>
@@ -352,8 +365,8 @@ export function WorkspacePage() {
           selectedSources={selectedSources}
           activeArtifact={activeArtifact}
           onCreateMindMap={handleCreateMindMap}
-          onOpenArtifact={setActiveArtifact}
-          onBack={() => setActiveArtifact(null)}
+          onOpenArtifact={openArtifact}
+          onBack={backToStudioList}
         />
       </main>
       <footer className="statusbar">{status}</footer>
