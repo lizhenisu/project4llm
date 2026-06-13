@@ -14,7 +14,11 @@ def rewrite_query(
     backend = config.query_rewrite_backend
     original = normalize_text(query)
     if backend == "llm":
-        return RewriteResult(original, llm_rewrite(original, history or [], config), backend)
+        try:
+            rewritten = llm_rewrite(original, history or [], config)
+        except RuntimeError:
+            rewritten = original
+        return RewriteResult(original, rewritten, backend)
     raise ValueError(
         f"Unsupported RAG_QUERY_REWRITE_BACKEND={backend!r}; use llm"
     )

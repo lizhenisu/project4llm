@@ -113,3 +113,28 @@ export type Settings = {
   tenantId: string;
   aclGroups: string[];
 };
+
+export type AuthUser = {
+  id: string;
+  username: string;
+  display_name: string;
+  role: "admin" | "user";
+  tenant_id: string;
+  created_at: number;
+  last_login_at?: number | null;
+};
+
+export type AuthResponse = {
+  user: AuthUser;
+  token: string;
+  expires_at: number;
+};
+
+export type Announcement = {
+  id: string;
+  title: string;
+  content: string;
+  author_id: string;
+  author_name?: string | null;
+  created_at: number;
+};

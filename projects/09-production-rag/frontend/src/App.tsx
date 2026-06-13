@@ -1,5 +1,10 @@
 import { WorkspacePage } from "./app/WorkspacePage";
+import { AuthProvider } from "./lib/AuthContext";
 
 export function App() {
-  return <WorkspacePage />;
+  return (
+    <AuthProvider>
+      <WorkspacePage />
+    </AuthProvider>
+  );
 }

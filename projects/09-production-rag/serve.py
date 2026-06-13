@@ -1,21 +1,30 @@
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import replace
 from typing import Any
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from answer import answer_query
 from answer_multimodal import answer_multimodal_query
 from rag_core.artifacts import (
+    MindMapArtifact,
+    build_llm_table,
+    build_mindmap_root,
     create_mindmap_artifact,
     create_table_artifact,
     delete_artifact,
+    delete_metadata_artifact,
+    fail_metadata_artifact,
     list_artifacts,
+    list_metadata_artifacts,
     load_artifact,
+    load_metadata_artifact,
     save_artifact,
+    save_metadata_artifact,
 )
 from rag_core.auth import build_auth_context, validate_bearer_token
 from rag_core.config import load_config
@@ -30,12 +39,25 @@ from rag_core.events import append_event, hit_event_summaries
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.readiness import readiness_report
 from rag_core.sources import (
+    create_source_task,
     delete_source,
+    delete_source_task,
+    fail_source_task,
     get_source,
     get_source_content,
     ingest_uploaded_path,
     list_sources,
     save_uploaded_file,
+)
+from rag_core.user_auth import (
+    authenticate_token,
+    bearer_token,
+    create_announcement,
+    list_announcements,
+    list_public_users,
+    login_user,
+    logout_user,
+    register_user,
 )
 from search_multimodal import retrieve_multimodal
 
@@ -109,6 +131,7 @@ class SourceResponse(BaseModel):
     created_at: int | None = None
     updated_at: int | None = None
     child_doc_ids: list[str] = Field(default_factory=list)
+    error: str = ""
 
 
 class SourceListResponse(BaseModel):
@@ -229,6 +252,50 @@ class DeleteConversationResponse(BaseModel):
     conversation_id: str
 
 
+class UserResponse(BaseModel):
+    id: str
+    username: str
+    display_name: str
+    role: str
+    tenant_id: str
+    created_at: int
+    last_login_at: int | None = None
+
+
+class AuthRequest(BaseModel):
+    username: str
+    password: str
+    display_name: str | None = None
+
+
+class AuthResponse(BaseModel):
+    user: UserResponse
+    token: str
+    expires_at: int
+
+
+class AnnouncementRequest(BaseModel):
+    title: str
+    content: str
+
+
+class AnnouncementResponse(BaseModel):
+    id: str
+    title: str
+    content: str
+    author_id: str
+    author_name: str | None = None
+    created_at: int
+
+
+class AnnouncementListResponse(BaseModel):
+    announcements: list[AnnouncementResponse]
+
+
+class UserListResponse(BaseModel):
+    users: list[UserResponse]
+
+
 def create_app():
     app = FastAPI(title="Production RAG", version="0.2.0")
 
@@ -243,6 +310,82 @@ def create_app():
         if report["status"] != "ok":
             raise HTTPException(status_code=503, detail=report)
         return report
+
+    @app.post("/auth/register", response_model=AuthResponse)
+    def register(request: AuthRequest) -> AuthResponse:
+        config = load_config()
+        try:
+            user = register_user(
+                config,
+                username=request.username,
+                password=request.password,
+                display_name=request.display_name,
+            )
+            user, token, expires_at = login_user(
+                config,
+                username=request.username,
+                password=request.password,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return AuthResponse(user=user_to_response(user), token=token, expires_at=expires_at)
+
+    @app.post("/auth/login", response_model=AuthResponse)
+    def login(request: AuthRequest) -> AuthResponse:
+        config = load_config()
+        try:
+            user, token, expires_at = login_user(
+                config,
+                username=request.username,
+                password=request.password,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        return AuthResponse(user=user_to_response(user), token=token, expires_at=expires_at)
+
+    @app.post("/auth/logout")
+    def logout(authorization: str | None = Header(default=None)) -> dict[str, str]:
+        config = load_config()
+        token = bearer_token(authorization)
+        if token:
+            logout_user(config, token=token)
+        return {"status": "ok"}
+
+    @app.get("/auth/me", response_model=UserResponse)
+    def me(authorization: str | None = Header(default=None)) -> UserResponse:
+        user = require_current_user(authorization=authorization)
+        return user_to_response(user)
+
+    @app.get("/admin/users", response_model=UserListResponse)
+    def admin_users(authorization: str | None = Header(default=None)) -> UserListResponse:
+        config = load_config()
+        require_admin(config=config, authorization=authorization)
+        return UserListResponse(users=[user_to_response(user) for user in list_public_users(config)])
+
+    @app.post("/admin/announcements", response_model=AnnouncementResponse)
+    def admin_create_announcement(
+        request: AnnouncementRequest,
+        authorization: str | None = Header(default=None),
+    ) -> AnnouncementResponse:
+        config = load_config()
+        user = require_admin(config=config, authorization=authorization)
+        try:
+            row = create_announcement(
+                config,
+                title=request.title,
+                content=request.content,
+                author_id=user.id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return AnnouncementResponse(**row, author_name=user.display_name)
+
+    @app.get("/announcements", response_model=AnnouncementListResponse)
+    def public_announcements(limit: int = 5) -> AnnouncementListResponse:
+        config = load_config()
+        return AnnouncementListResponse(
+            announcements=[AnnouncementResponse(**row) for row in list_announcements(config, limit=limit)]
+        )
 
     @app.get("/sources", response_model=SourceListResponse)
     def sources(
@@ -269,6 +412,7 @@ def create_app():
 
     @app.post("/sources/upload", response_model=SourceUploadResponse)
     def upload_source(
+        background_tasks: BackgroundTasks,
         file: UploadFile = File(...),
         tenant_id: str = Form("team_a"),
         acl_groups: str = Form("engineering"),
@@ -295,21 +439,29 @@ def create_app():
                 filename=file.filename or "upload.txt",
                 content=file.file,
             )
-            summary = ingest_uploaded_path(
+            pending_source = create_source_task(
                 config=config,
-                path=saved_path,
                 tenant_id=auth_context.tenant_id,
+                path=saved_path,
                 acl_groups=auth_context.acl_groups or body_acl_groups or ["engineering"],
                 doc_version=doc_version,
-                language=language,
+            )
+            background_tasks.add_task(
+                ingest_upload_background,
+                pending_source,
+                saved_path,
+                auth_context.tenant_id,
+                auth_context.acl_groups or body_acl_groups or ["engineering"],
+                doc_version,
+                language,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return SourceUploadResponse(
-            status="ready",
-            sources=[source_to_response(source) for source in summary.sources],
-            document_count=summary.document_count,
-            chunk_count=summary.chunk_count,
+            status="processing",
+            sources=[source_to_response(pending_source)],
+            document_count=0,
+            chunk_count=0,
         )
 
     @app.get("/sources/content/{doc_id:path}", response_model=SourceContentResponse)
@@ -609,16 +761,18 @@ def create_app():
             tenant_id=tenant_id,
             acl_groups=[],
         )
+        migrate_legacy_artifacts(config, tenant_id=auth_context.tenant_id)
         return ArtifactListResponse(
             artifacts=[
                 artifact_to_response(artifact)
-                for artifact in list_artifacts(config, tenant_id=auth_context.tenant_id)
+                for artifact in list_metadata_artifacts(config, tenant_id=auth_context.tenant_id)
             ]
         )
 
     @app.post("/artifacts/mindmap", response_model=MindMapArtifactResponse)
     def create_mindmap(
         request: MindMapRequest,
+        background_tasks: BackgroundTasks,
         authorization: str | None = Header(default=None),
         x_rag_tenant_id: str | None = Header(default=None),
         x_rag_acl_groups: str | None = Header(default=None),
@@ -632,23 +786,24 @@ def create_app():
             tenant_id=request.tenant_id,
             acl_groups=request.acl_groups,
         )
-        try:
-            artifact = create_mindmap_artifact(
-                config,
-                title=request.title,
-                tenant_id=auth_context.tenant_id,
-                source_doc_ids=request.source_doc_ids,
-                acl_groups=auth_context.acl_groups or request.acl_groups or None,
-                doc_version=request.doc_version,
-                batch_chunk_count=request.context_limit,
-            )
-        except (RuntimeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        artifact = pending_artifact(
+            title=request.title,
+            tenant_id=auth_context.tenant_id,
+            source_doc_ids=request.source_doc_ids,
+            artifact_type="mindmap",
+        )
+        save_metadata_artifact(config, artifact)
+        background_tasks.add_task(
+            build_mindmap_background,
+            artifact,
+            request.context_limit,
+        )
         return artifact_to_response(artifact)
 
     @app.post("/artifacts/table", response_model=MindMapArtifactResponse)
     def create_table(
         request: MindMapRequest,
+        background_tasks: BackgroundTasks,
         authorization: str | None = Header(default=None),
         x_rag_tenant_id: str | None = Header(default=None),
         x_rag_acl_groups: str | None = Header(default=None),
@@ -662,17 +817,14 @@ def create_app():
             tenant_id=request.tenant_id,
             acl_groups=request.acl_groups,
         )
-        try:
-            artifact = create_table_artifact(
-                config,
-                title=request.title,
-                tenant_id=auth_context.tenant_id,
-                source_doc_ids=request.source_doc_ids,
-                acl_groups=auth_context.acl_groups or request.acl_groups or None,
-                doc_version=request.doc_version,
-            )
-        except (RuntimeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        artifact = pending_artifact(
+            title=request.title,
+            tenant_id=auth_context.tenant_id,
+            source_doc_ids=request.source_doc_ids,
+            artifact_type="table",
+        )
+        save_metadata_artifact(config, artifact)
+        background_tasks.add_task(build_table_background, artifact)
         return artifact_to_response(artifact)
 
     @app.get("/artifacts/{artifact_id}", response_model=MindMapArtifactResponse)
@@ -692,7 +844,11 @@ def create_app():
             tenant_id=tenant_id,
             acl_groups=[],
         )
-        artifact = load_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
+        artifact = load_metadata_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
+        if artifact is None:
+            artifact = load_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
+            if artifact is not None:
+                save_metadata_artifact(config, artifact)
         if artifact is None:
             raise HTTPException(status_code=404, detail="Artifact not found")
         return artifact_to_response(artifact)
@@ -714,9 +870,10 @@ def create_app():
             tenant_id=tenant_id,
             acl_groups=[],
         )
-        removed = delete_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
+        removed = delete_metadata_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
+        legacy_removed = delete_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
         return DeleteArtifactResponse(
-            status="deleted" if removed else "not_found",
+            status="deleted" if removed or legacy_removed else "not_found",
             artifact_id=artifact_id,
         )
 
@@ -738,7 +895,7 @@ def create_app():
             tenant_id=tenant_id,
             acl_groups=[],
         )
-        artifact = load_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
+        artifact = load_metadata_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
         if artifact is None:
             raise HTTPException(status_code=404, detail="Artifact not found")
 
@@ -747,7 +904,7 @@ def create_app():
             title=request.title,
             updated_at=int(time.time() * 1000)
         )
-        save_artifact(config, updated_artifact)
+        save_metadata_artifact(config, updated_artifact)
 
         return RenameArtifactResponse(
             status="renamed",
@@ -769,6 +926,15 @@ def resolve_auth_context(
     from fastapi import HTTPException
 
     try:
+        user = authenticate_token(config, token=bearer_token(authorization))
+        if user is not None:
+            return build_auth_context(
+                config=config,
+                header_tenant_id=user.tenant_id,
+                header_acl_groups="engineering",
+                body_tenant_id=request.tenant_id,
+                body_acl_groups=request.acl_groups,
+            )
         validate_bearer_token(config=config, authorization=authorization)
         return build_auth_context(
             config=config,
@@ -779,6 +945,93 @@ def resolve_auth_context(
         )
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+def pending_artifact(
+    *,
+    title: str,
+    tenant_id: str,
+    source_doc_ids: list[str],
+    artifact_type: str,
+) -> MindMapArtifact:
+    timestamp = int(time.time() * 1000)
+    prefix = "table" if artifact_type == "table" else "mindmap"
+    return MindMapArtifact(
+        id=f"{prefix}-{uuid.uuid4().hex[:12]}",
+        title=title,
+        status="generating",
+        tenant_id=tenant_id,
+        source_doc_ids=source_doc_ids,
+        created_at=timestamp,
+        updated_at=timestamp,
+        artifact_type=artifact_type,
+        root=None,
+        table=None,
+    )
+
+
+def build_mindmap_background(artifact: MindMapArtifact, context_limit: int) -> None:
+    config = load_config()
+    try:
+        root = build_mindmap_root(
+            title=artifact.title,
+            config=config,
+            tenant_id=artifact.tenant_id,
+            source_doc_ids=artifact.source_doc_ids,
+            batch_chunk_count=context_limit,
+        )
+        save_metadata_artifact(
+            config,
+            replace(artifact, status="ready", root=root, updated_at=int(time.time() * 1000)),
+        )
+    except Exception as exc:
+        fail_metadata_artifact(config, artifact, str(exc))
+
+
+def build_table_background(artifact: MindMapArtifact) -> None:
+    config = load_config()
+    try:
+        table = build_llm_table(
+            title=artifact.title,
+            config=config,
+            tenant_id=artifact.tenant_id,
+            source_doc_ids=artifact.source_doc_ids,
+        )
+        save_metadata_artifact(
+            config,
+            replace(artifact, status="ready", table=table, updated_at=int(time.time() * 1000)),
+        )
+    except Exception as exc:
+        fail_metadata_artifact(config, artifact, str(exc))
+
+
+def ingest_upload_background(
+    pending_source,
+    saved_path,
+    tenant_id: str,
+    acl_groups: list[str],
+    doc_version: int | None,
+    language: str,
+) -> None:
+    config = load_config()
+    try:
+        ingest_uploaded_path(
+            config=config,
+            path=saved_path,
+            tenant_id=tenant_id,
+            acl_groups=acl_groups,
+            doc_version=doc_version,
+            language=language,
+        )
+        delete_source_task(config=config, tenant_id=tenant_id, task_id=pending_source.doc_id)
+    except Exception as exc:
+        fail_source_task(config=config, tenant_id=tenant_id, source=pending_source, error=str(exc))
+
+
+def migrate_legacy_artifacts(config, *, tenant_id: str) -> None:
+    for artifact in list_artifacts(config, tenant_id=tenant_id):
+        if load_metadata_artifact(config, tenant_id=tenant_id, artifact_id=artifact.id) is None:
+            save_metadata_artifact(config, artifact)
 
 
 def resolve_auth_context_from_values(
@@ -793,6 +1046,15 @@ def resolve_auth_context_from_values(
     from fastapi import HTTPException
 
     try:
+        user = authenticate_token(config, token=bearer_token(authorization))
+        if user is not None:
+            return build_auth_context(
+                config=config,
+                header_tenant_id=user.tenant_id,
+                header_acl_groups="engineering",
+                body_tenant_id=tenant_id,
+                body_acl_groups=acl_groups,
+            )
         validate_bearer_token(config=config, authorization=authorization)
         return build_auth_context(
             config=config,
@@ -890,6 +1152,7 @@ def source_to_response(source) -> SourceResponse:
         created_at=source.created_at,
         updated_at=source.updated_at,
         child_doc_ids=source.child_doc_ids,
+        error=getattr(source, "error", ""),
     )
 
 
@@ -954,6 +1217,31 @@ def conversation_to_list_item(conversation) -> ConversationListItemResponse:
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
     )
+
+
+def user_to_response(user) -> UserResponse:
+    return UserResponse(**user.public_dict())
+
+
+def require_current_user(*, authorization: str | None):
+    from fastapi import HTTPException
+
+    config = load_config()
+    user = authenticate_token(config, token=bearer_token(authorization))
+    if user is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    return user
+
+
+def require_admin(*, config, authorization: str | None):
+    from fastapi import HTTPException
+
+    user = authenticate_token(config, token=bearer_token(authorization))
+    if user is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user
 
 
 app = create_app()

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Dispatch, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { Bot, Settings as SettingsIcon } from "lucide-react";
+import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
+import { Bot, LogIn, LogOut, Megaphone, Settings as SettingsIcon, Shield, UserRound } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -14,18 +14,23 @@ import {
   deleteArtifact,
   renameArtifact,
   getConversation,
+  getArtifact,
   getSourceContent,
   health,
+  listAdminUsers,
+  listAnnouncements,
   listArtifacts,
   listConversations,
   listSources,
+  publishAnnouncement,
   queryRag,
   saveConversation,
   sendFeedback,
   uploadSource,
 } from "../lib/api";
+import { useAuth } from "../lib/AuthContext";
 import { defaultSettings, loadSettings, saveSettings } from "../lib/storage";
-import type { ChatMessage, MindMapArtifact, Settings, SourceContent, SourceItem } from "../lib/types";
+import type { Announcement, AuthUser, ChatMessage, MindMapArtifact, Settings, SourceContent, SourceItem } from "../lib/types";
 
 type PanelLayout = {
   source: number;
@@ -41,8 +46,14 @@ const MIN_LAYOUT: PanelLayout = { source: 17, chat: 31, studio: 22 };
 const ARTIFACT_GENERATION_COOLDOWN_MS = 4_000;
 
 export function WorkspacePage() {
+  const auth = useAuth();
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [authDialogMode, setAuthDialogMode] = useState<"login" | "register" | null>(null);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [sources, setSources] = useState<SourceItem[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -92,16 +103,40 @@ export function WorkspacePage() {
     void refresh(settings);
   }, [settings]);
 
+  useEffect(() => {
+    setSettings((current) => {
+      const next = {
+        ...current,
+        token: auth.token,
+        tenantId: auth.user?.tenant_id || defaultSettings.tenantId,
+        aclGroups: ["engineering"],
+      };
+      return settingsEqual(current, next) ? current : next;
+    });
+  }, [auth.token, auth.user?.tenant_id]);
+
+  useEffect(() => {
+    setSources([]);
+    setMessages([]);
+    setConversationId(null);
+    setConversationTitle("未命名对话");
+    setArtifacts([]);
+    setActiveArtifact(null);
+    setActiveSourceContent(null);
+  }, [auth.user?.id]);
+
   async function refresh(nextSettings = settings) {
     try {
       await health(nextSettings);
       setStatus("API 已连接");
-      const [sourceRows, artifactRows] = await Promise.all([
+      const [sourceRows, artifactRows, announcementRows] = await Promise.all([
         listSources(nextSettings),
         listArtifacts(nextSettings),
+        listAnnouncements(nextSettings),
       ]);
       setSources((current) => mergeSelectedState(sourceRows, current));
       setArtifacts(artifactRows);
+      setAnnouncements(announcementRows);
       await loadLatestConversation(nextSettings, sourceRows);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "连接失败");
@@ -149,6 +184,8 @@ export function WorkspacePage() {
         ...uploaded.map(item => ({ ...item, selected: true })), // Auto-select newly uploaded items
         ...items.filter((item) => item.doc_id !== temp.doc_id)
       ]);
+      const readyRows = await waitForSourcesReady(settings, uploaded);
+      setSources((items) => mergeSelectedState(readyRows, items));
     } catch (error) {
       setSources((items) =>
         items.map((item) =>
@@ -333,14 +370,18 @@ export function WorkspacePage() {
       root: null,
     };
     setArtifacts((items) => [pendingArtifact, ...items]);
+    let trackedArtifactId = pendingArtifact.id;
     try {
       const artifact = await createMindMap(settings, title, sourceDocIds);
+      trackedArtifactId = artifact.id;
       setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
-      openArtifact(artifact);
+      const readyArtifact = await waitForArtifact(settings, artifact.id);
+      setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
+      openArtifact(readyArtifact);
     } catch (error) {
       setArtifacts((items) =>
         items.map((item) =>
-          item.id === pendingArtifact.id
+          item.id === pendingArtifact.id || item.id === trackedArtifactId
             ? { ...item, status: "failed", error: error instanceof Error ? error.message : "生成失败" }
           : item,
         ),
@@ -366,14 +407,18 @@ export function WorkspacePage() {
       table: null,
     };
     setArtifacts((items) => [pendingArtifact, ...items]);
+    let trackedArtifactId = pendingArtifact.id;
     try {
       const artifact = await createDataTable(settings, title, sourceDocIds);
+      trackedArtifactId = artifact.id;
       setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
-      openArtifact(artifact);
+      const readyArtifact = await waitForArtifact(settings, artifact.id);
+      setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
+      openArtifact(readyArtifact);
     } catch (error) {
       setArtifacts((items) =>
         items.map((item) =>
-          item.id === pendingArtifact.id
+          item.id === pendingArtifact.id || item.id === trackedArtifactId
             ? { ...item, status: "failed", error: error instanceof Error ? error.message : "生成失败" }
           : item,
         ),
@@ -420,6 +465,11 @@ export function WorkspacePage() {
     }
   }
 
+  async function handleLogout() {
+    setAccountMenuOpen(false);
+    await auth.logout();
+  }
+
   return (
     <div className="workspace-shell">
       <header className="topbar">
@@ -433,9 +483,42 @@ export function WorkspacePage() {
           <IconButton label="设置" onClick={() => setSettingsOpen(true)}>
             <SettingsIcon size={18} />
           </IconButton>
-          <div className="avatar" aria-label="用户头像" />
+          <div className="account-menu-anchor">
+            <button
+              type="button"
+              className="avatar"
+              aria-label="用户头像"
+              title={auth.user ? auth.user.display_name : "账户"}
+              onClick={() => setAccountMenuOpen((open) => !open)}
+            >
+              {auth.user ? auth.user.display_name.slice(0, 1).toUpperCase() : ""}
+            </button>
+            {accountMenuOpen ? (
+              <AccountMenu
+                user={auth.user}
+                onLogin={() => {
+                  setAccountMenuOpen(false);
+                  setAuthDialogMode("login");
+                }}
+                onRegister={() => {
+                  setAccountMenuOpen(false);
+                  setAuthDialogMode("register");
+                }}
+                onProfile={() => {
+                  setAccountMenuOpen(false);
+                  setProfileOpen(true);
+                }}
+                onAdmin={() => {
+                  setAccountMenuOpen(false);
+                  setAdminOpen(true);
+                }}
+                onLogout={handleLogout}
+              />
+            ) : null}
+          </div>
         </div>
       </header>
+      <AnnouncementBar announcement={announcements[0] ?? null} />
       <main
         className={`workspace-grid ${activeArtifact ? "mindmap-expanded" : ""}`}
         ref={gridRef}
@@ -500,6 +583,264 @@ export function WorkspacePage() {
         onClose={() => setSettingsOpen(false)}
         onSave={(next) => setSettings({ ...defaultSettings, ...next })}
       />
+      {authDialogMode ? (
+        <AuthDialog mode={authDialogMode} onClose={() => setAuthDialogMode(null)} />
+      ) : null}
+      {adminOpen && auth.user?.role === "admin" ? (
+        <AdminDialog
+          settings={settings}
+          onClose={() => setAdminOpen(false)}
+          onAnnouncement={(announcement) => setAnnouncements((items) => [announcement, ...items])}
+        />
+      ) : null}
+      {profileOpen && auth.user ? <ProfileDialog user={auth.user} onClose={() => setProfileOpen(false)} /> : null}
+    </div>
+  );
+}
+
+function AccountMenu({
+  user,
+  onLogin,
+  onRegister,
+  onProfile,
+  onAdmin,
+  onLogout,
+}: {
+  user: AuthUser | null;
+  onLogin: () => void;
+  onRegister: () => void;
+  onProfile: () => void;
+  onAdmin: () => void;
+  onLogout: () => void;
+}) {
+  return (
+    <div className="account-menu" role="menu">
+      {user ? (
+        <>
+          <div className="account-card">
+            <UserRound size={18} />
+            <div>
+              <strong>{user.display_name}</strong>
+              <span>{user.username} · {user.role === "admin" ? "管理员" : "普通用户"}</span>
+            </div>
+          </div>
+          <button type="button" role="menuitem" onClick={onProfile}>
+            <UserRound size={16} />
+            个人信息
+          </button>
+          {user.role === "admin" ? (
+            <button type="button" role="menuitem" onClick={onAdmin}>
+              <Shield size={16} />
+              管理员控制台
+            </button>
+          ) : null}
+          <button type="button" role="menuitem" onClick={onLogout}>
+            <LogOut size={16} />
+            登出
+          </button>
+        </>
+      ) : (
+        <>
+          <button type="button" role="menuitem" onClick={onLogin}>
+            <LogIn size={16} />
+            登录
+          </button>
+          <button type="button" role="menuitem" onClick={onRegister}>
+            <UserRound size={16} />
+            注册
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AnnouncementBar({ announcement }: { announcement: Announcement | null }) {
+  if (!announcement) {
+    return <div className="announcement-bar is-empty" aria-hidden="true" />;
+  }
+  return (
+    <div className="announcement-bar">
+      <Megaphone size={16} />
+      <strong>{announcement.title}</strong>
+      <span>{announcement.content}</span>
+    </div>
+  );
+}
+
+function AuthDialog({ mode, onClose }: { mode: "login" | "register"; onClose: () => void }) {
+  const auth = useAuth();
+  const [username, setUsername] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const isRegister = mode === "register";
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      if (isRegister) {
+        await auth.register(username, password, displayName);
+      } else {
+        await auth.login(username, password);
+      }
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "操作失败");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <form className="auth-dialog" role="dialog" aria-modal="true" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
+        <h2>{isRegister ? "注册账号" : "登录账号"}</h2>
+        <label>
+          用户名
+          <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+        </label>
+        {isRegister ? (
+          <label>
+            显示名称
+            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" />
+          </label>
+        ) : null}
+        <label>
+          密码
+          <input
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            type="password"
+            autoComplete={isRegister ? "new-password" : "current-password"}
+          />
+        </label>
+        {error ? <p className="error-text">{error}</p> : null}
+        <div className="dialog-actions">
+          <button type="button" onClick={onClose}>取消</button>
+          <button type="submit" disabled={submitting || !username.trim() || !password}>
+            {submitting ? "处理中..." : isRegister ? "注册并登录" : "登录"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ProfileDialog({ user, onClose }: { user: AuthUser; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="profile-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="admin-dialog-header">
+          <h2>个人信息</h2>
+          <button type="button" onClick={onClose}>关闭</button>
+        </div>
+        <dl className="profile-list">
+          <div>
+            <dt>显示名称</dt>
+            <dd>{user.display_name}</dd>
+          </div>
+          <div>
+            <dt>用户名</dt>
+            <dd>{user.username}</dd>
+          </div>
+          <div>
+            <dt>角色</dt>
+            <dd>{user.role === "admin" ? "管理员" : "普通用户"}</dd>
+          </div>
+          <div>
+            <dt>数据空间</dt>
+            <dd>{user.tenant_id}</dd>
+          </div>
+          <div>
+            <dt>最近登录</dt>
+            <dd>{user.last_login_at ? formatTime(user.last_login_at) : "当前会话"}</dd>
+          </div>
+        </dl>
+      </section>
+    </div>
+  );
+}
+
+function AdminDialog({
+  settings,
+  onClose,
+  onAnnouncement,
+}: {
+  settings: Settings;
+  onClose: () => void;
+  onAnnouncement: (announcement: Announcement) => void;
+}) {
+  const [users, setUsers] = useState<AuthUser[]>([]);
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    listAdminUsers(settings)
+      .then(setUsers)
+      .catch((err) => setError(err instanceof Error ? err.message : "加载用户失败"));
+  }, [settings]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    try {
+      const announcement = await publishAnnouncement(settings, { title, content });
+      onAnnouncement(announcement);
+      setTitle("");
+      setContent("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "发布公告失败");
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="admin-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="admin-dialog-header">
+          <h2>管理员控制台</h2>
+          <button type="button" onClick={onClose}>关闭</button>
+        </div>
+        <form className="announcement-form" onSubmit={submit}>
+          <label>
+            公告标题
+            <input value={title} onChange={(event) => setTitle(event.target.value)} />
+          </label>
+          <label>
+            公告内容
+            <textarea value={content} onChange={(event) => setContent(event.target.value)} rows={4} />
+          </label>
+          <button type="submit" disabled={!title.trim() || !content.trim()}>发布公告</button>
+        </form>
+        {error ? <p className="error-text">{error}</p> : null}
+        <div className="admin-users">
+          <h3>用户列表</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>用户名</th>
+                <th>角色</th>
+                <th>Tenant</th>
+                <th>最近登录</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((user) => (
+                <tr key={user.id}>
+                  <td>{user.display_name} / {user.username}</td>
+                  <td>{user.role === "admin" ? "管理员" : "普通用户"}</td>
+                  <td>{user.tenant_id}</td>
+                  <td>{user.last_login_at ? formatTime(user.last_login_at) : "未登录"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }
@@ -518,12 +859,63 @@ function inferConversationTitle(messages: ChatMessage[]) {
   return firstUser ? firstUser.slice(0, 40) : "未命名对话";
 }
 
+function settingsEqual(left: Settings, right: Settings) {
+  return (
+    left.apiBaseUrl === right.apiBaseUrl &&
+    left.token === right.token &&
+    left.tenantId === right.tenantId &&
+    left.aclGroups.join(",") === right.aclGroups.join(",")
+  );
+}
+
+function formatTime(value: number) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
+}
+
+async function waitForArtifact(settings: Settings, artifactId: string): Promise<MindMapArtifact> {
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    const artifact = await getArtifact(settings, artifactId);
+    if (artifact.status === "ready") {
+      return artifact;
+    }
+    if (artifact.status === "failed") {
+      throw new Error(artifact.error || "生成失败");
+    }
+  }
+  throw new Error("生成超时，请稍后在 Studio 列表中查看结果");
+}
+
+async function waitForSourcesReady(settings: Settings, pendingSources: SourceItem[]): Promise<SourceItem[]> {
+  const pendingTitles = new Set(pendingSources.map((source) => source.title));
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    const rows = await listSources(settings);
+    const related = rows.filter((source) => pendingTitles.has(source.title));
+    if (related.some((source) => source.status === "ready" || source.status === "failed")) {
+      return rows;
+    }
+  }
+  return listSources(settings);
+}
+
 function mergeSelectedState(next: SourceItem[], current: SourceItem[]) {
   const selected = new Map(current.map((item) => [item.doc_id, item.selected ?? item.current]));
-  return next.map((item) => ({
+  const merged = next.map((item) => ({
     ...item,
     selected: selected.get(item.doc_id) ?? item.current,
   }));
+  const activeTasks = current.filter(
+    (item) => item.status !== "ready" && !merged.some((nextItem) => nextItem.doc_id === item.doc_id),
+  );
+  return [...activeTasks, ...merged];
 }
 
 function ResizeDivider({

@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from rag_core.config import RagConfig
+from rag_core.database import connect_metadata_db
 from rag_core.object_store import load_archived_source_documents
 from rag_core.text_utils import now_ms
 
@@ -65,6 +66,85 @@ def delete_artifact(config: RagConfig, *, tenant_id: str, artifact_id: str) -> b
         return False
     path.unlink()
     return True
+
+
+def list_metadata_artifacts(config: RagConfig, *, tenant_id: str) -> list[MindMapArtifact]:
+    with connect_metadata_db(config) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM artifacts
+            WHERE tenant_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (tenant_id,),
+        ).fetchall()
+    return [artifact_from_metadata_row(row) for row in rows]
+
+
+def load_metadata_artifact(config: RagConfig, *, tenant_id: str, artifact_id: str) -> MindMapArtifact | None:
+    with connect_metadata_db(config) as conn:
+        row = conn.execute(
+            "SELECT * FROM artifacts WHERE tenant_id = ? AND id = ?",
+            (tenant_id, artifact_id),
+        ).fetchone()
+    return artifact_from_metadata_row(row) if row is not None else None
+
+
+def save_metadata_artifact(config: RagConfig, artifact: MindMapArtifact) -> None:
+    with connect_metadata_db(config) as conn:
+        conn.execute(
+            """
+            INSERT INTO artifacts(
+                id, tenant_id, title, status, artifact_type, source_doc_ids,
+                root, table_json, error, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                tenant_id = excluded.tenant_id,
+                title = excluded.title,
+                status = excluded.status,
+                artifact_type = excluded.artifact_type,
+                source_doc_ids = excluded.source_doc_ids,
+                root = excluded.root,
+                table_json = excluded.table_json,
+                error = excluded.error,
+                updated_at = excluded.updated_at
+            """,
+            (
+                artifact.id,
+                artifact.tenant_id,
+                artifact.title,
+                artifact.status,
+                artifact.artifact_type,
+                json.dumps(artifact.source_doc_ids, ensure_ascii=False),
+                json.dumps(artifact.root, ensure_ascii=False) if artifact.root is not None else None,
+                json.dumps(artifact.table, ensure_ascii=False) if artifact.table is not None else None,
+                artifact.error,
+                artifact.created_at,
+                artifact.updated_at,
+            ),
+        )
+
+
+def delete_metadata_artifact(config: RagConfig, *, tenant_id: str, artifact_id: str) -> bool:
+    with connect_metadata_db(config) as conn:
+        cursor = conn.execute(
+            "DELETE FROM artifacts WHERE tenant_id = ? AND id = ?",
+            (tenant_id, artifact_id),
+        )
+        return cursor.rowcount > 0
+
+
+def fail_metadata_artifact(config: RagConfig, artifact: MindMapArtifact, error: str) -> None:
+    save_metadata_artifact(
+        config,
+        replace(
+            artifact,
+            status="failed",
+            error=error,
+            updated_at=now_ms(),
+        ),
+    )
 
 
 def create_mindmap_artifact(
@@ -483,4 +563,20 @@ def artifact_from_row(row: dict[str, Any]) -> MindMapArtifact:
         root=row.get("root"),
         table=row.get("table"),
         error=str(row.get("error") or ""),
+    )
+
+
+def artifact_from_metadata_row(row) -> MindMapArtifact:
+    return MindMapArtifact(
+        id=str(row["id"]),
+        title=str(row["title"]),
+        status=str(row["status"]),
+        tenant_id=str(row["tenant_id"]),
+        source_doc_ids=json.loads(row["source_doc_ids"] or "[]"),
+        created_at=int(row["created_at"] or 0),
+        updated_at=int(row["updated_at"] or 0),
+        artifact_type=str(row["artifact_type"] or "mindmap"),
+        root=json.loads(row["root"]) if row["root"] else None,
+        table=json.loads(row["table_json"]) if row["table_json"] else None,
+        error=str(row["error"] or ""),
     )

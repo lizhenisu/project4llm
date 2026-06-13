@@ -1,5 +1,11 @@
 import { expect, test } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/announcements?**", async (route) => {
+    await route.fulfill({ json: { announcements: [] } });
+  });
+});
+
 test("opens parsed source content from a document-level source row", async ({ page }) => {
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok" } });
@@ -296,6 +302,27 @@ test("creates and opens a data table artifact from studio", async ({ page }) => 
       },
     });
   });
+  await page.route("**/artifacts/table-regression?**", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "table-regression",
+        title: "实习介绍资料.pdf 数据表格",
+        status: "ready",
+        artifact_type: "table",
+        tenant_id: "team_a",
+        source_doc_ids: ["internship-guide/page-1"],
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        root: null,
+        table: {
+          title: "实习岗位数据表格",
+          columns: ["岗位", "职责", "要求"],
+          rows: [["大模型应用开发实习生", "开发 RAG 与智能体应用", "熟悉 TypeScript"]],
+          summary: "该表格用于比较实习岗位的职责和要求。",
+        },
+      },
+    });
+  });
 
   await page.goto("/");
   await expect(page.getByRole("button", { name: /思维导图/ })).toHaveClass(/tone-purple/);
@@ -358,8 +385,44 @@ test("rate limits studio artifact generation across mind map and data table tool
       },
     });
   });
+  await page.route("**/artifacts/mindmap-rate-limit?**", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "mindmap-rate-limit",
+        title: "Studio 资料.pdf 思维导图",
+        status: "ready",
+        artifact_type: "mindmap",
+        tenant_id: "team_a",
+        source_doc_ids: ["studio-source/page-1"],
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        root: { id: "root", label: "Studio 资料", children: [] },
+      },
+    });
+  });
   await page.route("**/artifacts/table", async (route) => {
     tableRequests += 1;
+    await route.fulfill({
+      json: {
+        id: "table-rate-limit",
+        title: "Studio 资料.pdf 数据表格",
+        status: "ready",
+        artifact_type: "table",
+        tenant_id: "team_a",
+        source_doc_ids: ["studio-source/page-1"],
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        root: null,
+        table: {
+          title: "Studio 数据表格",
+          columns: ["主题", "摘要"],
+          rows: [["速率限制", "每 4 秒最多生成一次"]],
+          summary: "用于验证 Studio 生成工具共享冷却。",
+        },
+      },
+    });
+  });
+  await page.route("**/artifacts/table-rate-limit?**", async (route) => {
     await route.fulfill({
       json: {
         id: "table-rate-limit",
@@ -402,6 +465,136 @@ test("rate limits studio artifact generation across mind map and data table tool
   await expect(page.getByText("Studio 数据表格")).toBeVisible();
   expect(mindMapRequests).toBe(1);
   expect(tableRequests).toBe(1);
+});
+
+test("registers an admin user from the avatar menu and publishes an announcement", async ({ page }) => {
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({ json: { sources: [] } });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+  await page.route("**/auth/register", async (route) => {
+    await route.fulfill({
+      json: {
+        user: {
+          id: "user-admin",
+          username: "admin",
+          display_name: "管理员",
+          role: "admin",
+          tenant_id: "tenant-admin",
+          created_at: Date.now(),
+          last_login_at: Date.now(),
+        },
+        token: "session-admin",
+        expires_at: Date.now() + 86_400_000,
+      },
+    });
+  });
+  await page.route("**/admin/users", async (route) => {
+    await route.fulfill({
+      json: {
+        users: [
+          {
+            id: "user-admin",
+            username: "admin",
+            display_name: "管理员",
+            role: "admin",
+            tenant_id: "tenant-admin",
+            created_at: Date.now(),
+            last_login_at: Date.now(),
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/admin/announcements", async (route) => {
+    const body = route.request().postDataJSON();
+    await route.fulfill({
+      json: {
+        id: "announcement-1",
+        title: body.title,
+        content: body.content,
+        author_id: "user-admin",
+        author_name: "管理员",
+        created_at: Date.now(),
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "用户头像" }).click();
+  await page.getByRole("menuitem", { name: /注册/ }).click();
+  await page.getByRole("dialog").getByLabel("用户名").fill("admin");
+  await page.getByRole("dialog").getByLabel("显示名称").fill("管理员");
+  await page.getByRole("dialog").getByLabel("密码").fill("strong-password");
+  await page.getByRole("button", { name: "注册并登录" }).click();
+
+  await page.getByRole("button", { name: "用户头像" }).click();
+  await expect(page.getByText("admin · 管理员")).toBeVisible();
+  await page.getByRole("menuitem", { name: /个人信息/ }).click();
+  await expect(page.getByRole("heading", { name: "个人信息" })).toBeVisible();
+  await expect(page.getByText("tenant-admin")).toBeVisible();
+  await page.getByRole("button", { name: "关闭" }).click();
+  await page.getByRole("button", { name: "用户头像" }).click();
+  await page.getByRole("menuitem", { name: /管理员控制台/ }).click();
+  await expect(page.getByRole("heading", { name: "管理员控制台" })).toBeVisible();
+  await expect(page.getByText("tenant-admin")).toBeVisible();
+
+  await page.getByLabel("公告标题").fill("系统维护");
+  await page.getByLabel("公告内容").fill("今晚 23:00 进行例行维护。");
+  await page.getByRole("button", { name: "发布公告" }).click();
+  await expect(page.getByText("系统维护")).toBeVisible();
+  await expect(page.getByText("今晚 23:00 进行例行维护。")).toBeVisible();
+});
+
+test("clears the saved session after an authenticated request returns 401", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "production-rag-auth-session",
+      JSON.stringify({
+        user: {
+          id: "expired-user",
+          username: "expired",
+          display_name: "过期用户",
+          role: "user",
+          tenant_id: "tenant-expired",
+          created_at: Date.now(),
+        },
+        token: "expired-token",
+        expires_at: Date.now() + 86_400_000,
+      }),
+    );
+  });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    if (route.request().headers().authorization === "Bearer expired-token") {
+      await route.fulfill({ status: 401, json: { detail: "请先登录" } });
+      return;
+    }
+    await route.fulfill({ json: { sources: [] } });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/");
+  await expect
+    .poll(async () => page.evaluate(() => localStorage.getItem("production-rag-auth-session")))
+    .toBeNull();
+  await page.getByRole("button", { name: "用户头像" }).click();
+  await expect(page.getByRole("menuitem", { name: /登录/ })).toBeVisible();
 });
 
 test("renders assistant answers with a typewriter reveal", async ({ page }) => {

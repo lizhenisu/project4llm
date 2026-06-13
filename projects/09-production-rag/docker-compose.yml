@@ -66,6 +66,7 @@ services:
       - "8008:8008"
     volumes:
       - ./runtime:/app/projects/09-production-rag/runtime
+      - ./volumes/db:/app/projects/09-production-rag/runtime/db
       - ./object_store:/app/projects/09-production-rag/object_store
     depends_on:
       - milvus

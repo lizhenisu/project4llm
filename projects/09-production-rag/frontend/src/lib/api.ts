@@ -1,5 +1,8 @@
 import type {
   ChatMessage,
+  Announcement,
+  AuthResponse,
+  AuthUser,
   Conversation,
   ConversationListItem,
   MindMapArtifact,
@@ -10,6 +13,11 @@ import type {
 } from "./types";
 
 const RAG_CONTEXT_LIMIT = 5;
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
 
 export class ApiError extends Error {
   constructor(
@@ -48,6 +56,9 @@ async function request<T>(path: string, options: RequestOptions): Promise<T> {
   });
   if (!response.ok) {
     const detail = await readErrorDetail(response);
+    if (response.status === 401) {
+      unauthorizedHandler?.();
+    }
     throw new ApiError(detail, response.status);
   }
   return (await response.json()) as T;
@@ -252,6 +263,13 @@ export async function listArtifacts(settings: Settings): Promise<MindMapArtifact
   return payload.artifacts;
 }
 
+export function getArtifact(settings: Settings, artifactId: string): Promise<MindMapArtifact> {
+  return request<MindMapArtifact>(
+    `/artifacts/${encodeURIComponent(artifactId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    { settings },
+  );
+}
+
 export function createMindMap(
   settings: Settings,
   title: string,
@@ -285,5 +303,70 @@ export function createDataTable(
       source_doc_ids: sourceDocIds,
       context_limit: RAG_CONTEXT_LIMIT,
     },
+  });
+}
+
+export function registerAccount(
+  settings: Settings,
+  params: { username: string; password: string; displayName?: string },
+): Promise<AuthResponse> {
+  return request<AuthResponse>("/auth/register", {
+    method: "POST",
+    settings: { ...settings, token: "" },
+    json: {
+      username: params.username,
+      password: params.password,
+      display_name: params.displayName || null,
+    },
+  });
+}
+
+export function loginAccount(
+  settings: Settings,
+  params: { username: string; password: string },
+): Promise<AuthResponse> {
+  return request<AuthResponse>("/auth/login", {
+    method: "POST",
+    settings: { ...settings, token: "" },
+    json: {
+      username: params.username,
+      password: params.password,
+    },
+  });
+}
+
+export function logoutAccount(settings: Settings): Promise<{ status: string }> {
+  return request<{ status: string }>("/auth/logout", {
+    method: "POST",
+    settings,
+  });
+}
+
+export function getCurrentUser(settings: Settings): Promise<AuthUser> {
+  return request<AuthUser>("/auth/me", { settings });
+}
+
+export async function listAnnouncements(settings: Settings): Promise<Announcement[]> {
+  const payload = await request<{ announcements: Announcement[] }>("/announcements?limit=5", {
+    settings,
+  });
+  return payload.announcements;
+}
+
+export async function listAdminUsers(settings: Settings): Promise<AuthUser[]> {
+  const payload = await request<{ users: AuthUser[] }>("/admin/users", {
+    settings,
+  });
+  return payload.users;
+}
+
+export function publishAnnouncement(
+  settings: Settings,
+  params: { title: string; content: string },
+): Promise<Announcement> {
+  return request<Announcement>("/admin/announcements", {
+    method: "POST",
+    settings,
+    json: params,
   });
 }

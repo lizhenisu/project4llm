@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import json
 import uuid
 from collections import Counter
 from collections import defaultdict
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from rag_core.config import RagConfig
+from rag_core.database import connect_metadata_db
 from rag_core.embeddings import build_embedding_model, zero_image_vector
 from rag_core.io import load_file_documents, load_table_documents
 from rag_core.milvus_store import (
@@ -25,7 +27,7 @@ from rag_core.object_store import (
 )
 from rag_core.pii import apply_pii_policy
 from rag_core.source_guides import get_or_create_source_guide, load_source_guide
-from rag_core.text_utils import chunk_document
+from rag_core.text_utils import chunk_document, now_ms
 from rag_core.types import Chunk, SourceDocument
 from rag_core.versioning import load_current_versions, publish_current_versions, unpublish_current_version
 
@@ -47,6 +49,7 @@ class SourceSummary:
     created_at: int | None = None
     updated_at: int | None = None
     child_doc_ids: list[str] = field(default_factory=list)
+    error: str = ""
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,75 @@ def ingest_uploaded_path(
         version = next_source_doc_version(config, docs)
         docs = [replace(doc, doc_version=version) for doc in docs]
     return ingest_source_documents(config=config, docs=docs)
+
+
+def create_source_task(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    path: Path,
+    acl_groups: list[str],
+    doc_version: int | None,
+) -> SourceSummary:
+    timestamp = now_ms()
+    doc_id = f"upload-{uuid.uuid4().hex[:12]}"
+    source = SourceSummary(
+        doc_id=doc_id,
+        title=path.name,
+        source_type=path.suffix.lower().lstrip(".") or "file",
+        source_uri=str(path),
+        doc_version=doc_version or 1,
+        chunk_count=0,
+        acl_groups=acl_groups,
+        status="processing",
+        current=False,
+        created_at=timestamp,
+        updated_at=timestamp,
+        child_doc_ids=[],
+    )
+    save_source_task_for_tenant(config=config, tenant_id=tenant_id, source=source)
+    return source
+
+
+def save_source_task_for_tenant(*, config: RagConfig, tenant_id: str, source: SourceSummary, error: str = "") -> None:
+    with connect_metadata_db(config) as conn:
+        conn.execute(
+            """
+            INSERT INTO source_tasks(
+                id, tenant_id, doc_id, title, source_type, source_uri, doc_version,
+                acl_groups, status, error, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                error = excluded.error,
+                updated_at = excluded.updated_at
+            """,
+            (
+                source.doc_id,
+                tenant_id,
+                source.doc_id,
+                source.title,
+                source.source_type,
+                source.source_uri,
+                source.doc_version,
+                json.dumps(source.acl_groups, ensure_ascii=False),
+                source.status,
+                error,
+                source.created_at or now_ms(),
+                source.updated_at or now_ms(),
+            ),
+        )
+
+
+def delete_source_task(*, config: RagConfig, tenant_id: str, task_id: str) -> None:
+    with connect_metadata_db(config) as conn:
+        conn.execute("DELETE FROM source_tasks WHERE tenant_id = ? AND id = ?", (tenant_id, task_id))
+
+
+def fail_source_task(*, config: RagConfig, tenant_id: str, source: SourceSummary, error: str) -> None:
+    failed = replace(source, status="failed", updated_at=now_ms())
+    save_source_task_for_tenant(config=config, tenant_id=tenant_id, source=failed, error=error[:500])
 
 
 def load_documents_for_path(
@@ -341,7 +413,40 @@ def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
         )
         for item in grouped.values()
     ]
-    return sorted(summaries, key=lambda item: (not item.current, item.title, item.doc_id))
+    summaries.extend(list_source_tasks(config=config, tenant_id=tenant_id))
+    return sorted(summaries, key=lambda item: (item.status == "ready", not item.current, item.title, item.doc_id))
+
+
+def list_source_tasks(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
+    with connect_metadata_db(config) as conn:
+        rows = conn.execute(
+            """
+            SELECT doc_id, title, source_type, source_uri, doc_version, acl_groups,
+                   status, error, created_at, updated_at
+            FROM source_tasks
+            WHERE tenant_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (tenant_id,),
+        ).fetchall()
+    return [
+        SourceSummary(
+            doc_id=str(row["doc_id"]),
+            title=str(row["title"]),
+            source_type=str(row["source_type"]),
+            source_uri=str(row["source_uri"]),
+            doc_version=int(row["doc_version"]),
+            chunk_count=0,
+            acl_groups=json.loads(row["acl_groups"] or "[]"),
+            status=str(row["status"]),
+            current=False,
+            created_at=int(row["created_at"] or 0),
+            updated_at=int(row["updated_at"] or 0),
+            child_doc_ids=[],
+            error=str(row["error"] or ""),
+        )
+        for row in rows
+    ]
 
 
 def get_source(

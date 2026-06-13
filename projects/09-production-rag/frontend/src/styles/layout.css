@@ -1,11 +1,13 @@
 .workspace-shell {
   display: grid;
-  grid-template-rows: 58px minmax(0, 1fr) 26px;
+  grid-template-rows: 58px auto minmax(0, 1fr) 26px;
   height: 100vh;
   min-height: 720px;
 }
 
 .topbar {
+  position: relative;
+  z-index: 40;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -47,11 +49,99 @@
 .avatar {
   width: 30px;
   height: 30px;
+  border: 0;
   background: #2f3531;
+  color: white;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .topbar-actions {
   gap: 8px;
+}
+
+.account-menu-anchor {
+  position: relative;
+}
+
+.account-menu {
+  position: absolute;
+  top: 40px;
+  right: 0;
+  z-index: 80;
+  display: grid;
+  gap: 4px;
+  width: 238px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 8px;
+}
+
+.account-menu button,
+.admin-dialog-header button,
+.announcement-form button,
+.auth-dialog button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 0 10px;
+}
+
+.account-menu button {
+  justify-content: flex-start;
+  border-color: transparent;
+}
+
+.account-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding: 6px 6px 10px;
+}
+
+.account-card div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.account-card span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.announcement-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  border-bottom: 1px solid var(--line);
+  background: #fff7d6;
+  padding: 0 18px;
+  color: #594400;
+  font-size: 13px;
+}
+
+.announcement-bar.is-empty {
+  min-height: 0;
+  height: 0;
+  border: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.announcement-bar span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .primary-pill,
@@ -1235,19 +1325,125 @@ button:not(:disabled):active {
   padding: 20px;
 }
 
-.settings-dialog label {
+.settings-dialog label,
+.auth-dialog label,
+.announcement-form label {
   display: grid;
   gap: 6px;
   color: var(--text-muted);
   font-size: 13px;
 }
 
-.settings-dialog input {
+.settings-dialog input,
+.auth-dialog input,
+.announcement-form input,
+.announcement-form textarea {
   min-height: 38px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 0 10px;
   color: var(--text);
+}
+
+.announcement-form textarea {
+  min-height: 96px;
+  padding: 10px;
+}
+
+.auth-dialog,
+.admin-dialog,
+.profile-dialog {
+  display: grid;
+  gap: 14px;
+  width: min(520px, 100%);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 20px;
+}
+
+.auth-dialog h2,
+.admin-dialog h2,
+.admin-users h3 {
+  margin: 0;
+}
+
+.admin-dialog {
+  width: min(860px, 100%);
+  max-height: min(760px, calc(100vh - 36px));
+  overflow: auto;
+}
+
+.profile-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.profile-list div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 0;
+}
+
+.profile-list dt {
+  color: var(--text-muted);
+}
+
+.profile-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.announcement-form {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  padding: 12px;
+}
+
+.announcement-form button,
+.auth-dialog button[type="submit"] {
+  justify-content: center;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.admin-users {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-users table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.admin-users th,
+.admin-users td {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 8px;
+  text-align: left;
+}
+
+.admin-users th {
+  color: var(--text-muted);
+  font-weight: 650;
 }
 
 .dialog-actions {
