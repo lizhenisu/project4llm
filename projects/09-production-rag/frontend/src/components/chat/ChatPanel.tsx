@@ -1,5 +1,5 @@
 import { ArrowRight, Bot, Copy, MoreVertical, ThumbsDown, ThumbsUp } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
@@ -29,12 +29,37 @@ export function ChatPanel({
 }: Props) {
   const [draft, setDraft] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [inputHeight, setInputHeight] = useState(46);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const canSend = draft.trim().length > 0 && selectedSources.length > 0 && !busy;
 
   function submit() {
     if (!canSend) return;
     onAsk(draft.trim());
     setDraft("");
+  }
+
+  function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    const target = event.currentTarget;
+    const startY = event.clientY;
+    const startHeight = textareaRef.current?.getBoundingClientRect().height || inputHeight;
+    target.setPointerCapture(event.pointerId);
+
+    function onPointerMove(e: PointerEvent) {
+      const deltaY = startY - e.clientY; // Dragging UP means smaller Y, positive delta
+      setInputHeight(Math.max(46, Math.min(600, startHeight + deltaY)));
+    }
+
+    function onPointerUp(e: PointerEvent) {
+      target.releasePointerCapture(e.pointerId);
+      target.removeEventListener("pointermove", onPointerMove);
+      target.removeEventListener("pointerup", onPointerUp);
+      document.body.style.cursor = "";
+    }
+
+    document.body.style.cursor = "row-resize";
+    target.addEventListener("pointermove", onPointerMove);
+    target.addEventListener("pointerup", onPointerUp);
   }
 
   return (
@@ -101,11 +126,17 @@ export function ChatPanel({
           </div>
         )}
       </div>
-      <div className="chat-input">
+      <div className="chat-input" style={{ position: "relative" }}>
+        <div
+          className="chat-input-resizer"
+          onPointerDown={handlePointerDown}
+        />
         <textarea
+          ref={textareaRef}
           value={draft}
           placeholder={selectedSources.length ? "提问或创作内容" : "请先添加并选择来源"}
           onChange={(event) => setDraft(event.target.value)}
+          style={{ minHeight: `${inputHeight}px`, maxHeight: '600px' }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();

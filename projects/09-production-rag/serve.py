@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from dataclasses import replace
 from typing import Any
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
@@ -12,6 +14,7 @@ from rag_core.artifacts import (
     delete_artifact,
     list_artifacts,
     load_artifact,
+    save_artifact,
 )
 from rag_core.auth import build_auth_context, validate_bearer_token
 from rag_core.config import load_config
@@ -163,6 +166,16 @@ class ArtifactListResponse(BaseModel):
 class DeleteArtifactResponse(BaseModel):
     status: str
     artifact_id: str
+
+
+class RenameArtifactRequest(BaseModel):
+    title: str
+
+
+class RenameArtifactResponse(BaseModel):
+    status: str
+    artifact_id: str
+    title: str
 
 
 class ConversationMessageRequest(BaseModel):
@@ -671,6 +684,41 @@ def create_app():
         return DeleteArtifactResponse(
             status="deleted" if removed else "not_found",
             artifact_id=artifact_id,
+        )
+
+    @app.patch("/artifacts/{artifact_id}", response_model=RenameArtifactResponse)
+    def rename_artifact(
+        artifact_id: str,
+        request: RenameArtifactRequest,
+        tenant_id: str = "team_a",
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> RenameArtifactResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=tenant_id,
+            acl_groups=[],
+        )
+        artifact = load_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+
+        updated_artifact = replace(
+            artifact,
+            title=request.title,
+            updated_at=int(time.time() * 1000)
+        )
+        save_artifact(config, updated_artifact)
+
+        return RenameArtifactResponse(
+            status="renamed",
+            artifact_id=artifact_id,
+            title=updated_artifact.title,
         )
 
     return app

@@ -49,3 +49,22 @@ svg {
 ::selection {
   background: var(--accent-soft);
 }
+
+/* Custom Scrollbar for a lighter, fresher look */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgb(221, 225, 235);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(200, 205, 215, 0.8);
+}

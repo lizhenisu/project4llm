@@ -11,7 +11,7 @@
   justify-content: space-between;
   gap: 16px;
   border-bottom: 1px solid var(--line);
-  background: rgb(255 255 255 / 82%);
+  background: transparent;
   padding: 0 18px;
   backdrop-filter: blur(14px);
 }
@@ -97,14 +97,21 @@
   place-items: center;
   width: 34px;
   height: 34px;
-  border: 1px solid var(--line);
+  border: none;
   border-radius: var(--radius);
-  background: var(--surface);
+  background: transparent;
   transition:
     transform 160ms ease,
-    border-color 160ms ease,
-    background-color 160ms ease,
-    box-shadow 160ms ease;
+    background-color 160ms ease;
+}
+
+.icon-button:hover:not(:disabled),
+.row-icon:hover:not(:disabled),
+.close-button:hover:not(:disabled),
+.canvas-tools button:hover:not(:disabled),
+.message-actions button:hover:not(:disabled),
+.breadcrumb button:hover:not(:disabled) {
+  background-color: var(--surface-hover, rgba(0, 0, 0, 0.05));
 }
 
 .message-actions button:first-child,
@@ -121,7 +128,7 @@
 
 .workspace-grid {
   display: grid;
-  gap: 12px;
+  gap: 0;
   min-height: 0;
   padding: 12px;
   transition: grid-template-columns 260ms ease;
@@ -135,30 +142,19 @@
   position: relative;
   min-width: 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 0;
   background: transparent;
-  cursor: col-resize;
+  cursor: col-resize !important;
   touch-action: none;
 }
 
-.panel-resizer::before {
-  position: absolute;
-  inset: 14px 3px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--line) 80%, transparent);
-  content: "";
-  transition:
-    background-color 160ms ease,
-    transform 160ms ease,
-    box-shadow 160ms ease;
+.panel-resizer:hover,
+.panel-resizer:active {
+  transform: none !important;
 }
 
-.panel-resizer:hover::before,
-.panel-resizer:focus-visible::before,
-.is-resizing-panels .panel-resizer::before {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-  transform: scaleX(1.35);
+.panel-resizer::before {
+  display: none;
 }
 
 .panel {
@@ -176,6 +172,7 @@
 
 .panel:hover {
   border-color: var(--line-strong);
+  box-shadow: var(--shadow-sm);
 }
 
 .source-panel,
@@ -743,14 +740,25 @@ button:not(:disabled):active {
   box-shadow: 0 0 0 3px var(--accent-soft), 0 12px 28px rgb(15 23 42 / 7%);
 }
 
+.chat-input-resizer {
+  position: absolute;
+  top: -6px;
+  left: 0;
+  right: 0;
+  height: 12px;
+  cursor: row-resize;
+  z-index: 10;
+  background: transparent;
+}
+
 .chat-input textarea {
   min-height: 46px;
-  max-height: 180px;
+  max-height: none;
   border: 0;
   background: transparent;
   padding: 9px 0;
   line-height: 1.5;
-  resize: vertical;
+  resize: none;
 }
 
 .chat-input span {
@@ -811,12 +819,12 @@ button:not(:disabled):active {
   display: grid;
   align-content: start;
   gap: 8px;
-  padding: 0 14px 14px;
+  padding: 4px 14px 14px;
 }
 
 .artifact-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   min-height: 58px;
@@ -1168,4 +1176,8 @@ button:not(:disabled):active {
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+.dropdown-menu button:hover {
+  background: var(--surface-muted) !important;
 }

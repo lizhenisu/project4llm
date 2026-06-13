@@ -10,6 +10,8 @@ import {
   createMindMap,
   deleteConversation,
   deleteSource,
+  deleteArtifact,
+  renameArtifact,
   getConversation,
   getSourceContent,
   health,
@@ -304,6 +306,43 @@ export function WorkspacePage() {
     }
   }
 
+  async function handleRenameArtifact(artifact: MindMapArtifact, newTitle: string) {
+    if (!newTitle.trim() || newTitle === artifact.title) return;
+    try {
+      await renameArtifact(settings, artifact.id, newTitle);
+      setArtifacts((items) => items.map((item) => (item.id === artifact.id ? { ...item, title: newTitle } : item)));
+      if (activeArtifact?.id === artifact.id) {
+        setActiveArtifact({ ...activeArtifact, title: newTitle });
+      }
+    } catch (error) {
+      console.error("Rename failed:", error);
+    }
+  }
+
+
+  async function handleRenameSource(source: SourceItem, newTitle: string) {
+    if (!newTitle.trim() || newTitle === source.title) return;
+    try {
+      // Mocking the backend call for now since there's no rename_source endpoint.
+      // Update local state directly so the UI responds correctly.
+      setSources((items) => items.map((item) => (item.doc_id === source.doc_id ? { ...item, title: newTitle } : item)));
+    } catch (error) {
+      console.error("Rename source failed:", error);
+    }
+  }
+
+  async function handleDeleteArtifact(artifact: MindMapArtifact) {
+    try {
+      await deleteArtifact(settings, artifact.id);
+      setArtifacts((items) => items.filter((item) => item.id !== artifact.id));
+      if (activeArtifact?.id === artifact.id) {
+        setActiveArtifact(null);
+      }
+    } catch (error) {
+      console.error("Delete failed:", error);
+    }
+  }
+
   return (
     <div className="workspace-shell">
       <header className="topbar">
@@ -332,6 +371,7 @@ export function WorkspacePage() {
           onSourcesChange={setSources}
           onUpload={handleUpload}
           onDeleteSource={handleDeleteSource}
+          onRenameSource={handleRenameSource}
           onOpenSource={handleOpenSource}
           activeContent={activeSourceContent}
           contentLoading={sourceContentLoading}
@@ -362,10 +402,14 @@ export function WorkspacePage() {
         />
         <StudioPanel
           artifacts={artifacts}
+          sources={sources}
           selectedSources={selectedSources}
           activeArtifact={activeArtifact}
           onCreateMindMap={handleCreateMindMap}
           onOpenArtifact={openArtifact}
+          onRenameArtifact={handleRenameArtifact}
+          onDeleteArtifact={handleDeleteArtifact}
+          onOpenSource={handleOpenSource}
           onBack={backToStudioList}
         />
       </main>

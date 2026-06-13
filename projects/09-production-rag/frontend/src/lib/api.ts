@@ -220,6 +220,28 @@ function normalizeConversation(conversation: ApiConversation): Conversation {
   };
 }
 
+export async function deleteArtifact(
+  settings: Settings,
+  artifactId: string,
+): Promise<{ status: string; artifact_id: string }> {
+  return request(`/artifacts/${artifactId}?tenant_id=${encodeURIComponent(settings.tenantId)}`, {
+    method: "DELETE",
+    settings,
+  });
+}
+
+export async function renameArtifact(
+  settings: Settings,
+  artifactId: string,
+  title: string,
+): Promise<{ status: string; artifact_id: string; title: string }> {
+  return request(`/artifacts/${artifactId}?tenant_id=${encodeURIComponent(settings.tenantId)}`, {
+    method: "PATCH",
+    settings,
+    json: { title },
+  });
+}
+
 export async function listArtifacts(settings: Settings): Promise<MindMapArtifact[]> {
   const payload = await request<{ artifacts: MindMapArtifact[] }>(
     `/artifacts?tenant_id=${encodeURIComponent(settings.tenantId)}`,
