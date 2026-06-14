@@ -68,8 +68,8 @@ class SourceContent:
     doc_version: int
     child_doc_ids: list[str]
     guide: str
-    suggested_title: str = ""
     tags: list[str]
+    suggested_title: str = ""
     text: str
 
 
