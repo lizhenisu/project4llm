@@ -39,6 +39,7 @@ export type Citation = {
   rerank_score?: number | null;
   acl_groups: string[];
   metadata: Record<string, unknown>;
+  text?: string;
   text_preview?: string;
 };
 

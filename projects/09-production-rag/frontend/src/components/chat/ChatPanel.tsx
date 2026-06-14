@@ -299,7 +299,7 @@ function Citations({ message }: { message: ChatMessage }) {
           <summary>
             {index + 1}. {formatCitationSummary(citation)}
           </summary>
-          <p>{citation.text_preview || citation.source_uri}</p>
+          <p>{citation.text || citation.text_preview || citation.source_uri}</p>
         </details>
       ))}
     </div>

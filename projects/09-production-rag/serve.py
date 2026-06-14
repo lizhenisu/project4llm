@@ -93,6 +93,7 @@ class HitResponse(BaseModel):
     rerank_score: float | None = None
     acl_groups: list[str]
     metadata: dict[str, Any] = Field(default_factory=dict)
+    text: str = ""
     text_preview: str = ""
 
 
@@ -1296,6 +1297,7 @@ def hit_to_response(hit) -> HitResponse:
         rerank_score=hit.rerank_score,
         acl_groups=hit.acl_groups,
         metadata=hit.metadata,
+        text=hit.text,
         text_preview=hit.text[:360],
     )
 

@@ -1406,6 +1406,7 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
             rerank_score: 0.8,
             acl_groups: ["engineering"],
             metadata: { page_no: 1, page_start: 1, page_end: 1 },
+            text: "实践案例证据片段第一句。这里是完整 chunk 的中段内容。这里是完整 chunk 的末尾内容。",
             text_preview: "实践案例证据片段",
           },
         ],
@@ -1432,6 +1433,8 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
   await expect(page.getByText(finalMarker)).toBeHidden();
   await expect(page.getByText(finalMarker)).toBeVisible({ timeout: 5000 });
   await expect(page.getByText("1. 自然辩证法.pdf · 第 1 页 · 重排分数 0.800")).toBeVisible();
+  await page.getByText("1. 自然辩证法.pdf · 第 1 页 · 重排分数 0.800").click();
+  await expect(page.getByText("这里是完整 chunk 的末尾内容。")).toBeVisible();
   await expect(page.getByText("chunk 0")).toBeHidden();
 
   const chatBox = await page.locator(".chat-panel").boundingBox();
