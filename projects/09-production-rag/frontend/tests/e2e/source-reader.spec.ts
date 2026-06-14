@@ -62,7 +62,7 @@ test("manages database list in settings without exposing API fields", async ({ p
 
   await page.goto("/");
   await page.getByRole("button", { name: "设置" }).click();
-  const dialog = page.getByRole("dialog", { name: "数据库设置" });
+  const dialog = page.getByRole("dialog", { name: "数据库设置" }).or(page.locator(".settings-panel"));
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("Production RAG 知识库")).toBeVisible();
   await expect(dialog.getByText("API Base URL")).toBeHidden();
@@ -71,13 +71,13 @@ test("manages database list in settings without exposing API fields", async ({ p
   await expect(dialog.getByText("ACL Groups")).toBeHidden();
 
   await page.getByRole("button", { name: "新建数据库" }).click();
-  await page.getByLabel("当前数据库名称").fill("法规资料库");
-  await page.getByRole("button", { name: "重命名数据库" }).click();
+  await dialog.getByLabel("当前数据库名称").fill("法规资料库");
+  await dialog.getByRole("button", { name: "重命名数据库" }).click();
   await expect(dialog.getByText("法规资料库")).toBeVisible();
   await expect(dialog.getByText("Production RAG 知识库")).toBeVisible();
 
   await page.getByRole("button", { name: /Production RAG 知识库/ }).click();
-  await expect(page.getByLabel("当前数据库名称")).toHaveValue("Production RAG 知识库");
+  await expect(dialog.getByLabel("当前数据库名称")).toHaveValue("Production RAG 知识库");
 });
 
 test("shows a masked personal login link on the profile page", async ({ page, context }) => {

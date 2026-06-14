@@ -1375,7 +1375,6 @@ button:not(:disabled):active {
   margin-top: 4px;
 }
 
-.settings-dialog {
 .settings-panel {
   display: grid;
   gap: 14px;
@@ -1454,7 +1453,6 @@ button:not(:disabled):active {
   z-index: 90;
 }
 
-.database-list button {
 .database-list {
   display: grid;
   gap: 8px;
