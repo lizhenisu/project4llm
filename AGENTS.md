@@ -83,6 +83,41 @@ source .venv/bin/activate
 uv pip check
 ```
 
+## Production RAG Development Workflow
+
+For `projects/09-production-rag`, avoid rebuilding Docker containers for every frontend change.
+
+During normal frontend development, keep the backend containers running and use the Vite dev server for hot reload:
+
+```bash
+cd projects/09-production-rag
+docker compose up -d rag-api
+
+cd frontend
+npm run dev -- --host 0.0.0.0
+```
+
+Open the development UI at:
+
+```text
+http://localhost:5173/
+```
+
+The Vite dev server proxies `/api/*` to the containerized backend at `http://127.0.0.1:8008`, so frontend changes under `projects/09-production-rag/frontend/src/` should be visible immediately in the browser without rebuilding `rag-web`.
+
+Only rebuild containers when validating production packaging, Dockerfile changes, nginx config changes, backend dependency/image changes, or before a final production-like check:
+
+```bash
+cd projects/09-production-rag
+docker compose up -d --build rag-api rag-web
+```
+
+The production-style UI remains:
+
+```text
+http://localhost:8080/
+```
+
 ## Milvus Lite Note
 
 `projects/07-milvus-rag/milvus_lite_rag_demo.py` starts a local Milvus Lite server and binds a local gRPC port. In sandboxed environments this may require elevated permission to bind `127.0.0.1`.

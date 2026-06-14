@@ -50,11 +50,12 @@ test("hides database create/rename controls when not authenticated", async ({ pa
 
   await page.goto("/");
   await page.getByRole("button", { name: "设置" }).click();
-  const dialog = page.getByRole("dialog", { name: "数据库设置" });
+  const dialog = page.getByRole("dialog", { name: "知识库设置" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("登录后可创建与重命名数据库。")).toBeVisible();
+  await expect(dialog.getByText("登录后可创建、切换与管理数据库。")).toBeVisible();
   await expect(dialog.getByRole("button", { name: "新建数据库" })).toBeHidden();
   await expect(dialog.getByText("当前数据库名称")).toBeHidden();
+  await expect(dialog.getByRole("button", { name: "重命名数据库" })).toBeHidden();
 });
 
 test("manages database list in settings without exposing API fields", async ({ page }) => {
@@ -62,8 +63,9 @@ test("manages database list in settings without exposing API fields", async ({ p
 
   await page.goto("/");
   await page.getByRole("button", { name: "设置" }).click();
-  const dialog = page.getByRole("dialog", { name: "数据库设置" }).or(page.locator(".settings-panel"));
+  const dialog = page.getByRole("dialog", { name: "知识库设置" }).or(page.locator(".settings-panel"));
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "知识库设置" })).toBeVisible();
   await expect(dialog.getByText("Production RAG 知识库")).toBeVisible();
   await expect(dialog.getByText("API Base URL")).toBeHidden();
   await expect(dialog.getByText("Token")).toBeHidden();
@@ -71,13 +73,154 @@ test("manages database list in settings without exposing API fields", async ({ p
   await expect(dialog.getByText("ACL Groups")).toBeHidden();
 
   await page.getByRole("button", { name: "新建数据库" }).click();
-  await dialog.getByLabel("当前数据库名称").fill("法规资料库");
-  await dialog.getByRole("button", { name: "重命名数据库" }).click();
+  await dialog.locator(".database-list-item.active .icon-button").click();
+  await expect(page.getByRole("menuitem", { name: /重命名知识\s*库/ })).toBeVisible();
+  await dialog.locator(".settings-section-heading strong", { hasText: "知识库工作区" }).click();
+  await expect(page.getByRole("menuitem", { name: /重命名知识\s*库/ })).toBeHidden();
+  await dialog.locator(".database-list-item.active .icon-button").click();
+  await page.getByRole("menuitem", { name: /重命名知识\s*库/ }).click();
+  await dialog.locator(".database-list-item.active .inline-title-input").fill("法规资料库");
+  await dialog.locator(".database-list-item.active .inline-title-input").press("Enter");
   await expect(dialog.getByText("法规资料库")).toBeVisible();
   await expect(dialog.getByText("Production RAG 知识库")).toBeVisible();
+  await expect(dialog.getByText("当前数据库名称")).toBeHidden();
+  await expect(dialog.getByRole("button", { name: "重命名数据库" })).toBeHidden();
 
   await page.getByRole("button", { name: /Production RAG 知识库/ }).click();
-  await expect(dialog.getByLabel("当前数据库名称")).toHaveValue("Production RAG 知识库");
+  await expect(dialog.locator(".database-list-item.active")).toContainText("Production RAG 知识库");
+});
+
+test("allows deleting the only database and creates a fresh default database", async ({ page }) => {
+  let sourceRows = [
+    {
+      doc_id: "old-source",
+      title: "已看12345.txt",
+      source_type: "txt",
+      source_uri: "/uploads/old-source.txt",
+      doc_version: 1,
+      chunk_count: 1,
+      acl_groups: ["engineering"],
+      status: "ready",
+      current: true,
+      child_doc_ids: [],
+    },
+  ];
+  let artifactRows = [
+    {
+      id: "old-artifact",
+      title: "历史思维导图",
+      status: "ready",
+      tenant_id: "team_a",
+      source_doc_ids: ["old-source"],
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      root: { id: "root", label: "历史思维导图", children: [] },
+    },
+  ];
+  let conversationRows = [
+    {
+      id: "old-conversation",
+      tenant_id: "team_a",
+      title: "历史对话",
+      message_count: 2,
+      source_doc_ids: ["old-source"],
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    },
+  ];
+  let sourceDeletes = 0;
+  let artifactDeletes = 0;
+  let conversationDeletes = 0;
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({
+      json: {
+        sources: sourceRows,
+      },
+    });
+  });
+  await page.route("**/sources/old-source?**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      sourceDeletes += 1;
+      sourceRows = [];
+      await route.fulfill({ json: { status: "deleted" } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({
+      json: {
+        artifacts: artifactRows,
+      },
+    });
+  });
+  await page.route("**/artifacts/old-artifact?**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      artifactDeletes += 1;
+      artifactRows = [];
+      await route.fulfill({ json: { status: "deleted", artifact_id: "old-artifact" } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({
+      json: {
+        conversations: conversationRows,
+      },
+    });
+  });
+  await page.route("**/conversations/old-conversation?**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      conversationDeletes += 1;
+      conversationRows = [];
+      await route.fulfill({ json: { status: "deleted", conversation_id: "old-conversation" } });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        id: "old-conversation",
+        tenant_id: "team_a",
+        title: "历史对话",
+        source_doc_ids: ["old-source"],
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        messages: [
+          { id: "msg-1", role: "user", content: "历史问题", status: "done", citations: [] },
+          { id: "msg-2", role: "assistant", content: "历史回答", status: "done", citations: [] },
+        ],
+      },
+    });
+  });
+  await page.route("**/announcements?**", async (route) => {
+    await route.fulfill({ json: { announcements: [] } });
+  });
+
+  await page.goto("/");
+  await expect(page.locator(".source-row", { hasText: "已看12345.txt" })).toBeVisible();
+  await expect(page.getByText("历史思维导图")).toBeVisible();
+  await expect(page.getByText("历史回答")).toBeVisible();
+  await page.getByRole("button", { name: "设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "知识库设置" });
+  await expect(dialog.locator(".database-list-item")).toHaveCount(1);
+  await dialog.locator(".database-list-item.active .icon-button").click();
+  await page.getByRole("menuitem", { name: "删除知识库" }).click();
+
+  await expect(dialog.locator(".database-list-item")).toHaveCount(1);
+  await expect(dialog.locator(".database-list-item.active")).toContainText("未命名知识库");
+  await expect(dialog.locator(".database-list-item.active")).toContainText("当前数据库");
+  await expect.poll(() => sourceDeletes).toBe(1);
+  await expect.poll(() => artifactDeletes).toBe(1);
+  await expect.poll(() => conversationDeletes).toBe(1);
+
+  await page.reload();
+  await expect(page.locator(".source-row", { hasText: "已看12345.txt" })).toHaveCount(0);
+  await expect(page.getByText("历史思维导图")).toHaveCount(0);
+  await expect(page.getByText("历史回答")).toHaveCount(0);
 });
 
 test("shows a masked personal login link on the profile page", async ({ page, context }) => {
@@ -549,6 +692,18 @@ test("removes the upload processing row after the parsed source is ready", async
             ? []
             : [
                 {
+                  doc_id: "upload-task",
+                  title: "重复解析.pdf",
+                  source_type: "pdf",
+                  source_uri: "/uploads/upload-task.pdf",
+                  doc_version: 1,
+                  chunk_count: 0,
+                  acl_groups: ["engineering"],
+                  status: "processing",
+                  current: false,
+                  child_doc_ids: [],
+                },
+                {
                   doc_id: "parsed-upload",
                   title: "重复解析.pdf",
                   source_type: "pdf",
@@ -658,7 +813,7 @@ test("renames a source from the row menu and persists the new title", async ({ p
   await expect(page.locator(".source-row", { hasText: "自然辩证法.pdf" })).toHaveCount(0);
 });
 
-test("deletes only the selected version when duplicate source titles exist", async ({ page }) => {
+test("shows only the current source version and deletes the whole source", async ({ page }) => {
   let sources = [
     {
       doc_id: "duplicate-source",
@@ -669,7 +824,7 @@ test("deletes only the selected version when duplicate source titles exist", asy
       chunk_count: 4,
       acl_groups: ["engineering"],
       status: "ready",
-      current: true,
+      current: false,
       child_doc_ids: ["duplicate-source/page-1"],
     },
     {
@@ -694,8 +849,8 @@ test("deletes only the selected version when duplicate source titles exist", asy
   await page.route("**/sources/duplicate-source?**", async (route) => {
     if (route.request().method() === "DELETE") {
       const url = new URL(route.request().url());
-      const deletedVersion = Number(url.searchParams.get("doc_version"));
-      sources = sources.filter((source) => source.doc_version !== deletedVersion);
+      expect(url.searchParams.get("doc_version")).toBeNull();
+      sources = [];
       await route.fulfill({ json: { status: "deleted" } });
       return;
     }
@@ -709,12 +864,12 @@ test("deletes only the selected version when duplicate source titles exist", asy
   });
 
   await page.goto("/");
-  await expect(page.locator(".source-row", { hasText: "深大_创维 AI 研究院实习介绍资料(1).pdf" })).toHaveCount(2);
+  await expect(page.locator(".source-row", { hasText: "深大_创维 AI 研究院实习介绍资料(1).pdf" })).toHaveCount(1);
   await page.locator(".source-row", { hasText: "深大_创维 AI 研究院实习介绍资料(1).pdf" }).first().locator(".row-icon-more").click();
   await page.getByRole("button", { name: "移除" }).click();
   await page.getByRole("button", { name: "确认移除" }).click();
 
-  await expect(page.locator(".source-row", { hasText: "深大_创维 AI 研究院实习介绍资料(1).pdf" })).toHaveCount(1);
+  await expect(page.locator(".source-row", { hasText: "深大_创维 AI 研究院实习介绍资料(1).pdf" })).toHaveCount(0);
 });
 
 test("does not keep unrelated transient sources after upload polling completes", async ({ page }) => {
@@ -813,7 +968,7 @@ test("does not keep unrelated transient sources after upload polling completes",
   await expect(page.locator(".source-row.status-processing", { hasText: "自然辩证法.pdf" })).toHaveCount(0);
 });
 
-test("keeps duplicate filename versions stable while uploading another copy", async ({ page }) => {
+test("replaces the visible current version while uploading another copy", async ({ page }) => {
   let sourcesPolls = 0;
   const existingSources = [1, 2, 3].map((version) => ({
     doc_id: "自然辩证法",
@@ -899,7 +1054,7 @@ test("keeps duplicate filename versions stable while uploading another copy", as
   });
 
   await page.goto("/");
-  await expect(page.locator(".source-row", { hasText: "自然辩证法.pdf" })).toHaveCount(3);
+  await expect(page.locator(".source-row", { hasText: "自然辩证法.pdf" })).toHaveCount(1);
 
   await page.getByRole("button", { name: "添加来源" }).click();
   await page.locator('input[type="file"]').setInputFiles({
@@ -909,8 +1064,8 @@ test("keeps duplicate filename versions stable while uploading another copy", as
   });
 
   await expect(page.locator(".source-row.status-processing", { hasText: "自然辩证法.pdf" })).toHaveCount(1);
-  await expect(page.locator(".source-row", { hasText: "自然辩证法.pdf" })).toHaveCount(4);
-  await expect(page.locator(".source-row.status-ready", { hasText: "自然辩证法.pdf" })).toHaveCount(4, {
+  await expect(page.locator(".source-row", { hasText: "自然辩证法.pdf" })).toHaveCount(2);
+  await expect(page.locator(".source-row.status-ready", { hasText: "自然辩证法.pdf" })).toHaveCount(1, {
     timeout: 7_000,
   });
   await expect(page.locator(".source-row.status-processing", { hasText: "自然辩证法.pdf" })).toHaveCount(0);

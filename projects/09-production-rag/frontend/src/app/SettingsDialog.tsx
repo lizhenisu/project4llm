@@ -1,23 +1,22 @@
 import { useEffect, useState } from "react";
-import { MoreHorizontal, PencilLine, Trash2, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Database, MoreHorizontal, PencilLine, Plus, Trash2, X } from "lucide-react";
 import type { WorkspaceRecord } from "../lib/types";
 
 type Props = {
   open: boolean;
-  workspaceName: string;
   workspaces: WorkspaceRecord[];
   activeWorkspaceId: string;
   authenticated: boolean;
   onClose: () => void;
   onNewWorkspace: () => void;
   onRenameWorkspace: (id: string, name: string) => void;
-  onDeleteWorkspace: (id: string) => void;
+  onDeleteWorkspace: (id: string) => void | Promise<void>;
   onSelectWorkspace: (id: string) => void;
 };
 
 export function SettingsDialog({
   open,
-  workspaceName,
   workspaces,
   activeWorkspaceId,
   authenticated,
@@ -27,14 +26,24 @@ export function SettingsDialog({
   onDeleteWorkspace,
   onSelectWorkspace,
 }: Props) {
-  const [nameDraft, setNameDraft] = useState(workspaceName);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ top: number; right: number } | null>(null);
 
   useEffect(() => {
-    setNameDraft(workspaceName);
-  }, [workspaceName]);
+    if (!openMenuId) return;
+    function handleOutsideMenuClick(event: MouseEvent) {
+      const target = event.target as HTMLElement;
+      if (target.closest(".settings-db-menu") || target.closest(".settings-db-menu-trigger")) {
+        return;
+      }
+      setOpenMenuId(null);
+      setMenuPosition(null);
+    }
+    document.addEventListener("mousedown", handleOutsideMenuClick);
+    return () => document.removeEventListener("mousedown", handleOutsideMenuClick);
+  }, [openMenuId]);
 
   if (!open) return null;
 
@@ -46,38 +55,46 @@ export function SettingsDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-dialog-title"
-        aria-label="数据库设置"
+        aria-label="知识库设置"
       >
         <div className="settings-panel-header">
-        <h2 id="settings-dialog-title">数据库设置</h2>
+          <div>
+            <h2 id="settings-dialog-title">知识库设置</h2>
+            <p>管理当前账号可用的知识库工作区。</p>
+          </div>
           <button type="button" className="icon-button" aria-label="关闭设置" onClick={onClose}>
             <X size={18} />
           </button>
         </div>
         <section className="settings-section">
-          <div>
-            <strong>知识库工作区</strong>
-            <p>选择当前使用的数据库，或创建新的数据库入口。</p>
+          <div className="settings-section-heading">
+            <div className="settings-section-icon">
+              <Database size={18} />
+            </div>
+            <div>
+              <strong>知识库工作区</strong>
+              <p>选择当前使用的数据库，或通过行内菜单重命名与删除。</p>
+            </div>
           </div>
           <div className="database-list" aria-label="数据库列表" onMouseDown={(event) => event.stopPropagation()}>
             {workspaces.length === 0 ? (
               <p className="muted-text">暂无数据库，登录后可新建。</p>
             ) : (
               workspaces.map((workspace) => {
-              const active = workspace.id === activeWorkspaceId;
+                const active = workspace.id === activeWorkspaceId;
                 const isRenaming = renamingId === workspace.id;
-              return (
+                return (
                   <div
-                  key={workspace.id}
-                    className={`database-list-item ${active ? "active" : ""}`}
+                    key={workspace.id}
+                    className={`database-list-item ${active ? "active" : ""}${isRenaming ? " is-editing" : ""}`}
                   >
                     <button
-                  type="button"
+                      type="button"
                       className="database-item-trigger"
-                  aria-pressed={active}
-                  onClick={() => onSelectWorkspace(workspace.id)}
-                >
-                      <span>
+                      aria-pressed={active}
+                      onClick={() => onSelectWorkspace(workspace.id)}
+                    >
+                      <span className={`database-name${isRenaming ? " is-editing" : ""}`}>
                         {isRenaming ? (
                           <input
                             className="inline-title-input"
@@ -104,27 +121,44 @@ export function SettingsDialog({
                           />
                         ) : (
                           workspace.name
-                      )}
+                        )}
                       </span>
                       <span className="current-label">
                         {active ? "当前数据库" : "点击切换"}
                       </span>
-                </button>
+                    </button>
                     {authenticated && !isRenaming ? (
                       <div className="db-item-menu">
                         <button
                           type="button"
-                          className="icon-button"
+                          className="icon-button settings-db-menu-trigger"
                           aria-label="更多操作"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setOpenMenuId(openMenuId === workspace.id ? null : workspace.id);
+                            if (openMenuId === workspace.id) {
+                              setOpenMenuId(null);
+                              setMenuPosition(null);
+                              return;
+                            }
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setMenuPosition({
+                              top: rect.bottom + 4,
+                              right: document.documentElement.clientWidth - rect.right,
+                            });
+                            setOpenMenuId(workspace.id);
                           }}
                         >
                           <MoreHorizontal size={14} />
                         </button>
-                        {openMenuId === workspace.id ? (
-                          <div className="dropdown-menu" role="menu">
+                        {openMenuId === workspace.id && menuPosition ? createPortal(
+                          <>
+                          <div className="dropdown-backdrop" onMouseDown={() => setOpenMenuId(null)} />
+                          <div
+                            className="dropdown-menu settings-db-menu"
+                            role="menu"
+                            style={{ top: menuPosition.top, right: menuPosition.right }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                          >
                             <button
                               type="button"
                               role="menuitem"
@@ -136,7 +170,7 @@ export function SettingsDialog({
                               }}
                             >
                               <PencilLine size={14} />
-                             重命名知识库
+                              重命名知识库
                             </button>
                             <button
                               type="button"
@@ -145,46 +179,32 @@ export function SettingsDialog({
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setOpenMenuId(null);
-                                onDeleteWorkspace(workspace.id);
+                                void onDeleteWorkspace(workspace.id);
                               }}
                             >
                               <Trash2 size={14} />
                               删除知识库
                             </button>
                           </div>
+                          </>,
+                          document.body,
                         ) : null}
                       </div>
                     ) : null}
                   </div>
-              );
+                );
               })
-            )}
-            {openMenuId && (
-              <div className="dropdown-backdrop" onMouseDown={() => setOpenMenuId(null)} />
             )}
           </div>
           {authenticated ? (
-            <>
-              <label>
-                当前数据库名称
-                <input value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} />
-              </label>
-              <div className="dialog-actions">
-                <button type="button" onClick={onNewWorkspace}>
-                  新建数据库
-                </button>
-                <button
-                  type="button"
-                  className="primary-pill"
-                  onClick={() => onRenameWorkspace(activeWorkspaceId, nameDraft.trim())}
-                  disabled={!nameDraft.trim()}
-                >
-                  重命名数据库
-                </button>
-              </div>
-            </>
+            <div className="settings-panel-actions">
+              <button type="button" className="primary-pill" onClick={onNewWorkspace}>
+                <Plus size={16} />
+                新建数据库
+              </button>
+            </div>
           ) : (
-            <p className="muted-text">登录后可创建与重命名数据库。</p>
+            <p className="muted-text">登录后可创建、切换与管理数据库。</p>
           )}
         </section>
       </aside>

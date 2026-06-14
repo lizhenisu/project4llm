@@ -43,12 +43,17 @@ import {
   createUserWorkspaceRecord,
   defaultSettings,
   deleteWorkspace,
+  hasWorkspaceArtifacts,
+  hasWorkspaceConversations,
+  hasWorkspaceSources,
+  initializeEmptyWorkspaceData,
   loadActiveWorkspaceId,
   loadSettings,
   loadUserWorkspaces,
   loadWorkspaceArtifacts,
   loadWorkspaceConversations,
   loadWorkspaceSources,
+  removeSourcesFromWorkspace,
   saveActiveWorkspaceId,
   saveSettings,
   saveWorkspaceName,
@@ -246,10 +251,12 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       ]);
       if (!isCurrentRefresh()) return;
       const wSources = loadWorkspaceSources(activeWorkspaceId);
-      const visibleRows = wSources.length > 0 ? sourceRows.filter((s) => wSources.includes(s.doc_id)) : sourceRows;
+      const visibleRows = hasWorkspaceSources(activeWorkspaceId)
+        ? filterWorkspaceSources(sourceRowsForList(sourceRows), wSources)
+        : sourceRowsForList(sourceRows);
       setSources((current) => mergeSelectedState(visibleRows, current));
       const wArtifacts = loadWorkspaceArtifacts(activeWorkspaceId);
-      const visibleArtifacts = wArtifacts.length > 0
+      const visibleArtifacts = hasWorkspaceArtifacts(activeWorkspaceId)
         ? artifactRows.filter((a) => wArtifacts.includes(a.id))
         : artifactRows;
       setArtifacts(visibleArtifacts);
@@ -271,10 +278,14 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     }
     const rows = await listConversations(nextSettings);
     if (!isCurrentRefresh()) return;
-    if (conversationId || rows.length === 0 || messages.length > 0) {
+    const workspaceConversations = loadWorkspaceConversations(activeWorkspaceId);
+    const visibleConversations = hasWorkspaceConversations(activeWorkspaceId)
+      ? rows.filter((row) => workspaceConversations.includes(row.id))
+      : rows;
+    if (conversationId || visibleConversations.length === 0 || messages.length > 0) {
       return;
     }
-    const latest = await getConversation(nextSettings, rows[0].id);
+    const latest = await getConversation(nextSettings, visibleConversations[0].id);
     if (!isCurrentRefresh()) return;
     setConversationId(latest.id);
     setConversationTitle(latest.title);
@@ -324,10 +335,12 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       const uploadedIds = uploaded.map((s) => s.doc_id);
       addSourcesToWorkspace(activeWorkspaceId, uploadedIds);
       const readyRows = await waitForSourcesReady(settings, uploaded, sourceKeysBeforeUpload);
+      const resolvedUploads = resolveUploadedSources(readyRows, uploaded, sourceKeysBeforeUpload);
+      if (resolvedUploads.length > 0) {
+        addSourcesToWorkspace(activeWorkspaceId, sourceIdsForWorkspace(resolvedUploads));
+      }
       const wSources = loadWorkspaceSources(activeWorkspaceId);
-      const filteredReady = wSources.length > 0
-        ? readyRows.filter((s) => wSources.includes(s.doc_id))
-        : readyRows;
+      const filteredReady = filterWorkspaceSources(sourceRowsForList(readyRows), wSources);
       setSources((items) => mergeSelectedState(filteredReady, items));
       // Auto-rename workspace if it's still the auto-generated default name
       const currentAutoNamed = activeWorkspace?.auto_named;
@@ -359,12 +372,14 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   async function handleDeleteSource(source: SourceItem) {
     const deletingKey = sourceStateKey(source);
     setSources((items) => items.filter((item) => sourceStateKey(item) !== deletingKey));
+    removeSourcesFromWorkspace(activeWorkspaceId, sourceIdsForWorkspace([source]));
     if (activeSourceContent?.doc_id === source.doc_id && activeSourceContent.doc_version === source.doc_version) {
       setActiveSourceContent(null);
     }
     try {
-      await deleteSource(settings, source.doc_id, source.doc_version);
+      await deleteSource(settings, source.doc_id);
     } catch (error) {
+      addSourcesToWorkspace(activeWorkspaceId, sourceIdsForWorkspace([source]));
       setSources((items) => [
         { ...source, status: "failed", error: error instanceof Error ? error.message : "删除失败" },
         ...items,
@@ -545,6 +560,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     });
     setConversationId(saved.id);
     setConversationTitle(saved.title);
+    addConversationToWorkspace(activeWorkspaceId, saved.id);
     return saved;
   }
 
@@ -624,6 +640,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     try {
       const artifact = await createMindMap(settings, title, sourceDocIds);
       trackedArtifactId = artifact.id;
+      addArtifactToWorkspace(activeWorkspaceId, artifact.id);
       setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
       const readyArtifact = await waitForArtifact(settings, artifact.id);
       setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
@@ -661,6 +678,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     try {
       const artifact = await createDataTable(settings, title, sourceDocIds);
       trackedArtifactId = artifact.id;
+      addArtifactToWorkspace(activeWorkspaceId, artifact.id);
       setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
       const readyArtifact = await waitForArtifact(settings, artifact.id);
       setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
@@ -754,6 +772,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       hour: "2-digit",
       minute: "2-digit",
     })}`, auth.user.id);
+    initializeEmptyWorkspaceData(nextWorkspace.id);
     setWorkspaces((items) => [nextWorkspace, ...items]);
     setActiveWorkspaceId(nextWorkspace.id);
     setSources([]);
@@ -799,18 +818,28 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     void refresh(settings);
   }
 
-  function handleDeleteWorkspace(id: string) {
-    if (workspaces.length <= 1) return;
-    const { workspaces: remaining, nextActive } = deleteWorkspace(id, auth.user?.id ?? null);
-    setWorkspaces(remaining);
-    setActiveWorkspaceId(nextActive);
-    setSources([]);
-    setMessages([]);
-    setConversationId(null);
-    setConversationTitle("未命名对话");
-    setArtifacts([]);
-    setActiveArtifact(null);
-    setActiveSourceContent(null);
+  async function handleDeleteWorkspace(id: string) {
+    setBusy(true);
+    setStatus("正在删除知识库数据...");
+    try {
+      await deleteWorkspaceRemoteData(id, settings);
+      const { workspaces: remaining, nextActive } = deleteWorkspace(id, auth.user?.id ?? null);
+      setWorkspaces(remaining);
+      setActiveWorkspaceId(nextActive);
+      setSources([]);
+      setMessages([]);
+      setConversationId(null);
+      setConversationTitle("未命名对话");
+      setArtifacts([]);
+      setActiveArtifact(null);
+      setActiveSourceContent(null);
+      suppressAutoConversationLoadRef.current = true;
+      setStatus("知识库已删除");
+    } catch (error) {
+      setStatus(error instanceof Error ? `删除知识库失败：${error.message}` : "删除知识库失败");
+    } finally {
+      setBusy(false);
+    }
   }
 
   function closeAnnouncement() {
@@ -950,7 +979,6 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       <footer className="statusbar">{status}</footer>
       <SettingsDialog
         open={settingsOpen}
-        workspaceName={workspaceName}
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
         authenticated={isAuthenticated}
@@ -1499,6 +1527,99 @@ async function waitForSourcesReady(
     }
   }
   return listSources(settings);
+}
+
+function resolveUploadedSources(
+  rows: SourceItem[],
+  pendingSources: SourceItem[],
+  sourceKeysBeforeUpload: Set<string>,
+) {
+  const pendingIds = new Set(pendingSources.map((source) => source.doc_id));
+  const pendingUris = new Set(pendingSources.map((source) => source.source_uri));
+  const pendingTitles = new Set(pendingSources.map((source) => source.title));
+  return rows.filter(
+    (source) =>
+      source.status === "ready" &&
+      !pendingIds.has(source.doc_id) &&
+      !sourceKeysBeforeUpload.has(sourceStateKey(source)) &&
+      (pendingUris.has(source.source_uri) || pendingTitles.has(source.title)),
+  );
+}
+
+function sourceRowsForList(rows: SourceItem[]) {
+  const readyByDocId = new Map<string, SourceItem>();
+  for (const source of rows) {
+    if (source.status !== "ready") continue;
+    const previous = readyByDocId.get(source.doc_id);
+    if (!previous || preferSourceRow(source, previous)) {
+      readyByDocId.set(source.doc_id, source);
+    }
+  }
+  const readyRows = [...readyByDocId.values()];
+  const readyTitles = new Set(readyRows.map((source) => source.title));
+  const readyUris = new Set(readyRows.map((source) => source.source_uri));
+  const taskRows = rows.filter(
+    (source) =>
+      source.status !== "ready" &&
+      !readyTitles.has(source.title) &&
+      !readyUris.has(source.source_uri),
+  );
+  return [...taskRows, ...readyRows];
+}
+
+function preferSourceRow(candidate: SourceItem, current: SourceItem) {
+  if (candidate.current !== current.current) {
+    return candidate.current;
+  }
+  if (candidate.doc_version !== current.doc_version) {
+    return candidate.doc_version > current.doc_version;
+  }
+  return (candidate.updated_at || 0) > (current.updated_at || 0);
+}
+
+function filterWorkspaceSources(rows: SourceItem[], workspaceSourceIds: string[]) {
+  if (workspaceSourceIds.length === 0) {
+    return [];
+  }
+  const workspaceIds = new Set(workspaceSourceIds);
+  return rows.filter((source) => sourceMatchesWorkspace(source, workspaceIds));
+}
+
+async function deleteWorkspaceRemoteData(workspaceId: string, settings: Settings) {
+  const [sourceRows, conversationRows, artifactRows] = await Promise.all([
+    listSources(settings),
+    listConversations(settings),
+    listArtifacts(settings),
+  ]);
+  const workspaceSourceIds = loadWorkspaceSources(workspaceId);
+  const sourceRowsToDelete = hasWorkspaceSources(workspaceId)
+    ? filterWorkspaceSources(sourceRowsForList(sourceRows), workspaceSourceIds)
+    : sourceRowsForList(sourceRows);
+  const sourceDocIds = dedupeStrings(sourceRowsToDelete.map((source) => source.doc_id));
+  const conversationIds = hasWorkspaceConversations(workspaceId)
+    ? loadWorkspaceConversations(workspaceId)
+    : conversationRows.map((conversation) => conversation.id);
+  const artifactIds = hasWorkspaceArtifacts(workspaceId)
+    ? loadWorkspaceArtifacts(workspaceId)
+    : artifactRows.map((artifact) => artifact.id);
+
+  await Promise.all([
+    ...sourceDocIds.map((docId) => deleteSource(settings, docId)),
+    ...dedupeStrings(conversationIds).map((conversationId) => deleteConversation(settings, conversationId)),
+    ...dedupeStrings(artifactIds).map((artifactId) => deleteArtifact(settings, artifactId)),
+  ]);
+}
+
+function sourceMatchesWorkspace(source: SourceItem, workspaceIds: Set<string>) {
+  return workspaceIds.has(source.doc_id) || Boolean(source.child_doc_ids?.some((docId) => workspaceIds.has(docId)));
+}
+
+function sourceIdsForWorkspace(sources: SourceItem[]) {
+  return sources.flatMap((source) => [source.doc_id, ...(source.child_doc_ids || [])]);
+}
+
+function dedupeStrings(values: string[]) {
+  return [...new Set(values)];
 }
 
 function mergeSelectedState(next: SourceItem[], current: SourceItem[]) {

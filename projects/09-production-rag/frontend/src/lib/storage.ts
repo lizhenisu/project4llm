@@ -8,6 +8,7 @@ const WORKSPACE_CONVERSATIONS_PREFIX = "production-rag-workspace-conversations";
 const WORKSPACE_ARTIFACTS_PREFIX = "production-rag-workspace-artifacts";
 const ACTIVE_WORKSPACE_PREFIX = "production-rag-active-workspace-id";
 export const DEFAULT_WORKSPACE_NAME = "Production RAG 知识库";
+export const EMPTY_WORKSPACE_NAME = "未命名知识库";
 
 export const defaultSettings: Settings = {
   apiBaseUrl: "/api",
@@ -126,6 +127,10 @@ export function loadWorkspaceSources(workspaceId: string): string[] {
   }
 }
 
+export function hasWorkspaceSources(workspaceId: string) {
+  return localStorage.getItem(`${WORKSPACE_SOURCES_PREFIX}:${workspaceId}`) !== null;
+}
+
 export function saveWorkspaceSources(workspaceId: string, sourceIds: string[]) {
   localStorage.setItem(`${WORKSPACE_SOURCES_PREFIX}:${workspaceId}`, JSON.stringify(sourceIds));
 }
@@ -136,8 +141,19 @@ export function addSourcesToWorkspace(workspaceId: string, newIds: string[]) {
   saveWorkspaceSources(workspaceId, merged);
 }
 
+export function removeSourcesFromWorkspace(workspaceId: string, removedIds: string[]) {
+  if (removedIds.length === 0) return;
+  const removed = new Set(removedIds);
+  const remaining = loadWorkspaceSources(workspaceId).filter((id) => !removed.has(id));
+  saveWorkspaceSources(workspaceId, remaining);
+}
+
 export function loadWorkspaceConversations(workspaceId: string): string[] {
   return loadIdArray(`${WORKSPACE_CONVERSATIONS_PREFIX}:${workspaceId}`);
+}
+
+export function hasWorkspaceConversations(workspaceId: string) {
+  return localStorage.getItem(`${WORKSPACE_CONVERSATIONS_PREFIX}:${workspaceId}`) !== null;
 }
 
 export function addConversationToWorkspace(workspaceId: string, conversationId: string) {
@@ -153,6 +169,10 @@ export function loadWorkspaceArtifacts(workspaceId: string): string[] {
   return loadIdArray(`${WORKSPACE_ARTIFACTS_PREFIX}:${workspaceId}`);
 }
 
+export function hasWorkspaceArtifacts(workspaceId: string) {
+  return localStorage.getItem(`${WORKSPACE_ARTIFACTS_PREFIX}:${workspaceId}`) !== null;
+}
+
 export function addArtifactToWorkspace(workspaceId: string, artifactId: string) {
   const existing = loadWorkspaceArtifacts(workspaceId);
   saveArtifactIds(workspaceId, dedupeIds([...existing, artifactId]));
@@ -163,7 +183,13 @@ function saveArtifactIds(workspaceId: string, ids: string[]) {
 }
 
 export function deleteWorkspace(workspaceId: string, userId: string | null) {
-  const workspaces = loadUserWorkspaces(userId).filter(w => w.id !== workspaceId);
+  let workspaces = loadUserWorkspaces(userId).filter(w => w.id !== workspaceId);
+  if (workspaces.length === 0) {
+    workspaces = [
+      userId ? createUserWorkspaceRecord(EMPTY_WORKSPACE_NAME, userId) : createWorkspaceRecord(EMPTY_WORKSPACE_NAME),
+    ];
+    initializeEmptyWorkspaceData(workspaces[0].id);
+  }
   saveWorkspaces(workspaces, userId);
   const nextActive = loadActiveWorkspaceId(workspaces, userId);
   saveActiveWorkspaceId(nextActive, userId);
@@ -171,6 +197,12 @@ export function deleteWorkspace(workspaceId: string, userId: string | null) {
   localStorage.removeItem(`${WORKSPACE_CONVERSATIONS_PREFIX}:${workspaceId}`);
   localStorage.removeItem(`${WORKSPACE_ARTIFACTS_PREFIX}:${workspaceId}`);
   return { workspaces, nextActive };
+}
+
+export function initializeEmptyWorkspaceData(workspaceId: string) {
+  saveWorkspaceSources(workspaceId, []);
+  saveWorkspaceConversations(workspaceId, []);
+  saveArtifactIds(workspaceId, []);
 }
 
 function loadIdArray(key: string): string[] {

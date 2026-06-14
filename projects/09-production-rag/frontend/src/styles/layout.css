@@ -1378,19 +1378,20 @@ button:not(:disabled):active {
 .settings-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 22;
+  z-index: 120;
   background: rgb(30 31 28 / 18%);
 }
 
 .settings-panel {
-  display: grid;
-  gap: 14px;
-  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 22px;
   position: fixed;
-  z-index: 25;
+  z-index: 130;
   top: 0;
   right: 0;
-  width: min(520px, 100vw);
+  width: min(440px, 100vw);
   height: 100vh;
   border-left: 1px solid var(--line);
   background: var(--surface);
@@ -1401,8 +1402,11 @@ button:not(:disabled):active {
 
 .settings-panel-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
 }
 
 .settings-panel-header h2 {
@@ -1410,11 +1414,19 @@ button:not(:disabled):active {
   font-size: 18px;
 }
 
+.settings-panel-header p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .settings-section {
-  display: grid;
-  gap: 12px;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 14px;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .settings-section p {
@@ -1424,23 +1436,48 @@ button:not(:disabled):active {
   line-height: 1.45;
 }
 
-.database-list-item {
+.settings-section-heading {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 26px;
-  align-items: center;
-  gap: 8px;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.settings-section-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface-muted);
-  padding: 4px 11px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.database-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 10px 10px 10px 12px;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.database-list-item.is-editing {
+  overflow: visible;
 }
 
 .database-item-trigger {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  min-height: 42px;
+  gap: 5px;
+  min-height: 38px;
+  min-width: 0;
   border: 0;
   background: transparent;
   color: var(--text);
@@ -1452,35 +1489,46 @@ button:not(:disabled):active {
   position: relative;
 }
 
-.db-item-menu .dropdown-menu {
-  position: absolute;
-  right: 0;
-  top: 100%;
-  z-index: 90;
+.dropdown-menu.settings-db-menu {
+  position: fixed;
+  z-index: 150;
 }
 
 .database-list {
-  display: grid;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
   gap: 8px;
+  overflow-y: auto;
+  padding-right: 2px;
+  max-height: min(52vh, 420px);
 }
 
 .database-list-item:hover,
 .database-list-item:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--surface-muted);
 }
 
 .database-list-item.active {
   border-color: var(--accent-strong);
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent-soft) 72%, var(--surface));
+  box-shadow: 0 0 0 1px var(--accent-soft);
 }
 
-.database-item-trigger span {
+.database-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 650;
+}
+
+.database-name.is-editing {
+  overflow: visible;
+  padding: 3px;
+  margin: -3px;
+  white-space: normal;
 }
 
 .database-item-trigger small,
@@ -1490,7 +1538,21 @@ button:not(:disabled):active {
 }
 
 .database-list-item .inline-title-input {
+  width: 100%;
   font-size: 13px;
+}
+
+.settings-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-panel-actions .primary-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .settings-dialog label,

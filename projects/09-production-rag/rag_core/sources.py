@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import hashlib
 import json
 import uuid
 from collections import Counter
@@ -110,6 +111,7 @@ def ingest_uploaded_path(
         acl_groups=acl_groups or ["default"],
         language=language,
     )
+    docs = apply_uploaded_content_identity(docs, path=path, input_dir=input_dir)
     if doc_version is None:
         version = next_source_doc_version(config, docs)
         docs = [replace(doc, doc_version=version) for doc in docs]
@@ -212,6 +214,50 @@ def load_documents_for_path(
         language=language,
         recursive=False,
     )
+
+
+def apply_uploaded_content_identity(
+    docs: list[SourceDocument],
+    *,
+    path: Path,
+    input_dir: Path,
+) -> list[SourceDocument]:
+    if not docs:
+        return docs
+    content_hash = file_sha256(path)
+    content_key = f"sha256-{content_hash[:12]}"
+    base_id = path.relative_to(input_dir).with_suffix("").as_posix()
+    hashed_base_id = f"{base_id}@{content_key}"
+    relative_path = path.relative_to(input_dir).as_posix()
+    return [
+        replace(
+            doc,
+            doc_id=hashed_doc_id(doc.doc_id, base_id=base_id, hashed_base_id=hashed_base_id),
+            metadata={
+                **doc.metadata,
+                "relative_path": relative_path,
+                "content_sha256": content_hash,
+                "content_key": content_key,
+            },
+        )
+        for doc in docs
+    ]
+
+
+def hashed_doc_id(doc_id: str, *, base_id: str, hashed_base_id: str) -> str:
+    if doc_id == base_id:
+        return hashed_base_id
+    if doc_id.startswith(f"{base_id}/"):
+        return f"{hashed_base_id}/{doc_id[len(base_id) + 1:]}"
+    return f"{hashed_base_id}/{doc_id}"
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) -> IngestSummary:
@@ -686,8 +732,11 @@ def source_document_identity(
     metadata: dict[str, Any],
 ) -> tuple[str, str]:
     relative_path = str(metadata.get("relative_path") or "").strip()
+    content_key = str(metadata.get("content_key") or "").strip()
     if relative_path:
         path = Path(relative_path)
+        if content_key:
+            return f"{path.with_suffix('').as_posix()}@{content_key}", path.name
         return path.with_suffix("").as_posix(), path.name
 
     source_name = Path(source_uri).name
