@@ -37,11 +37,18 @@ import {
 import { useAuth } from "../lib/AuthContext";
 import {
   DEFAULT_WORKSPACE_NAME,
+  addArtifactToWorkspace,
+  addConversationToWorkspace,
+  addSourcesToWorkspace,
   createUserWorkspaceRecord,
   defaultSettings,
+  deleteWorkspace,
   loadActiveWorkspaceId,
   loadSettings,
   loadUserWorkspaces,
+  loadWorkspaceArtifacts,
+  loadWorkspaceConversations,
+  loadWorkspaceSources,
   saveActiveWorkspaceId,
   saveSettings,
   saveWorkspaceName,
@@ -238,10 +245,16 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         listAnnouncements(nextSettings),
       ]);
       if (!isCurrentRefresh()) return;
-      setSources((current) => mergeSelectedState(sourceRows, current));
-      setArtifacts(artifactRows);
+      const wSources = loadWorkspaceSources(activeWorkspaceId);
+      const visibleRows = wSources.length > 0 ? sourceRows.filter((s) => wSources.includes(s.doc_id)) : sourceRows;
+      setSources((current) => mergeSelectedState(visibleRows, current));
+      const wArtifacts = loadWorkspaceArtifacts(activeWorkspaceId);
+      const visibleArtifacts = wArtifacts.length > 0
+        ? artifactRows.filter((a) => wArtifacts.includes(a.id))
+        : artifactRows;
+      setArtifacts(visibleArtifacts);
       setAnnouncements(announcementRows);
-      await loadLatestConversation(nextSettings, sourceRows, isCurrentRefresh);
+      await loadLatestConversation(nextSettings, visibleRows, isCurrentRefresh);
     } catch (error) {
       if (!isCurrentRefresh()) return;
       setStatus(error instanceof Error ? error.message : "连接失败");
@@ -307,8 +320,15 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         ...uploaded.map(item => ({ ...item, selected: true })), // Auto-select newly uploaded items
         ...items.filter((item) => item.doc_id !== temp.doc_id)
       ]);
+      // Track uploaded sources for the current workspace
+      const uploadedIds = uploaded.map((s) => s.doc_id);
+      addSourcesToWorkspace(activeWorkspaceId, uploadedIds);
       const readyRows = await waitForSourcesReady(settings, uploaded, sourceKeysBeforeUpload);
-      setSources((items) => mergeSelectedState(readyRows, items));
+      const wSources = loadWorkspaceSources(activeWorkspaceId);
+      const filteredReady = wSources.length > 0
+        ? readyRows.filter((s) => wSources.includes(s.doc_id))
+        : readyRows;
+      setSources((items) => mergeSelectedState(filteredReady, items));
       // Auto-rename workspace if it's still the auto-generated default name
       const currentAutoNamed = activeWorkspace?.auto_named;
       if (currentAutoNamed && uploaded.length > 0) {
@@ -779,6 +799,20 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     void refresh(settings);
   }
 
+  function handleDeleteWorkspace(id: string) {
+    if (workspaces.length <= 1) return;
+    const { workspaces: remaining, nextActive } = deleteWorkspace(id, auth.user?.id ?? null);
+    setWorkspaces(remaining);
+    setActiveWorkspaceId(nextActive);
+    setSources([]);
+    setMessages([]);
+    setConversationId(null);
+    setConversationTitle("未命名对话");
+    setArtifacts([]);
+    setActiveArtifact(null);
+    setActiveSourceContent(null);
+  }
+
   function closeAnnouncement() {
     const announcement = announcements[0];
     if (announcement) {
@@ -923,6 +957,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         onClose={() => setSettingsOpen(false)}
         onNewWorkspace={handleNewWorkspace}
         onRenameWorkspace={handleRenameWorkspaceById}
+        onDeleteWorkspace={handleDeleteWorkspace}
         onSelectWorkspace={handleSelectWorkspace}
       />
       {announcementOpen && announcements[0] ? (

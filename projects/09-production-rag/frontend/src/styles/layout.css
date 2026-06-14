@@ -1375,12 +1375,19 @@ button:not(:disabled):active {
   margin-top: 4px;
 }
 
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 22;
+  background: rgb(30 31 28 / 18%);
+}
+
 .settings-panel {
   display: grid;
   gap: 14px;
   padding: 20px;
   position: fixed;
-  z-index: 80;
+  z-index: 25;
   top: 0;
   right: 0;
   width: min(520px, 100vw);

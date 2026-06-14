@@ -3,6 +3,9 @@ import type { Settings, WorkspaceRecord } from "./types";
 const KEY = "production-rag-settings";
 const WORKSPACE_NAME_KEY = "production-rag-workspace-name";
 const WORKSPACES_PREFIX = "production-rag-workspaces";
+const WORKSPACE_SOURCES_PREFIX = "production-rag-workspace-sources";
+const WORKSPACE_CONVERSATIONS_PREFIX = "production-rag-workspace-conversations";
+const WORKSPACE_ARTIFACTS_PREFIX = "production-rag-workspace-artifacts";
 const ACTIVE_WORKSPACE_PREFIX = "production-rag-active-workspace-id";
 export const DEFAULT_WORKSPACE_NAME = "Production RAG 知识库";
 
@@ -109,6 +112,80 @@ export function loadActiveWorkspaceId(workspaces = loadWorkspaces(), userId: str
 
 export function saveActiveWorkspaceId(id: string, userId: string | null = null) {
   localStorage.setItem(activeWorkspaceKey(userId), id);
+}
+
+export function loadWorkspaceSources(workspaceId: string): string[] {
+  const key = `${WORKSPACE_SOURCES_PREFIX}:${workspaceId}`;
+  const raw = localStorage.getItem(key);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveWorkspaceSources(workspaceId: string, sourceIds: string[]) {
+  localStorage.setItem(`${WORKSPACE_SOURCES_PREFIX}:${workspaceId}`, JSON.stringify(sourceIds));
+}
+
+export function addSourcesToWorkspace(workspaceId: string, newIds: string[]) {
+  const existing = loadWorkspaceSources(workspaceId);
+  const merged = dedupeIds([...existing, ...newIds]);
+  saveWorkspaceSources(workspaceId, merged);
+}
+
+export function loadWorkspaceConversations(workspaceId: string): string[] {
+  return loadIdArray(`${WORKSPACE_CONVERSATIONS_PREFIX}:${workspaceId}`);
+}
+
+export function addConversationToWorkspace(workspaceId: string, conversationId: string) {
+  const existing = loadWorkspaceConversations(workspaceId);
+  saveWorkspaceConversations(workspaceId, dedupeIds([...existing, conversationId]));
+}
+
+function saveWorkspaceConversations(workspaceId: string, ids: string[]) {
+  localStorage.setItem(`${WORKSPACE_CONVERSATIONS_PREFIX}:${workspaceId}`, JSON.stringify(ids));
+}
+
+export function loadWorkspaceArtifacts(workspaceId: string): string[] {
+  return loadIdArray(`${WORKSPACE_ARTIFACTS_PREFIX}:${workspaceId}`);
+}
+
+export function addArtifactToWorkspace(workspaceId: string, artifactId: string) {
+  const existing = loadWorkspaceArtifacts(workspaceId);
+  saveArtifactIds(workspaceId, dedupeIds([...existing, artifactId]));
+}
+
+function saveArtifactIds(workspaceId: string, ids: string[]) {
+  localStorage.setItem(`${WORKSPACE_ARTIFACTS_PREFIX}:${workspaceId}`, JSON.stringify(ids));
+}
+
+export function deleteWorkspace(workspaceId: string, userId: string | null) {
+  const workspaces = loadUserWorkspaces(userId).filter(w => w.id !== workspaceId);
+  saveWorkspaces(workspaces, userId);
+  const nextActive = loadActiveWorkspaceId(workspaces, userId);
+  saveActiveWorkspaceId(nextActive, userId);
+  localStorage.removeItem(`${WORKSPACE_SOURCES_PREFIX}:${workspaceId}`);
+  localStorage.removeItem(`${WORKSPACE_CONVERSATIONS_PREFIX}:${workspaceId}`);
+  localStorage.removeItem(`${WORKSPACE_ARTIFACTS_PREFIX}:${workspaceId}`);
+  return { workspaces, nextActive };
+}
+
+function loadIdArray(key: string): string[] {
+  const raw = localStorage.getItem(key);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function dedupeIds(ids: string[]): string[] {
+  return [...new Set(ids)];
 }
 
 export function createWorkspaceRecord(name: string): WorkspaceRecord {

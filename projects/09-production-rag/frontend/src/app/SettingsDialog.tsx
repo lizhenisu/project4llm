@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MoreHorizontal, PencilLine, X } from "lucide-react";
+import { MoreHorizontal, PencilLine, Trash2, X } from "lucide-react";
 import type { WorkspaceRecord } from "../lib/types";
 
 type Props = {
@@ -11,6 +11,7 @@ type Props = {
   onClose: () => void;
   onNewWorkspace: () => void;
   onRenameWorkspace: (id: string, name: string) => void;
+  onDeleteWorkspace: (id: string) => void;
   onSelectWorkspace: (id: string) => void;
 };
 
@@ -23,6 +24,7 @@ export function SettingsDialog({
   onClose,
   onNewWorkspace,
   onRenameWorkspace,
+  onDeleteWorkspace,
   onSelectWorkspace,
 }: Props) {
   const [nameDraft, setNameDraft] = useState(workspaceName);
@@ -38,7 +40,7 @@ export function SettingsDialog({
 
   return (
     <>
-      <div className="modal-backdrop" role="presentation" onMouseDown={onClose} />
+      <div className="settings-backdrop" role="presentation" onMouseDown={onClose} />
       <aside
         className="settings-panel"
         role="dialog"
@@ -134,7 +136,20 @@ export function SettingsDialog({
                               }}
                             >
                               <PencilLine size={14} />
-                              重命名知识库
+                             重命名知识库
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="danger"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenMenuId(null);
+                                onDeleteWorkspace(workspace.id);
+                              }}
+                            >
+                              <Trash2 size={14} />
+                              删除知识库
                             </button>
                           </div>
                         ) : null}
