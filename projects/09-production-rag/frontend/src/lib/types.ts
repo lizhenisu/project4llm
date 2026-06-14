@@ -119,6 +119,7 @@ export type Settings = {
 export type WorkspaceRecord = {
   id: string;
   name: string;
+  user_id: string | null;
   created_at: number;
   updated_at: number;
 };

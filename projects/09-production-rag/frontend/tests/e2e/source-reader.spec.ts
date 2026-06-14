@@ -42,6 +42,21 @@ async function mockWorkspaceShell(page: Page) {
   });
 }
 
+test("hides database create/rename controls when not authenticated", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.removeItem("production-rag-auth-session");
+  });
+  await mockWorkspaceShell(page);
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "数据库设置" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("登录后可创建与重命名数据库。")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "新建数据库" })).toBeHidden();
+  await expect(dialog.getByText("当前数据库名称")).toBeHidden();
+});
+
 test("manages database list in settings without exposing API fields", async ({ page }) => {
   await mockWorkspaceShell(page);
 

@@ -37,11 +37,11 @@ import {
 import { useAuth } from "../lib/AuthContext";
 import {
   DEFAULT_WORKSPACE_NAME,
-  createWorkspaceRecord,
+  createUserWorkspaceRecord,
   defaultSettings,
   loadActiveWorkspaceId,
   loadSettings,
-  loadWorkspaces,
+  loadUserWorkspaces,
   saveActiveWorkspaceId,
   saveSettings,
   saveWorkspaceName,
@@ -66,8 +66,12 @@ const ARTIFACT_GENERATION_COOLDOWN_MS = 4_000;
 export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => void }) {
   const auth = useAuth();
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>(() => loadWorkspaces());
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState(() => loadActiveWorkspaceId(loadWorkspaces()));
+  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>(() =>
+    loadUserWorkspaces(auth.user?.id ?? null),
+  );
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(() =>
+    loadActiveWorkspaceId(loadUserWorkspaces(auth.user?.id ?? null), auth.user?.id ?? null),
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [activeView, setActiveView] = useState<AppView>("workspace");
@@ -130,13 +134,13 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }, [settings]);
 
   useEffect(() => {
-    saveWorkspaces(workspaces);
-  }, [workspaces]);
+    saveWorkspaces(workspaces, auth.user?.id ?? null);
+  }, [workspaces, auth.user?.id]);
 
   useEffect(() => {
-    saveActiveWorkspaceId(activeWorkspaceId);
+    saveActiveWorkspaceId(activeWorkspaceId, auth.user?.id ?? null);
     saveWorkspaceName(workspaceName);
-  }, [activeWorkspaceId, workspaceName]);
+  }, [activeWorkspaceId, workspaceName, auth.user?.id]);
 
   useEffect(() => {
     if (!accountMenuOpen) return;
@@ -151,6 +155,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   useEffect(() => {
     authTokenRef.current = auth.token;
+    const userId = auth.user?.id ?? null;
     setSettings((current) => {
       const next = {
         ...current,
@@ -160,9 +165,27 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       };
       return settingsEqual(current, next) ? current : next;
     });
-  }, [auth.token, auth.user?.tenant_id]);
+    const userWorkspaces = loadUserWorkspaces(userId);
+    setWorkspaces((prev) => {
+      const existingIds = new Set(prev.map((w) => w.id));
+      const incoming = userWorkspaces.filter((w) => !existingIds.has(w.id));
+      if (incoming.length > 0) return userWorkspaces;
+      const renamed = prev.map(
+        (w) => userWorkspaces.find((uw) => uw.id === w.id) ?? { ...w, user_id: userId },
+      );
+      return renamed.length === prev.length ? prev : renamed;
+    });
+    setActiveWorkspaceId((prev) => {
+      const activeId = loadActiveWorkspaceId(userWorkspaces, userId);
+      return activeId || prev || userWorkspaces[0]?.id || "default-workspace";
+    });
+  }, [auth.token, auth.user?.tenant_id, auth.user?.id]);
 
   useEffect(() => {
+    const userId = auth.user?.id ?? null;
+    const userWorkspaces = loadUserWorkspaces(userId);
+    setWorkspaces(userWorkspaces);
+    setActiveWorkspaceId(loadActiveWorkspaceId(userWorkspaces, userId));
     setSources([]);
     setMessages([]);
     setConversationId(null);
@@ -672,12 +695,13 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }
 
   function handleNewWorkspace() {
-    const nextWorkspace = createWorkspaceRecord(`${DEFAULT_WORKSPACE_NAME} ${new Date().toLocaleString("zh-CN", {
+    if (!isAuthenticated || !auth.user?.id) return;
+    const nextWorkspace = createUserWorkspaceRecord(`${DEFAULT_WORKSPACE_NAME} ${new Date().toLocaleString("zh-CN", {
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-    })}`);
+    })}`, auth.user.id);
     setWorkspaces((items) => [nextWorkspace, ...items]);
     setActiveWorkspaceId(nextWorkspace.id);
     setSources([]);
@@ -690,7 +714,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }
 
   function handleRenameWorkspace(name: string) {
-    if (!name.trim()) return;
+    if (!name.trim() || !isAuthenticated) return;
     const nextName = name.trim();
     setWorkspaces((items) =>
       items.map((workspace) =>
@@ -853,6 +877,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         workspaceName={workspaceName}
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
+        authenticated={isAuthenticated}
         onClose={() => setSettingsOpen(false)}
         onNewWorkspace={handleNewWorkspace}
         onRenameWorkspace={handleRenameWorkspace}

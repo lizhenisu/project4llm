@@ -6,6 +6,7 @@ type Props = {
   workspaceName: string;
   workspaces: WorkspaceRecord[];
   activeWorkspaceId: string;
+  authenticated: boolean;
   onClose: () => void;
   onNewWorkspace: () => void;
   onRenameWorkspace: (name: string) => void;
@@ -17,6 +18,7 @@ export function SettingsDialog({
   workspaceName,
   workspaces,
   activeWorkspaceId,
+  authenticated,
   onClose,
   onNewWorkspace,
   onRenameWorkspace,
@@ -62,23 +64,29 @@ export function SettingsDialog({
               );
             })}
           </div>
-          <label>
-            当前数据库名称
-            <input value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} />
-          </label>
-          <div className="dialog-actions">
-            <button type="button" onClick={onNewWorkspace}>
-              新建数据库
-            </button>
-            <button
-              type="button"
-              className="primary-pill"
-              onClick={() => onRenameWorkspace(nameDraft.trim())}
-              disabled={!nameDraft.trim()}
-            >
-              重命名数据库
-            </button>
-          </div>
+          {authenticated ? (
+            <>
+              <label>
+                当前数据库名称
+                <input value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} />
+              </label>
+              <div className="dialog-actions">
+                <button type="button" onClick={onNewWorkspace}>
+                  新建数据库
+                </button>
+                <button
+                  type="button"
+                  className="primary-pill"
+                  onClick={() => onRenameWorkspace(nameDraft.trim())}
+                  disabled={!nameDraft.trim()}
+                >
+                  重命名数据库
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="muted-text">登录后可创建与重命名数据库。</p>
+          )}
         </section>
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>
