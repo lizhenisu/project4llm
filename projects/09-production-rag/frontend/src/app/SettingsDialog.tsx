@@ -102,11 +102,11 @@ export function SettingsDialog({
                           />
                         ) : (
                           workspace.name
-                        )}
+                      )}
                       </span>
-                      <small>
-                  {active ? <small>当前数据库</small> : <small>点击切换</small>}
-                      </small>
+                      <span className="current-label">
+                        {active ? "当前数据库" : "点击切换"}
+                      </span>
                 </button>
                     {authenticated && !isRenaming ? (
                       <div className="db-item-menu">

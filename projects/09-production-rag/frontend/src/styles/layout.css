@@ -1417,16 +1417,15 @@ button:not(:disabled):active {
   line-height: 1.45;
 }
 
-.database-list {
-  display: grid;
-  gap: 8px;
-}
-
 .database-list-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 26px;
   align-items: center;
   gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  padding: 4px 11px;
 }
 
 .database-item-trigger {
@@ -1456,25 +1455,17 @@ button:not(:disabled):active {
 .database-list {
   display: grid;
   gap: 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface-muted);
-  padding: 10px 14px;
 }
 
 .database-list-item:hover,
 .database-list-item:focus-within {
-  border-color: var(--line-strong);
-  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 70%, transparent);
-  outline: none;
-  border-radius: var(--radius);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .database-list-item.active {
-  border-color: var(--accent);
+  border-color: var(--accent-strong);
   background: var(--accent-soft);
-  border-radius: var(--radius);
 }
 
 .database-item-trigger span {
@@ -1486,8 +1477,9 @@ button:not(:disabled):active {
 }
 
 .database-item-trigger small,
-.database-list-item small {
+.current-label {
   color: var(--text-muted);
+  font-size: 12px;
 }
 
 .database-list-item .inline-title-input {
