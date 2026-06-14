@@ -181,6 +181,11 @@ test("navigates a guest to the login page when sending from the chat input", asy
   await expect(page.locator(".auth-page-panel")).toHaveCSS("background-color", "rgb(255, 255, 255)");
   await expect(page.locator(".auth-page-panel")).toHaveCSS("box-shadow", "none");
   await expect(page.locator(".auth-page-submit")).toHaveCSS("color", "rgb(255, 255, 255)");
+  await page.getByLabel("用户名").fill("tester");
+  await page.getByLabel("密码").fill("strong-password");
+  await expect(page.locator(".auth-page-submit")).toBeEnabled();
+  await expect(page.locator(".auth-page-submit")).toHaveCSS("background-color", "rgb(56, 189, 248)");
+  await expect(page.locator(".auth-page-submit")).toHaveCSS("color", "rgb(255, 255, 255)");
 });
 
 test("switches between dedicated login and register pages", async ({ page }) => {

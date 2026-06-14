@@ -1676,6 +1676,20 @@ button:not(:disabled):active {
   color: #ffffff;
 }
 
+.auth-page-submit:not(:disabled),
+.auth-page-submit:not(:disabled):hover,
+.auth-page-submit:not(:disabled):focus-visible,
+.auth-page-submit:not(:disabled):active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.auth-page-submit:not(:disabled):focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: none;
+}
+
 .auth-page-submit:disabled {
   border-color: color-mix(in srgb, var(--accent) 62%, #ffffff);
   background: color-mix(in srgb, var(--accent) 62%, #ffffff);
