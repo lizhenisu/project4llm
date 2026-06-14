@@ -27,6 +27,7 @@ export type SourceContent = {
   guide: string;
   tags: string[];
   text: string;
+  suggested_title?: string;
 };
 
 export type Citation = {
@@ -119,6 +120,7 @@ export type Settings = {
 export type WorkspaceRecord = {
   id: string;
   name: string;
+  auto_named?: boolean;
   user_id: string | null;
   created_at: number;
   updated_at: number;

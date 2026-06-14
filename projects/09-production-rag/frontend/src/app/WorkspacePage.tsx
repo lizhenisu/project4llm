@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, Eye, EyeOff, LogIn, LogOut, Megaphone, Settings as SettingsIcon, Shield, UserRound, X } from "lucide-react";
+import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, Eye, EyeOff, LogIn, LogOut, Megaphone, MoreHorizontal, PencilLine, Settings as SettingsIcon, Shield, UserRound, X } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -104,6 +104,9 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   const isAuthenticated = Boolean(auth.user && auth.token);
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? workspaces[0];
+  const displayWorkspaceName = isAuthenticated
+    ? (activeWorkspace?.name || DEFAULT_WORKSPACE_NAME)
+    : "未命名的知识库";
   const workspaceName = activeWorkspace?.name || DEFAULT_WORKSPACE_NAME;
   const selectedSources = useMemo(() => sources.filter((source) => source.selected), [sources]);
   const selectedDocIds = useMemo(
@@ -306,6 +309,22 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       ]);
       const readyRows = await waitForSourcesReady(settings, uploaded, sourceKeysBeforeUpload);
       setSources((items) => mergeSelectedState(readyRows, items));
+      // Auto-rename workspace if it's still the auto-generated default name
+      const currentAutoNamed = activeWorkspace?.auto_named;
+      if (currentAutoNamed && uploaded.length > 0) {
+        try {
+          const content = await getSourceContent(settings, uploaded[0].doc_id, uploaded[0].doc_version);
+          if (content.suggested_title && content.suggested_title !== content.title) {
+            setWorkspaces((prev) =>
+              prev.map((w) =>
+                w.id === activeWorkspaceId ? { ...w, name: content.suggested_title!, auto_named: false, updated_at: Date.now() } : w,
+              ),
+            );
+          }
+        } catch {
+          // Ignore if content fetch fails; auto-rename is a best-effort feature
+        }
+      }
     } catch (error) {
       setSources((items) =>
         items.map((item) =>
@@ -736,6 +755,16 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     );
   }
 
+  function handleRenameWorkspaceById(workspaceId: string, name: string) {
+    if (!name.trim() || !isAuthenticated) return;
+    const nextName = name.trim();
+    setWorkspaces((items) =>
+      items.map((workspace) =>
+        workspace.id === workspaceId ? { ...workspace, name: nextName, updated_at: Date.now() } : workspace,
+      ),
+    );
+  }
+
   function handleSelectWorkspace(id: string) {
     if (id === activeWorkspaceId || !workspaces.some((workspace) => workspace.id === id)) return;
     setActiveWorkspaceId(id);
@@ -765,7 +794,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
           <span className="brand-mark">
             <DatabaseZap size={22} />
           </span>
-          <span>{workspaceName}</span>
+          <span>{displayWorkspaceName}</span>
         </div>
         <div className="topbar-actions">
           <IconButton label="设置" onClick={() => setSettingsOpen(true)}>
@@ -893,7 +922,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         authenticated={isAuthenticated}
         onClose={() => setSettingsOpen(false)}
         onNewWorkspace={handleNewWorkspace}
-        onRenameWorkspace={handleRenameWorkspace}
+        onRenameWorkspace={handleRenameWorkspaceById}
         onSelectWorkspace={handleSelectWorkspace}
       />
       {announcementOpen && announcements[0] ? (

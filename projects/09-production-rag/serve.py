@@ -161,6 +161,7 @@ class SourceContentResponse(BaseModel):
     guide: str
     tags: list[str]
     text: str
+    suggested_title: str = ""
 
 
 class DeleteSourceResponse(BaseModel):

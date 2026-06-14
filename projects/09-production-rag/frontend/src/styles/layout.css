@@ -1376,9 +1376,32 @@ button:not(:disabled):active {
 }
 
 .settings-dialog {
+.settings-panel {
   display: grid;
   gap: 14px;
   padding: 20px;
+  position: fixed;
+  z-index: 80;
+  top: 0;
+  right: 0;
+  width: min(520px, 100vw);
+  height: 100vh;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow-y: auto;
+  animation: slide-in-right 180ms ease both;
+}
+
+.settings-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-panel-header h2 {
+  margin: 0;
+  font-size: 18px;
 }
 
 .settings-section {
@@ -1400,38 +1423,63 @@ button:not(:disabled):active {
   gap: 8px;
 }
 
-.database-list button {
+.database-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  align-items: center;
+  gap: 8px;
+}
+
+.database-item-trigger {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   min-height: 42px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  text-align: left;
+}
+
+.db-item-menu {
+  position: relative;
+}
+
+.db-item-menu .dropdown-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 90;
+}
+
+.database-list button {
+.database-list {
+  display: grid;
+  gap: 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface-muted);
-  color: var(--text);
-  padding: 0 11px;
-  text-align: left;
-  transition:
-    background-color 160ms ease,
-    border-color 160ms ease,
-    box-shadow 160ms ease;
+  padding: 10px 14px;
 }
 
-.database-list button:hover,
-.database-list button:focus-visible {
+.database-list-item:hover,
+.database-list-item:focus-within {
   border-color: var(--line-strong);
   background: var(--surface-hover, rgba(0, 0, 0, 0.05));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 70%, transparent);
   outline: none;
+  border-radius: var(--radius);
 }
 
-.database-list button.active {
+.database-list-item.active {
   border-color: var(--accent);
   background: var(--accent-soft);
+  border-radius: var(--radius);
 }
 
-.database-list span {
+.database-item-trigger span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1439,20 +1487,34 @@ button:not(:disabled):active {
   font-weight: 650;
 }
 
-.database-list small {
+.database-item-trigger small,
+.database-list-item small {
   color: var(--text-muted);
+}
+
+.database-list-item .inline-title-input {
+  font-size: 13px;
 }
 
 .settings-dialog label,
 .auth-page-panel label,
 .announcement-form label,
-.account-section label {
+.account-section label,
+.settings-section label {
   display: grid;
   gap: 6px;
   color: var(--text-muted);
   font-size: 13px;
 }
 
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
 .settings-dialog input,
 .auth-page-panel input,
 .announcement-form input,
@@ -1981,6 +2043,10 @@ button:not(:disabled):active {
 
   .secret-field {
     grid-template-columns: minmax(0, 1fr) 36px 36px;
+  }
+
+  .settings-panel {
+    width: 100vw;
   }
 
   .chat-input {

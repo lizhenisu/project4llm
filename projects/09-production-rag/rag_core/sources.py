@@ -26,7 +26,7 @@ from rag_core.object_store import (
     load_archived_source_documents,
 )
 from rag_core.pii import apply_pii_policy
-from rag_core.source_guides import get_or_create_source_guide, load_source_guide
+from rag_core.source_guides import get_or_create_source_guide, load_source_guide, load_source_guide_full
 from rag_core.text_utils import chunk_document, now_ms
 from rag_core.types import Chunk, SourceDocument
 from rag_core.versioning import load_current_versions, publish_current_versions, unpublish_current_version
@@ -68,6 +68,7 @@ class SourceContent:
     doc_version: int
     child_doc_ids: list[str]
     guide: str
+    suggested_title: str = ""
     tags: list[str]
     text: str
 
@@ -341,7 +342,7 @@ def generate_ingested_source_guides(
             tenant_id=source_docs[0].tenant_id,
             source_doc_id=source.doc_id,
             doc_version=source.doc_version,
-            title=source.title,
+            doc_title=source.title,
             docs=source_docs,
         )
 
@@ -549,12 +550,14 @@ def get_source_content(
 
     docs = sorted(docs, key=source_document_sort_key)
     text = "\n\n".join(source_document_text_block(doc) for doc in docs if doc.text.strip()).strip()
-    guide = load_source_guide(
+    guide_full = load_source_guide_full(
         config.object_store_dir,
         tenant_id=tenant_id,
         source_doc_id=source.doc_id,
         doc_version=source.doc_version,
     )
+    guide = guide_full.guide if guide_full else None
+    suggested_title = guide_full.title if guide_full else ""
     return SourceContent(
         doc_id=source.doc_id,
         title=source.title,
@@ -563,6 +566,7 @@ def get_source_content(
         doc_version=source.doc_version,
         child_doc_ids=source.child_doc_ids,
         guide=guide or "来源指南尚未生成。请重新上传该来源以在入库准备流程中生成摘要。",
+        suggested_title=suggested_title,
         tags=extract_source_tags(text),
         text=text,
     )

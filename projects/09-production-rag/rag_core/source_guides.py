@@ -20,10 +20,10 @@ def get_or_create_source_guide(
     tenant_id: str,
     source_doc_id: str,
     doc_version: int,
-    title: str,
+    doc_title: str,
     docs: list[SourceDocument],
-) -> str:
-    cached = load_source_guide(
+) -> SourceGuideResult:
+    cached = load_source_guide_full(
         config.object_store_dir,
         tenant_id=tenant_id,
         source_doc_id=source_doc_id,
@@ -31,16 +31,17 @@ def get_or_create_source_guide(
     )
     if cached:
         return cached
-    guide = generate_source_guide(config=config, title=title, docs=docs)
+    result = generate_source_guide(config=config, title=doc_title, docs=docs)
     save_source_guide(
         config.object_store_dir,
         tenant_id=tenant_id,
         source_doc_id=source_doc_id,
         doc_version=doc_version,
-        guide=guide,
+        title=result.title,
+        guide=result.guide,
         model=config.llm_model,
     )
-    return guide
+    return result
 
 
 def generate_source_guide(*, config: RagConfig, title: str, docs: list[SourceDocument]) -> str:
@@ -70,7 +71,23 @@ def generate_source_guide(*, config: RagConfig, title: str, docs: list[SourceDoc
     guide = (response.choices[0].message.content or "").strip()
     if not guide:
         raise RuntimeError("LLM source guide generation returned empty content.")
-    return normalize_guide_text(guide)
+    title_text, guide_text = parse_title_and_guide(guide)
+    if not title_text:
+        title_text = title
+    return SourceGuideResult(title=normalize_guide_text(title_text), guide=normalize_guide_text(guide_text))
+
+
+def parse_title_and_guide(raw: str) -> tuple[str, str]:
+    for delimiter in ("\n\n", "\n"):
+        parts = raw.split(delimiter, 1)
+        if len(parts) == 2:
+            first = parts[0].strip()
+            second = parts[1].strip()
+            if first and second and len(first) < 120:
+                return first, second
+    if len(raw) < 120:
+        return raw, raw
+    return "", raw
 
 
 def build_source_guide_prompt(*, title: str, source_text: str) -> str:
@@ -102,6 +119,28 @@ def normalize_guide_text(text: str) -> str:
     return normalized.strip().strip('"').strip("'")
 
 
+def load_source_guide_full(
+    object_store_dir: Path,
+    *,
+    tenant_id: str,
+    source_doc_id: str,
+    doc_version: int,
+) -> SourceGuideResult | None:
+    path = object_store_dir / SOURCE_GUIDES_PATH
+    if not path.exists():
+        return None
+    for row in read_jsonl(path):
+        if (
+            str(row.get("tenant_id")) == tenant_id
+            and str(row.get("source_doc_id")) == source_doc_id
+            and int(row.get("doc_version", 0)) == int(doc_version)
+        ):
+            title = str(row.get("title") or "").strip()
+            guide = str(row.get("guide") or "").strip()
+            if guide:
+                return SourceGuideResult(title=title or guide, guide=guide)
+    return None
+
 def load_source_guide(
     object_store_dir: Path,
     *,
@@ -118,7 +157,10 @@ def load_source_guide(
             and str(row.get("source_doc_id")) == source_doc_id
             and int(row.get("doc_version", 0)) == int(doc_version)
         ):
+            title = str(row.get("title") or "").strip()
             guide = str(row.get("guide") or "").strip()
+            if title and guide:
+                return f"标题: {title}\n{guide}"
             return guide or None
     return None
 
@@ -129,6 +171,7 @@ def save_source_guide(
     tenant_id: str,
     source_doc_id: str,
     doc_version: int,
+    title: str,
     guide: str,
     model: str,
 ) -> None:
@@ -139,6 +182,7 @@ def save_source_guide(
         "tenant_id": tenant_id,
         "source_doc_id": source_doc_id,
         "doc_version": int(doc_version),
+        "title": title,
         "guide": guide,
         "model": model,
         "updated_at": now_ms(),
@@ -156,3 +200,9 @@ def source_guide_key(row: dict) -> tuple[str, str, int]:
         str(row["source_doc_id"]),
         int(row["doc_version"]),
     )
+from dataclasses import dataclass
+
+@dataclass
+class SourceGuideResult:
+    title: str
+    guide: str

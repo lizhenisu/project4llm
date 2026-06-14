@@ -127,6 +127,7 @@ export function createUserWorkspaceRecord(name: string, userId: string): Workspa
   return {
     id: createWorkspaceId(userId),
     name: name.trim() || DEFAULT_WORKSPACE_NAME,
+    auto_named: true,
     user_id: userId,
     created_at: now,
     updated_at: now,
