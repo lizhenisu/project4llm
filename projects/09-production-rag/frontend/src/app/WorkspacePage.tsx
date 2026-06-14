@@ -134,11 +134,14 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }, [settings]);
 
   useEffect(() => {
-    saveWorkspaces(workspaces, auth.user?.id ?? null);
+    const userId = auth.user?.id ?? null;
+    const scoped = workspaces.filter((w) => (w.user_id ?? null) === userId);
+    saveWorkspaces(scoped.length > 0 ? scoped : loadUserWorkspaces(userId), userId);
   }, [workspaces, auth.user?.id]);
 
   useEffect(() => {
-    saveActiveWorkspaceId(activeWorkspaceId, auth.user?.id ?? null);
+    const userId = auth.user?.id ?? null;
+    saveActiveWorkspaceId(activeWorkspaceId, userId);
     saveWorkspaceName(workspaceName);
   }, [activeWorkspaceId, workspaceName, auth.user?.id]);
 
@@ -691,7 +694,17 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   async function handleLogout() {
     setAccountMenuOpen(false);
-    await auth.logout();
+    const anonWorkspaces = loadUserWorkspaces(null);
+    saveWorkspaces(anonWorkspaces, null);
+    setWorkspaces(anonWorkspaces);
+    setActiveWorkspaceId(loadActiveWorkspaceId(anonWorkspaces, null));
+    try {
+      await auth.logout();
+    } catch {
+      // If logout API fails, still clear local state
+      localStorage.removeItem("production-rag-auth-session");
+      window.location.reload();
+    }
   }
 
   function handleNewWorkspace() {
