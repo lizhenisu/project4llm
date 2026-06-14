@@ -4,6 +4,8 @@ from pathlib import Path
 
 from rag_core.config import RagConfig
 from rag_core.io import read_jsonl, write_jsonl
+from rag_core.prompts import SOURCE_GUIDE_SYSTEM_PROMPT
+from rag_core.prompts import build_source_guide_prompt as prompt_source_guide
 from rag_core.text_utils import now_ms
 from rag_core.types import SourceDocument
 
@@ -56,7 +58,7 @@ def generate_source_guide(*, config: RagConfig, title: str, docs: list[SourceDoc
         messages=[
             {
                 "role": "system",
-                "content": "你是企业知识库来源指南助手。你只依据给定原文，为读者生成简洁准确的中文摘要。",
+                "content": SOURCE_GUIDE_SYSTEM_PROMPT,
             },
             {
                 "role": "user",
@@ -72,20 +74,7 @@ def generate_source_guide(*, config: RagConfig, title: str, docs: list[SourceDoc
 
 
 def build_source_guide_prompt(*, title: str, source_text: str) -> str:
-    return f"""请为下面这个知识库来源生成“来源指南”摘要。
-
-要求:
-- 只依据原文，不编造。
-- 输出 2-4 句中文自然语言摘要。
-- 说明这份资料主要讲什么、包含哪些关键信息、适合用来回答什么类型的问题。
-- 不要输出标题、Markdown、编号列表或引用标记。
-- 不要直接复制原文长句。
-
-来源标题: {title}
-
-原文:
-{source_text}
-"""
+    return prompt_source_guide(title=title, source_text=source_text)
 
 
 def build_source_guide_context(docs: list[SourceDocument]) -> str:

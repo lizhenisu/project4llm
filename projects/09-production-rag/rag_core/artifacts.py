@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from rag_core.config import RagConfig
+from rag_core.prompts import (
+    DATA_TABLE_SYSTEM_PROMPT,
+    MERGE_MINDMAP_SYSTEM_PROMPT,
+    PARTIAL_MINDMAP_SYSTEM_PROMPT,
+    build_data_table_prompt,
+    build_merge_mindmap_prompt,
+    build_partial_mindmap_prompt,
+)
 from rag_core.database import connect_metadata_db
 from rag_core.object_store import load_archived_source_documents
 from rag_core.text_utils import now_ms
@@ -341,70 +349,26 @@ def generate_partial_mindmap_with_llm(
     index: int,
     total: int,
 ) -> dict[str, Any]:
-    prompt = f"""你是知识库思维导图专家。请把下面第 {index}/{total} 批原文块整理为局部思维导图。
-
-要求:
-- 只依据原文，不编造。
-- 输出严格 JSON，不要 Markdown。
-- JSON schema: {{"label": "局部主题", "children": [{{"label": "二级主题", "children": [{{"label": "三级要点", "children": []}}]}}]}}
-- 二级主题 3-6 个，每个二级主题下三级要点 2-5 个。
-- 标签要短，像思维导图节点，不要长段落。
-
-总标题: {title}
-
-原文块批次:
-{batch_text}
-"""
     return call_mindmap_llm(
         config=config,
-        system_prompt="你只输出合法 JSON。你擅长把长文整理为层级清晰、节点简洁的中文思维导图。",
-        user_prompt=prompt,
+        system_prompt=PARTIAL_MINDMAP_SYSTEM_PROMPT,
+        user_prompt=build_partial_mindmap_prompt(title=title, batch_text=batch_text, index=index, total=total),
     )
 
 
 def merge_mindmaps_with_llm(*, config: RagConfig, title: str, partial_roots: list[dict[str, Any]]) -> dict[str, Any]:
-    prompt = f"""请把多个局部思维导图合并成一个最终思维导图。
-
-要求:
-- 输出严格 JSON，不要 Markdown。
-- JSON schema: {{"label": "总主题", "children": [{{"label": "二级主题", "children": [{{"label": "三级要点", "children": []}}]}}]}}
-- 合并同义或重复节点。
-- 最终二级主题控制在 4-8 个。
-- 每个二级主题下三级要点控制在 2-6 个。
-- 节点标签简洁、准确、适合前端思维导图展示。
-
-总标题: {title}
-
-局部思维导图 JSON:
-{json.dumps(partial_roots, ensure_ascii=False)}
-"""
     return call_mindmap_llm(
         config=config,
-        system_prompt="你只输出合法 JSON。你负责合并、去重和压缩思维导图节点。",
-        user_prompt=prompt,
+        system_prompt=MERGE_MINDMAP_SYSTEM_PROMPT,
+        user_prompt=build_merge_mindmap_prompt(title=title, partial_roots=partial_roots),
     )
 
 
 def generate_table_with_llm(*, config: RagConfig, title: str, source_text: str) -> dict[str, Any]:
-    prompt = f"""你是知识库数据表格专家。请把下面原文整理成一个适合阅读和比较的数据表格。
-
-要求:
-- 只依据原文，不编造。
-- 输出严格 JSON，不要 Markdown。
-- JSON schema: {{"title": "表格标题", "columns": ["列名1", "列名2"], "rows": [["单元格1", "单元格2"]], "summary": "一句话说明表格用途"}}
-- 根据资料内容选择最有价值的列，例如标题、作者、主题、主要发现、关键引文、城市、最佳时间、景点、费用、岗位、职责、要求等。
-- 列数 3-8 列，行数 3-24 行。
-- 单元格要简洁；没有证据的单元格填“未提及”。
-
-表格任务: {title}
-
-原文:
-{source_text}
-"""
     return call_json_llm(
         config=config,
-        system_prompt="你只输出合法 JSON。你擅长从文档中抽取结构化表格。",
-        user_prompt=prompt,
+        system_prompt=DATA_TABLE_SYSTEM_PROMPT,
+        user_prompt=build_data_table_prompt(title=title, source_text=source_text),
     )
 
 

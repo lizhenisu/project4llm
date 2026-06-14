@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from rag_core.config import RagConfig
+from rag_core.prompts import QUERY_REWRITE_SYSTEM_PROMPT, build_query_rewrite_prompt
 from rag_core.text_utils import normalize_text
 from rag_core.types import RewriteResult
 
@@ -39,14 +40,11 @@ def llm_rewrite(query: str, history: list[str], config: RagConfig) -> str:
         messages=[
             {
                 "role": "system",
-                "content": (
-                    "你是 RAG 查询改写器。只输出一个适合检索的中文查询，"
-                    "不要添加用户没有表达的权限、租户或事实。"
-                ),
+                "content": QUERY_REWRITE_SYSTEM_PROMPT,
             },
             {
                 "role": "user",
-                "content": f"对话历史:\n{history_text}\n\n当前问题:\n{query}",
+                "content": build_query_rewrite_prompt(history_text=history_text, query=query),
             },
         ],
         max_tokens=max(1, config.query_rewrite_max_tokens),

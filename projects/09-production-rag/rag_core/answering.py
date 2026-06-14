@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from time import perf_counter
 
 from rag_core.config import RagConfig
+from rag_core.prompts import ANSWER_SYSTEM_PROMPT
+from rag_core.prompts import build_answer_prompt
+from rag_core.prompts import format_evidence_header as prompt_evidence_header
+from rag_core.prompts import format_location as prompt_format_location
 from rag_core.types import SearchHit
 
 
@@ -17,34 +21,7 @@ class AnswerGeneration:
 
 
 def build_prompt(query: str, hits: list[SearchHit]) -> str:
-    evidence = []
-    for index, hit in enumerate(hits, start=1):
-        evidence.append(
-            "\n".join(
-                [
-                    format_evidence_header(index, hit),
-                    hit.text,
-                ]
-            )
-        )
-    evidence_text = "\n\n".join(evidence) if evidence else "无"
-    image_rule = (
-        "\n- 图片证据来自 OCR/caption 或图片向量召回，可能不完整；回答时必须把它当作图片派生证据。"
-        if any(hit.source_type == "image" for hit in hits)
-        else ""
-    )
-    return f"""问题:
-{query}
-
-证据:
-{evidence_text}
-
-要求:
-- 只使用证据回答。
-- 每个关键结论后标注引用编号。
-- 如果证据不足，回答“当前知识库没有足够证据”。
-{image_rule}
-"""
+    return build_answer_prompt(query, hits)
 
 
 def generate_answer(config: RagConfig, query: str, hits: list[SearchHit]) -> AnswerGeneration:
@@ -65,7 +42,7 @@ def generate_answer(config: RagConfig, query: str, hits: list[SearchHit]) -> Ans
         messages=[
             {
                 "role": "system",
-                "content": "你是企业知识库问答助手。只根据给定证据回答。",
+                "content": ANSWER_SYSTEM_PROMPT,
             },
             {"role": "user", "content": prompt},
         ],
@@ -87,38 +64,11 @@ def elapsed_ms(start: float) -> float:
 
 
 def format_location(metadata: dict) -> str:
-    if not metadata:
-        return ""
-    if "page_start" in metadata and "page_end" in metadata:
-        start = metadata["page_start"]
-        end = metadata["page_end"]
-        return f", page={start}" if start == end else f", pages={start}-{end}"
-    if "page_no" in metadata:
-        return f", page={metadata['page_no']}"
-    if "row_start" in metadata and "row_end" in metadata:
-        return f", rows={metadata['row_start']}-{metadata['row_end']}"
-    if "bbox" in metadata and metadata["bbox"]:
-        return f", bbox={metadata['bbox']}"
-    return ""
+    return prompt_format_location(metadata)
 
 
 def format_evidence_header(index: int, hit: SearchHit) -> str:
-    parts = [
-        f"[{index}] doc_id={hit.doc_id}",
-        f"title={hit.title}",
-        f"source_type={hit.source_type}",
-        f"source_uri={hit.source_uri}",
-        f"chunk_index={hit.chunk_index}",
-    ]
-    location = format_location(hit.metadata)
-    if location:
-        parts.append(location.lstrip(", "))
-    if hit.source_type == "image":
-        image_uri = hit.metadata.get("image_uri") or hit.source_uri
-        parts.append(f"image_uri={image_uri}")
-        if hit.metadata.get("linked_doc_id"):
-            parts.append(f"linked_doc_id={hit.metadata['linked_doc_id']}")
-    return ", ".join(parts)
+    return prompt_evidence_header(index, hit)
 
 
 def extract_usage(response) -> dict[str, int]:
