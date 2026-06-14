@@ -15,6 +15,7 @@ type AuthContextValue = {
   token: string;
   login: (username: string, password: string) => Promise<void>;
   register: (username: string, password: string, displayName: string) => Promise<void>;
+  setUser: (user: AuthUser) => void;
   logout: () => Promise<void>;
 };
 
@@ -49,6 +50,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
         persistAuthSession(response);
         setSession(response);
+      },
+      setUser(user) {
+        setSession((current) => {
+          if (!current) return current;
+          const next = { ...current, user };
+          persistAuthSession(next);
+          return next;
+        });
       },
       async logout() {
         const current = loadAuthSession();

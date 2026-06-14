@@ -26,11 +26,13 @@ def main() -> None:
     old_collection = os.environ.get("RAG_COLLECTION")
     old_object_store = os.environ.get("RAG_OBJECT_STORE_DIR")
     old_runtime = os.environ.get("RAG_RUNTIME_DIR")
+    old_token = os.environ.get("RAG_API_TOKEN")
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["MILVUS_URI"] = str(Path(tmp) / "event_redaction.db")
         os.environ["RAG_COLLECTION"] = "rag_smoke_event_redaction"
         os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(tmp) / "object_store")
         os.environ["RAG_RUNTIME_DIR"] = str(Path(tmp) / "runtime")
+        os.environ["RAG_API_TOKEN"] = "smoke-token"
         try:
             run_smoke(Path(os.environ["RAG_RUNTIME_DIR"]))
         finally:
@@ -38,6 +40,7 @@ def main() -> None:
             restore_env("RAG_COLLECTION", old_collection)
             restore_env("RAG_OBJECT_STORE_DIR", old_object_store)
             restore_env("RAG_RUNTIME_DIR", old_runtime)
+            restore_env("RAG_API_TOKEN", old_token)
 
 
 def run_smoke(runtime_dir: Path) -> None:
@@ -77,8 +80,14 @@ def run_smoke(runtime_dir: Path) -> None:
     publish_current_versions(config.object_store_dir, [doc])
 
     api = TestClient(create_app())
+    headers = {
+        "Authorization": "Bearer smoke-token",
+        "X-RAG-Tenant-ID": "team_a",
+        "X-RAG-ACL-Groups": "ops",
+    }
     search = api.post(
         "/search",
+        headers=headers,
         json={
             "query": f"请联系 {RAW_EMAIL} {RAW_PHONE} {RAW_KEY}",
             "tenant_id": "team_a",
@@ -92,6 +101,7 @@ def run_smoke(runtime_dir: Path) -> None:
 
     feedback = api.post(
         "/feedback",
+        headers=headers,
         json={
             "request_id": "smoke-event-redaction-search",
             "rating": 1,

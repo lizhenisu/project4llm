@@ -26,7 +26,7 @@ def run_smoke() -> None:
         title="SQLite 会话",
         messages=[
             ConversationMessage(id="m1", role="user", content="问题", created_at=1),
-            ConversationMessage(id="m2", role="assistant", content="回答", created_at=2),
+            ConversationMessage(id="m2", role="assistant", content="回答", created_at=2, feedback_rating=1),
         ],
         source_doc_ids=["doc-1"],
     )
@@ -36,6 +36,7 @@ def run_smoke() -> None:
     loaded = load_conversation(config, tenant_id="tenant-a", conversation_id=saved.id)
     assert loaded is not None
     assert [message.content for message in loaded.messages] == ["问题", "回答"]
+    assert loaded.messages[1].feedback_rating == 1
     assert loaded.source_doc_ids == ["doc-1"]
     assert delete_conversation(config, tenant_id="tenant-a", conversation_id=saved.id)
     assert list_conversations(config, tenant_id="tenant-a") == []

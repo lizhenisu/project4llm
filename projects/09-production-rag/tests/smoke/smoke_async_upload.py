@@ -12,6 +12,7 @@ import serve
 def main() -> None:
     old_runtime = os.environ.get("RAG_RUNTIME_DIR")
     old_object_store = os.environ.get("RAG_OBJECT_STORE_DIR")
+    old_token = os.environ.get("RAG_API_TOKEN")
     old_ingest = serve.ingest_uploaded_path
     calls: list[dict] = []
 
@@ -21,11 +22,17 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         os.environ["RAG_RUNTIME_DIR"] = str(Path(temp_dir) / "runtime")
         os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(temp_dir) / "object_store")
+        os.environ["RAG_API_TOKEN"] = "smoke-token"
         serve.ingest_uploaded_path = fake_ingest_uploaded_path
         try:
             api = TestClient(serve.create_app())
             response = api.post(
                 "/sources/upload",
+                headers={
+                    "Authorization": "Bearer smoke-token",
+                    "X-RAG-Tenant-ID": "team_a",
+                    "X-RAG-ACL-Groups": "engineering",
+                },
                 data={"tenant_id": "team_a", "acl_groups": "engineering"},
                 files={"file": ("async.md", b"# Async upload\n\ncontent", "text/markdown")},
             )
@@ -38,6 +45,7 @@ def main() -> None:
             serve.ingest_uploaded_path = old_ingest
             restore_env("RAG_RUNTIME_DIR", old_runtime)
             restore_env("RAG_OBJECT_STORE_DIR", old_object_store)
+            restore_env("RAG_API_TOKEN", old_token)
 
     print("async upload smoke passed")
 

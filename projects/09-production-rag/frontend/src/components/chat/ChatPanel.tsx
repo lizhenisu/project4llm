@@ -7,6 +7,7 @@ import { EmptyState } from "../ui/EmptyState";
 type Props = {
   messages: ChatMessage[];
   selectedSources: SourceItem[];
+  authenticated: boolean;
   busy: boolean;
   conversationTitle: string;
   typingMessageId: string | null;
@@ -19,6 +20,7 @@ type Props = {
 export function ChatPanel({
   messages,
   selectedSources,
+  authenticated,
   busy,
   conversationTitle,
   typingMessageId,
@@ -31,7 +33,7 @@ export function ChatPanel({
   const [menuOpen, setMenuOpen] = useState(false);
   const [inputHeight, setInputHeight] = useState(46);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const canSend = draft.trim().length > 0 && selectedSources.length > 0 && !busy;
+  const canSend = draft.trim().length > 0 && (authenticated ? selectedSources.length > 0 : true) && !busy;
 
   useEffect(() => {
     function handleClickOutside() {
@@ -148,7 +150,7 @@ export function ChatPanel({
           name="chat-message"
           ref={textareaRef}
           value={draft}
-          placeholder={selectedSources.length ? "提问或创作内容" : "请先添加并选择来源"}
+          placeholder={authenticated ? (selectedSources.length ? "提问或创作内容" : "请先添加并选择来源") : "登录后即可发送"}
           onChange={(event) => setDraft(event.target.value)}
           style={{ minHeight: `${inputHeight}px`, maxHeight: '600px' }}
           onKeyDown={(event) => {
@@ -203,7 +205,7 @@ function AssistantMessage({
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const [feedbackRating, setFeedbackRating] = useState<1 | -1 | null>(null);
+  const feedbackRating = message.feedbackRating ?? null;
   
   const { text, done } = useTypewriter(message.content, typing);
 
@@ -241,7 +243,6 @@ function AssistantMessage({
             type="button" 
             onClick={() => {
               onFeedback(message, 1);
-              setFeedbackRating(1);
             }}
             style={{ color: feedbackRating === 1 ? "var(--green)" : "inherit" }}
           >
@@ -251,7 +252,6 @@ function AssistantMessage({
             type="button" 
             onClick={() => {
               onFeedback(message, -1);
-              setFeedbackRating(-1);
             }}
             style={{ color: feedbackRating === -1 ? "var(--danger)" : "inherit" }}
           >

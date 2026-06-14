@@ -36,6 +36,7 @@ def main() -> None:
     old_api_url = os.environ.get("NEW_API_URL")
     old_api_key = os.environ.get("NEW_API_KEY")
     old_model = os.environ.get("LLM_MODEL")
+    old_token = os.environ.get("RAG_API_TOKEN")
     old_openai = sys.modules.get("openai")
     with tempfile.TemporaryDirectory() as temp_dir:
         os.environ["RAG_RUNTIME_DIR"] = str(Path(temp_dir) / "runtime")
@@ -43,6 +44,7 @@ def main() -> None:
         os.environ["NEW_API_URL"] = "https://llm.example"
         os.environ["NEW_API_KEY"] = "test-key"
         os.environ["LLM_MODEL"] = "test-llm"
+        os.environ["RAG_API_TOKEN"] = "smoke-token"
         sys.modules["openai"] = SimpleNamespace(OpenAI=FakeOpenAI)
         try:
             archive_source_documents(
@@ -67,6 +69,7 @@ def main() -> None:
             restore_env("NEW_API_URL", old_api_url)
             restore_env("NEW_API_KEY", old_api_key)
             restore_env("LLM_MODEL", old_model)
+            restore_env("RAG_API_TOKEN", old_token)
             if old_openai is None:
                 sys.modules.pop("openai", None)
             else:
@@ -75,8 +78,14 @@ def main() -> None:
 
 def run_smoke() -> None:
     api = TestClient(create_app())
+    headers = {
+        "Authorization": "Bearer smoke-token",
+        "X-RAG-Tenant-ID": "team_a",
+        "X-RAG-ACL-Groups": "engineering",
+    }
     created = api.post(
         "/artifacts/mindmap",
+        headers=headers,
         json={
             "title": "异步思维导图",
             "tenant_id": "team_a",
@@ -90,7 +99,7 @@ def run_smoke() -> None:
     assert created_body["status"] == "generating"
     artifact_id = created_body["id"]
 
-    loaded = api.get(f"/artifacts/{artifact_id}?tenant_id=team_a")
+    loaded = api.get(f"/artifacts/{artifact_id}?tenant_id=team_a", headers=headers)
     assert loaded.status_code == 200, loaded.text
     loaded_body = loaded.json()
     assert loaded_body["status"] == "ready"

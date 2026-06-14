@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { Bot, LogIn, LogOut, Megaphone, Settings as SettingsIcon, Shield, UserRound } from "lucide-react";
+import { ArrowLeft, Ban, Bot, CheckCircle2, LogIn, LogOut, Megaphone, Settings as SettingsIcon, Shield, UserRound, X } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -13,7 +13,9 @@ import {
   deleteSource,
   deleteArtifact,
   renameArtifact,
+  renameSource,
   getConversation,
+  getAdminSettings,
   getArtifact,
   getSourceContent,
   health,
@@ -24,13 +26,17 @@ import {
   listSources,
   publishAnnouncement,
   queryRag,
+  changeCurrentPassword,
   saveConversation,
   sendFeedback,
+  updateAdminUserStatus,
+  updateCurrentUser,
+  updateRegistrationEnabled,
   uploadSource,
 } from "../lib/api";
 import { useAuth } from "../lib/AuthContext";
 import { defaultSettings, loadSettings, saveSettings } from "../lib/storage";
-import type { Announcement, AuthUser, ChatMessage, MindMapArtifact, Settings, SourceContent, SourceItem } from "../lib/types";
+import type { AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, MindMapArtifact, Settings, SourceContent, SourceItem } from "../lib/types";
 
 type PanelLayout = {
   source: number;
@@ -39,6 +45,7 @@ type PanelLayout = {
 };
 
 type ResizeHandle = "source-chat" | "chat-studio";
+type AppView = "workspace" | "profile" | "admin";
 
 const DEFAULT_LAYOUT: PanelLayout = { source: 24, chat: 46, studio: 30 };
 const MINDMAP_LAYOUT: PanelLayout = { source: 20, chat: 38, studio: 42 };
@@ -51,8 +58,8 @@ export function WorkspacePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [authDialogMode, setAuthDialogMode] = useState<"login" | "register" | null>(null);
-  const [adminOpen, setAdminOpen] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
+  const [activeView, setActiveView] = useState<AppView>("workspace");
+  const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [sources, setSources] = useState<SourceItem[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -71,10 +78,13 @@ export function WorkspacePage() {
   const [panelLayout, setPanelLayout] = useState<PanelLayout>(DEFAULT_LAYOUT);
   const [typingMessageId, setTypingMessageId] = useState<string | null>(null);
   const gridRef = useRef<HTMLElement | null>(null);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const studioListLayoutRef = useRef<PanelLayout | null>(null);
   const artifactGenerationBusyRef = useRef(false);
   const artifactGenerationReadyAtRef = useRef(0);
+  const suppressAutoConversationLoadRef = useRef(false);
 
+  const isAuthenticated = Boolean(auth.user && auth.token);
   const selectedSources = useMemo(() => sources.filter((source) => source.selected), [sources]);
   const selectedDocIds = useMemo(
     () =>
@@ -104,6 +114,17 @@ export function WorkspacePage() {
   }, [settings]);
 
   useEffect(() => {
+    if (!accountMenuOpen) return;
+    function handleOutsideClick(event: MouseEvent) {
+      if (!accountMenuRef.current?.contains(event.target as Node)) {
+        setAccountMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [accountMenuOpen]);
+
+  useEffect(() => {
     setSettings((current) => {
       const next = {
         ...current,
@@ -120,14 +141,35 @@ export function WorkspacePage() {
     setMessages([]);
     setConversationId(null);
     setConversationTitle("未命名对话");
-    setArtifacts([]);
-    setActiveArtifact(null);
-    setActiveSourceContent(null);
+      setArtifacts([]);
+      setActiveArtifact(null);
+      setActiveSourceContent(null);
+      setActiveView("workspace");
+      suppressAutoConversationLoadRef.current = false;
   }, [auth.user?.id]);
+
+  useEffect(() => {
+    const announcement = announcements[0];
+    if (!announcement) {
+      setAnnouncementOpen(false);
+      return;
+    }
+    const audience = auth.user?.id ?? "guest";
+    const key = announcementDismissKey(audience, announcement.id);
+    setAnnouncementOpen(sessionStorage.getItem(key) !== "1");
+  }, [announcements, auth.user?.id]);
 
   async function refresh(nextSettings = settings) {
     try {
       await health(nextSettings);
+      if (!nextSettings.token) {
+        const announcementRows = await listAnnouncements(nextSettings);
+        setSources([]);
+        setArtifacts([]);
+        setAnnouncements(announcementRows);
+        setStatus("请先登录后使用知识库服务");
+        return;
+      }
       setStatus("API 已连接");
       const [sourceRows, artifactRows, announcementRows] = await Promise.all([
         listSources(nextSettings),
@@ -144,6 +186,9 @@ export function WorkspacePage() {
   }
 
   async function loadLatestConversation(nextSettings: Settings, sourceRows: SourceItem[]) {
+    if (suppressAutoConversationLoadRef.current) {
+      return;
+    }
     const rows = await listConversations(nextSettings);
     if (conversationId || rows.length === 0 || messages.length > 0) {
       return;
@@ -151,7 +196,8 @@ export function WorkspacePage() {
     const latest = await getConversation(nextSettings, rows[0].id);
     setConversationId(latest.id);
     setConversationTitle(latest.title);
-    setMessages(latest.messages.map(normalizeMessage));
+    const latestMessages = latest.messages.map(normalizeMessage);
+    setMessages(latestMessages);
     const selectedIds = new Set(latest.source_doc_ids);
     if (selectedIds.size > 0) {
       setSources((current) =>
@@ -162,9 +208,17 @@ export function WorkspacePage() {
         })),
       );
     }
+    if (hasPendingAssistant(latestMessages)) {
+      void resumePendingAnswer({ ...latest, messages: latestMessages }, nextSettings);
+    }
   }
 
   async function handleUpload(file: File) {
+    if (!isAuthenticated) {
+      setAuthDialogMode("login");
+      return;
+    }
+    const sourceKeysBeforeUpload = new Set(sources.map(sourceStateKey));
     const temp: SourceItem = {
       doc_id: `upload-${Date.now()}`,
       title: file.name,
@@ -184,7 +238,7 @@ export function WorkspacePage() {
         ...uploaded.map(item => ({ ...item, selected: true })), // Auto-select newly uploaded items
         ...items.filter((item) => item.doc_id !== temp.doc_id)
       ]);
-      const readyRows = await waitForSourcesReady(settings, uploaded);
+      const readyRows = await waitForSourcesReady(settings, uploaded, sourceKeysBeforeUpload);
       setSources((items) => mergeSelectedState(readyRows, items));
     } catch (error) {
       setSources((items) =>
@@ -203,7 +257,7 @@ export function WorkspacePage() {
       setActiveSourceContent(null);
     }
     try {
-      await deleteSource(settings, source.doc_id);
+      await deleteSource(settings, source.doc_id, source.doc_version);
     } catch (error) {
       setSources((items) => [
         { ...source, status: "failed", error: error instanceof Error ? error.message : "删除失败" },
@@ -228,7 +282,7 @@ export function WorkspacePage() {
       text: "",
     });
     try {
-      const content = await getSourceContent(settings, source.doc_id);
+      const content = await getSourceContent(settings, source.doc_id, source.doc_version);
       setActiveSourceContent(content);
     } catch (error) {
       setSourceContentError(error instanceof Error ? error.message : "加载来源内容失败");
@@ -239,6 +293,10 @@ export function WorkspacePage() {
 
   async function handleAsk(query: string) {
     if (!query.trim()) return;
+    if (!isAuthenticated) {
+      setAuthDialogMode("login");
+      return;
+    }
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -257,7 +315,10 @@ export function WorkspacePage() {
     setMessages(baseMessages);
     setTypingMessageId(null);
     setBusy(true);
+    let targetConversationId = conversationId;
     try {
+      const savedPending = await persistConversation(baseMessages);
+      targetConversationId = savedPending?.id ?? targetConversationId;
       const response = await queryRag(settings, {
         query,
         docIds: selectedDocIds,
@@ -276,8 +337,11 @@ export function WorkspacePage() {
       );
       setMessages(nextMessages);
       setTypingMessageId(pending.id);
-      await persistConversation(nextMessages);
+      await persistConversation(nextMessages, targetConversationId, selectedDocIds);
     } catch (error) {
+      if (isFetchInterrupted(error)) {
+        return;
+      }
       const failedMessages: ChatMessage[] = baseMessages.map((item) =>
           item.id === pending.id
             ? { ...item, content: error instanceof Error ? error.message : "回答失败", status: "failed" as const }
@@ -285,29 +349,91 @@ export function WorkspacePage() {
       );
       setMessages(failedMessages);
       setTypingMessageId(null);
-      await persistConversation(failedMessages);
+      await persistConversation(failedMessages, targetConversationId, selectedDocIds);
     } finally {
       setBusy(false);
     }
   }
 
-  async function persistConversation(nextMessages: ChatMessage[]) {
-    if (nextMessages.length === 0) return;
+  async function resumePendingAnswer(conversation: Conversation, nextSettings: Settings) {
+    const pendingIndex = conversation.messages.findIndex(
+      (message) => message.role === "assistant" && message.status === "sending",
+    );
+    if (pendingIndex < 0) return;
+    const userIndex = findPreviousUserMessageIndex(conversation.messages, pendingIndex);
+    if (userIndex < 0) return;
+    const pending = conversation.messages[pendingIndex];
+    const userMessage = conversation.messages[userIndex];
+    setBusy(true);
+    setTypingMessageId(null);
+    try {
+      const response = await queryRag(nextSettings, {
+        query: userMessage.content,
+        docIds: conversation.source_doc_ids,
+        history: conversation.messages
+          .slice(0, userIndex)
+          .map((message) => `${message.role}: ${message.content}`)
+          .slice(-8),
+      });
+      const nextMessages: ChatMessage[] = conversation.messages.map((item, index) =>
+        index === pendingIndex
+          ? {
+              ...item,
+              content: response.answer,
+              requestId: response.request_id,
+              citations: response.citations,
+              status: "done" as const,
+            }
+          : item,
+      );
+      setMessages(nextMessages);
+      setTypingMessageId(pending.id);
+      await persistConversation(nextMessages, conversation.id, conversation.source_doc_ids, nextSettings);
+    } catch (error) {
+      if (isFetchInterrupted(error)) {
+        return;
+      }
+      const failedMessages: ChatMessage[] = conversation.messages.map((item, index) =>
+        index === pendingIndex
+          ? {
+              ...item,
+              content: error instanceof Error ? error.message : "回答恢复失败",
+              status: "failed" as const,
+            }
+          : item,
+      );
+      setMessages(failedMessages);
+      setTypingMessageId(null);
+      await persistConversation(failedMessages, conversation.id, conversation.source_doc_ids, nextSettings);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function persistConversation(
+    nextMessages: ChatMessage[],
+    targetConversationId = conversationId,
+    sourceDocIds = selectedDocIds,
+    targetSettings = settings,
+  ) {
+    if (nextMessages.length === 0) return null;
     const title = inferConversationTitle(nextMessages);
-    const saved = await saveConversation(settings, {
-      id: conversationId,
+    const saved = await saveConversation(targetSettings, {
+      id: targetConversationId,
       title,
       messages: nextMessages,
-      sourceDocIds: selectedDocIds,
+      sourceDocIds,
     });
     setConversationId(saved.id);
     setConversationTitle(saved.title);
+    return saved;
   }
 
   async function handleDeleteConversation() {
     if (conversationId) {
       await deleteConversation(settings, conversationId);
     }
+    suppressAutoConversationLoadRef.current = true;
     setConversationId(null);
     setConversationTitle("未命名对话");
     setMessages([]);
@@ -316,6 +442,11 @@ export function WorkspacePage() {
   async function handleFeedback(message: ChatMessage, rating: 1 | -1) {
     if (!message.requestId) return;
     await sendFeedback(settings, message.requestId, rating, selectedDocIds);
+    const nextMessages = messages.map((item) =>
+      item.id === message.id ? { ...item, feedbackRating: rating } : item,
+    );
+    setMessages(nextMessages);
+    await persistConversation(nextMessages);
   }
 
   function openArtifact(artifact: MindMapArtifact) {
@@ -444,12 +575,25 @@ export function WorkspacePage() {
 
   async function handleRenameSource(source: SourceItem, newTitle: string) {
     if (!newTitle.trim() || newTitle === source.title) return;
+    const previousTitle = source.title;
+    setSources((items) => items.map((item) => (item.doc_id === source.doc_id ? { ...item, title: newTitle } : item)));
     try {
-      // Mocking the backend call for now since there's no rename_source endpoint.
-      // Update local state directly so the UI responds correctly.
-      setSources((items) => items.map((item) => (item.doc_id === source.doc_id ? { ...item, title: newTitle } : item)));
+      const renamed = await renameSource(settings, source.doc_id, newTitle, source.doc_version);
+      setSources((items) =>
+        items.map((item) => (item.doc_id === source.doc_id ? { ...item, title: renamed.title } : item)),
+      );
+      if (activeSourceContent?.doc_id === source.doc_id) {
+        setActiveSourceContent({ ...activeSourceContent, title: renamed.title });
+      }
     } catch (error) {
       console.error("Rename source failed:", error);
+      setSources((items) =>
+        items.map((item) =>
+          item.doc_id === source.doc_id
+            ? { ...item, title: previousTitle, error: error instanceof Error ? error.message : "重命名失败" }
+            : item,
+        ),
+      );
     }
   }
 
@@ -470,6 +614,14 @@ export function WorkspacePage() {
     await auth.logout();
   }
 
+  function closeAnnouncement() {
+    const announcement = announcements[0];
+    if (announcement) {
+      sessionStorage.setItem(announcementDismissKey(auth.user?.id ?? "guest", announcement.id), "1");
+    }
+    setAnnouncementOpen(false);
+  }
+
   return (
     <div className="workspace-shell">
       <header className="topbar">
@@ -483,15 +635,21 @@ export function WorkspacePage() {
           <IconButton label="设置" onClick={() => setSettingsOpen(true)}>
             <SettingsIcon size={18} />
           </IconButton>
-          <div className="account-menu-anchor">
+          <div className="account-menu-anchor" ref={accountMenuRef}>
             <button
               type="button"
-              className="avatar"
+              className={`avatar ${auth.user?.avatar_url ? "has-image" : "no-image"}`}
               aria-label="用户头像"
               title={auth.user ? auth.user.display_name : "账户"}
               onClick={() => setAccountMenuOpen((open) => !open)}
             >
-              {auth.user ? auth.user.display_name.slice(0, 1).toUpperCase() : ""}
+              {auth.user?.avatar_url ? (
+                <img src={auth.user.avatar_url} alt="" />
+              ) : auth.user ? (
+                auth.user.display_name.slice(0, 1).toUpperCase()
+              ) : (
+                <UserRound size={17} />
+              )}
             </button>
             {accountMenuOpen ? (
               <AccountMenu
@@ -506,11 +664,11 @@ export function WorkspacePage() {
                 }}
                 onProfile={() => {
                   setAccountMenuOpen(false);
-                  setProfileOpen(true);
+                  setActiveView("profile");
                 }}
                 onAdmin={() => {
                   setAccountMenuOpen(false);
-                  setAdminOpen(true);
+                  setActiveView("admin");
                 }}
                 onLogout={handleLogout}
               />
@@ -518,64 +676,78 @@ export function WorkspacePage() {
           </div>
         </div>
       </header>
-      <AnnouncementBar announcement={announcements[0] ?? null} />
-      <main
-        className={`workspace-grid ${activeArtifact ? "mindmap-expanded" : ""}`}
-        ref={gridRef}
-        style={{
-          gridTemplateColumns: `${panelLayout.source}fr 10px ${panelLayout.chat}fr 10px ${panelLayout.studio}fr`,
-        }}
-      >
-        <SourcePanel
-          sources={sources}
-          onSourcesChange={setSources}
-          onUpload={handleUpload}
-          onDeleteSource={handleDeleteSource}
-          onRenameSource={handleRenameSource}
-          onOpenSource={handleOpenSource}
-          activeContent={activeSourceContent}
-          contentLoading={sourceContentLoading}
-          contentError={sourceContentError}
-          onCloseContent={() => {
-            setActiveSourceContent(null);
-            setSourceContentError("");
+      {activeView === "profile" && auth.user ? (
+        <ProfilePage user={auth.user} settings={settings} onBack={() => setActiveView("workspace")} />
+      ) : activeView === "admin" && auth.user?.role === "admin" ? (
+        <AdminPage
+          settings={settings}
+          currentUser={auth.user}
+          onBack={() => setActiveView("workspace")}
+          onAnnouncement={(announcement) => {
+            setAnnouncements((items) => [announcement, ...items]);
+            setAnnouncementOpen(true);
           }}
         />
-        <ResizeDivider
-          label="调整来源和对话宽度"
-          onPointerDown={(event) => startPanelResize(event, "source-chat", gridRef, panelLayout, setPanelLayout)}
-        />
-        <ChatPanel
-          messages={messages}
-          selectedSources={selectedSources}
-          busy={busy}
-          conversationTitle={conversationTitle}
-          typingMessageId={typingMessageId}
-          onTypingComplete={() => setTypingMessageId(null)}
-          onAsk={handleAsk}
-          onFeedback={handleFeedback}
-          onDeleteConversation={handleDeleteConversation}
-        />
-        <ResizeDivider
-          label="调整对话和 Studio 宽度"
-          onPointerDown={(event) => startPanelResize(event, "chat-studio", gridRef, panelLayout, setPanelLayout)}
-        />
-        <StudioPanel
-          artifacts={artifacts}
-          sources={sources}
-          selectedSources={selectedSources}
-          activeArtifact={activeArtifact}
-          artifactGenerationLocked={artifactGenerationLocked}
-          artifactGenerationLockReason={artifactGenerationLockReason}
-          onCreateMindMap={handleCreateMindMap}
-          onCreateDataTable={handleCreateDataTable}
-          onOpenArtifact={openArtifact}
-          onRenameArtifact={handleRenameArtifact}
-          onDeleteArtifact={handleDeleteArtifact}
-          onOpenSource={handleOpenSource}
-          onBack={backToStudioList}
-        />
-      </main>
+      ) : (
+        <main
+          className={`workspace-grid ${activeArtifact ? "mindmap-expanded" : ""}`}
+          ref={gridRef}
+          style={{
+            gridTemplateColumns: `${panelLayout.source}fr 10px ${panelLayout.chat}fr 10px ${panelLayout.studio}fr`,
+          }}
+        >
+          <SourcePanel
+            sources={sources}
+            onSourcesChange={setSources}
+            onUpload={handleUpload}
+            onDeleteSource={handleDeleteSource}
+            onRenameSource={handleRenameSource}
+            onOpenSource={handleOpenSource}
+            activeContent={activeSourceContent}
+            contentLoading={sourceContentLoading}
+            contentError={sourceContentError}
+            onCloseContent={() => {
+              setActiveSourceContent(null);
+              setSourceContentError("");
+            }}
+          />
+          <ResizeDivider
+            label="调整来源和对话宽度"
+            onPointerDown={(event) => startPanelResize(event, "source-chat", gridRef, panelLayout, setPanelLayout)}
+          />
+          <ChatPanel
+            messages={messages}
+            selectedSources={selectedSources}
+            authenticated={isAuthenticated}
+            busy={busy}
+            conversationTitle={conversationTitle}
+            typingMessageId={typingMessageId}
+            onTypingComplete={() => setTypingMessageId(null)}
+            onAsk={handleAsk}
+            onFeedback={handleFeedback}
+            onDeleteConversation={handleDeleteConversation}
+          />
+          <ResizeDivider
+            label="调整对话和 Studio 宽度"
+            onPointerDown={(event) => startPanelResize(event, "chat-studio", gridRef, panelLayout, setPanelLayout)}
+          />
+          <StudioPanel
+            artifacts={artifacts}
+            sources={sources}
+            selectedSources={selectedSources}
+            activeArtifact={activeArtifact}
+            artifactGenerationLocked={artifactGenerationLocked}
+            artifactGenerationLockReason={artifactGenerationLockReason}
+            onCreateMindMap={handleCreateMindMap}
+            onCreateDataTable={handleCreateDataTable}
+            onOpenArtifact={openArtifact}
+            onRenameArtifact={handleRenameArtifact}
+            onDeleteArtifact={handleDeleteArtifact}
+            onOpenSource={handleOpenSource}
+            onBack={backToStudioList}
+          />
+        </main>
+      )}
       <footer className="statusbar">{status}</footer>
       <SettingsDialog
         open={settingsOpen}
@@ -586,14 +758,9 @@ export function WorkspacePage() {
       {authDialogMode ? (
         <AuthDialog mode={authDialogMode} onClose={() => setAuthDialogMode(null)} />
       ) : null}
-      {adminOpen && auth.user?.role === "admin" ? (
-        <AdminDialog
-          settings={settings}
-          onClose={() => setAdminOpen(false)}
-          onAnnouncement={(announcement) => setAnnouncements((items) => [announcement, ...items])}
-        />
+      {announcementOpen && announcements[0] ? (
+        <AnnouncementModal announcement={announcements[0]} onClose={closeAnnouncement} />
       ) : null}
-      {profileOpen && auth.user ? <ProfileDialog user={auth.user} onClose={() => setProfileOpen(false)} /> : null}
     </div>
   );
 }
@@ -618,7 +785,7 @@ function AccountMenu({
       {user ? (
         <>
           <div className="account-card">
-            <UserRound size={18} />
+            <AccountAvatar user={user} />
             <div>
               <strong>{user.display_name}</strong>
               <span>{user.username} · {user.role === "admin" ? "管理员" : "普通用户"}</span>
@@ -655,15 +822,28 @@ function AccountMenu({
   );
 }
 
-function AnnouncementBar({ announcement }: { announcement: Announcement | null }) {
-  if (!announcement) {
-    return <div className="announcement-bar is-empty" aria-hidden="true" />;
-  }
+function AccountAvatar({ user }: { user: AuthUser }) {
+  return user.avatar_url ? (
+    <img className="account-avatar-image" src={user.avatar_url} alt="" />
+  ) : (
+    <span className="account-avatar-fallback">{user.display_name.slice(0, 1).toUpperCase()}</span>
+  );
+}
+
+function AnnouncementModal({ announcement, onClose }: { announcement: Announcement; onClose: () => void }) {
   return (
-    <div className="announcement-bar">
-      <Megaphone size={16} />
-      <strong>{announcement.title}</strong>
-      <span>{announcement.content}</span>
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="announcement-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <button className="close-button" type="button" aria-label="关闭公告" onClick={onClose}>
+          <X size={18} />
+        </button>
+        <div className="announcement-modal-icon">
+          <Megaphone size={22} />
+        </div>
+        <h2>{announcement.title}</h2>
+        <p>{announcement.content}</p>
+        <span>{announcement.author_name || "系统公告"} · {formatDateTime(announcement.created_at)}</span>
+      </section>
     </div>
   );
 }
@@ -730,59 +910,156 @@ function AuthDialog({ mode, onClose }: { mode: "login" | "register"; onClose: ()
   );
 }
 
-function ProfileDialog({ user, onClose }: { user: AuthUser; onClose: () => void }) {
+function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Settings; onBack: () => void }) {
+  const auth = useAuth();
+  const [username, setUsername] = useState(user.username);
+  const [displayName, setDisplayName] = useState(user.display_name);
+  const [avatarUrl, setAvatarUrl] = useState(user.avatar_url || "");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
+
+  useEffect(() => {
+    setUsername(user.username);
+    setDisplayName(user.display_name);
+    setAvatarUrl(user.avatar_url || "");
+  }, [user]);
+
+  async function saveProfile(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+    setSavingProfile(true);
+    try {
+      const updated = await updateCurrentUser(settings, { username, displayName, avatarUrl });
+      auth.setUser(updated);
+      setMessage("个人信息已保存");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSavingProfile(false);
+    }
+  }
+
+  async function savePassword(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+    setSavingPassword(true);
+    try {
+      await changeCurrentPassword(settings, { currentPassword, newPassword });
+      setCurrentPassword("");
+      setNewPassword("");
+      setMessage("密码已更新");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "修改密码失败");
+    } finally {
+      setSavingPassword(false);
+    }
+  }
+
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="profile-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="admin-dialog-header">
-          <h2>个人信息</h2>
-          <button type="button" onClick={onClose}>关闭</button>
+    <main className="account-page">
+      <div className="page-heading">
+        <button className="icon-button" type="button" aria-label="返回工作台" onClick={onBack}>
+          <ArrowLeft size={18} />
+        </button>
+        <div>
+          <h1>个人信息</h1>
+          <p>管理账号资料、头像和登录密码。</p>
         </div>
-        <dl className="profile-list">
-          <div>
-            <dt>显示名称</dt>
-            <dd>{user.display_name}</dd>
+      </div>
+      <section className="account-page-grid">
+        <form className="account-section" onSubmit={saveProfile}>
+          <div className="profile-hero">
+            <div className="profile-avatar">
+              {avatarUrl ? <img src={avatarUrl} alt="" /> : <span>{displayName.slice(0, 1).toUpperCase() || "U"}</span>}
+            </div>
+            <div>
+              <strong>{displayName || user.display_name}</strong>
+              <span>{user.role === "admin" ? "管理员" : "普通用户"} · {user.status === "banned" ? "已封禁" : "正常"}</span>
+            </div>
           </div>
-          <div>
-            <dt>用户名</dt>
-            <dd>{user.username}</dd>
-          </div>
-          <div>
-            <dt>角色</dt>
-            <dd>{user.role === "admin" ? "管理员" : "普通用户"}</dd>
-          </div>
-          <div>
-            <dt>数据空间</dt>
-            <dd>{user.tenant_id}</dd>
-          </div>
-          <div>
-            <dt>最近登录</dt>
-            <dd>{user.last_login_at ? formatTime(user.last_login_at) : "当前会话"}</dd>
-          </div>
-        </dl>
+          <label>
+            用户名
+            <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+          </label>
+          <label>
+            显示名称
+            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" />
+          </label>
+          <label>
+            头像地址
+            <input value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} placeholder="https://..." />
+          </label>
+          <dl className="profile-list">
+            <div>
+              <dt>数据空间</dt>
+              <dd>{user.tenant_id}</dd>
+            </div>
+            <div>
+              <dt>注册日期</dt>
+              <dd>{formatDateTime(user.created_at)}</dd>
+            </div>
+            <div>
+              <dt>最近登录</dt>
+              <dd>{user.last_login_at ? formatDateTime(user.last_login_at) : "当前会话"}</dd>
+            </div>
+          </dl>
+          <button className="primary-pill" type="submit" disabled={savingProfile || !username.trim() || !displayName.trim()}>
+            {savingProfile ? "保存中..." : "保存资料"}
+          </button>
+        </form>
+        <form className="account-section" onSubmit={savePassword}>
+          <h2>修改密码</h2>
+          <label>
+            当前密码
+            <input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" />
+          </label>
+          <label>
+            新密码
+            <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" />
+          </label>
+          <button className="primary-pill" type="submit" disabled={savingPassword || !currentPassword || newPassword.length < 8}>
+            {savingPassword ? "更新中..." : "更新密码"}
+          </button>
+          {message ? <p className="success-text">{message}</p> : null}
+          {error ? <p className="error-text">{error}</p> : null}
+        </form>
       </section>
-    </div>
+    </main>
   );
 }
 
-function AdminDialog({
+function AdminPage({
   settings,
-  onClose,
+  currentUser,
+  onBack,
   onAnnouncement,
 }: {
   settings: Settings;
-  onClose: () => void;
+  currentUser: AuthUser;
+  onBack: () => void;
   onAnnouncement: (announcement: Announcement) => void;
 }) {
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [error, setError] = useState("");
+  const [busyUserId, setBusyUserId] = useState<string | null>(null);
+  const [adminSettings, setAdminSettings] = useState<AdminSettings | null>(null);
+  const [settingsBusy, setSettingsBusy] = useState(false);
 
   useEffect(() => {
-    listAdminUsers(settings)
-      .then(setUsers)
-      .catch((err) => setError(err instanceof Error ? err.message : "加载用户失败"));
+    Promise.all([listAdminUsers(settings), getAdminSettings(settings)])
+      .then(([userRows, nextSettings]) => {
+        setUsers(userRows);
+        setAdminSettings(nextSettings);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "加载管理员控制台失败"));
   }, [settings]);
 
   async function submit(event: FormEvent) {
@@ -791,6 +1068,11 @@ function AdminDialog({
     try {
       const announcement = await publishAnnouncement(settings, { title, content });
       onAnnouncement(announcement);
+      setAdminSettings((current) =>
+        current
+          ? { ...current, latest_announcement: announcement }
+          : { registration_enabled: true, latest_announcement: announcement },
+      );
       setTitle("");
       setContent("");
     } catch (err) {
@@ -798,14 +1080,62 @@ function AdminDialog({
     }
   }
 
+  async function toggleUserStatus(user: AuthUser) {
+    setError("");
+    setBusyUserId(user.id);
+    try {
+      const nextStatus = user.status === "banned" ? "active" : "banned";
+      const updated = await updateAdminUserStatus(settings, user.id, nextStatus);
+      setUsers((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新用户状态失败");
+    } finally {
+      setBusyUserId(null);
+    }
+  }
+
+  async function toggleRegistrationEnabled() {
+    if (!adminSettings) {
+      return;
+    }
+    setError("");
+    setSettingsBusy(true);
+    try {
+      const updated = await updateRegistrationEnabled(settings, !adminSettings.registration_enabled);
+      setAdminSettings(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新注册设置失败");
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="admin-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="admin-dialog-header">
-          <h2>管理员控制台</h2>
-          <button type="button" onClick={onClose}>关闭</button>
+    <main className="account-page admin-page">
+      <div className="page-heading">
+        <button className="icon-button" type="button" aria-label="返回工作台" onClick={onBack}>
+          <ArrowLeft size={18} />
+        </button>
+        <div>
+          <h1>管理员控制台</h1>
+          <p>发布公告、查看用户并管理普通账号状态。</p>
         </div>
+      </div>
+      <section className="account-page-grid admin-page-grid">
+        <section className="announcement-form admin-settings-card">
+          <h2>系统设置</h2>
+          <div className="admin-setting-row">
+            <div>
+              <strong>新用户注册</strong>
+              <p>{adminSettings?.registration_enabled ? "当前允许新用户自行注册。" : "当前已关闭新用户注册。"}</p>
+            </div>
+            <button type="button" disabled={!adminSettings || settingsBusy} onClick={toggleRegistrationEnabled}>
+              {adminSettings?.registration_enabled ? "关闭注册" : "允许注册"}
+            </button>
+          </div>
+        </section>
         <form className="announcement-form" onSubmit={submit}>
+          <h2>发布公告</h2>
           <label>
             公告标题
             <input value={title} onChange={(event) => setTitle(event.target.value)} />
@@ -815,6 +1145,20 @@ function AdminDialog({
             <textarea value={content} onChange={(event) => setContent(event.target.value)} rows={4} />
           </label>
           <button type="submit" disabled={!title.trim() || !content.trim()}>发布公告</button>
+          <div className="latest-announcement">
+            <span>上一次公告</span>
+            {adminSettings?.latest_announcement ? (
+              <>
+                <strong>{adminSettings.latest_announcement.title}</strong>
+                <p>{adminSettings.latest_announcement.content}</p>
+                <small>
+                  {adminSettings.latest_announcement.author_name || "系统公告"} · {formatDateTime(adminSettings.latest_announcement.created_at)}
+                </small>
+              </>
+            ) : (
+              <p>暂无公告</p>
+            )}
+          </div>
         </form>
         {error ? <p className="error-text">{error}</p> : null}
         <div className="admin-users">
@@ -824,8 +1168,11 @@ function AdminDialog({
               <tr>
                 <th>用户名</th>
                 <th>角色</th>
+                <th>状态</th>
+                <th>注册日期</th>
                 <th>Tenant</th>
                 <th>最近登录</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -833,15 +1180,32 @@ function AdminDialog({
                 <tr key={user.id}>
                   <td>{user.display_name} / {user.username}</td>
                   <td>{user.role === "admin" ? "管理员" : "普通用户"}</td>
+                  <td>{user.status === "banned" ? "已封禁" : "正常"}</td>
+                  <td>{formatDateTime(user.created_at)}</td>
                   <td>{user.tenant_id}</td>
-                  <td>{user.last_login_at ? formatTime(user.last_login_at) : "未登录"}</td>
+                  <td>{user.last_login_at ? formatDateTime(user.last_login_at) : "未登录"}</td>
+                  <td>
+                    {user.role === "admin" || user.id === currentUser.id ? (
+                      <span className="muted-text">不可操作</span>
+                    ) : (
+                      <button
+                        className={user.status === "banned" ? "inline-action" : "inline-action danger"}
+                        type="button"
+                        disabled={busyUserId === user.id}
+                        onClick={() => toggleUserStatus(user)}
+                      >
+                        {user.status === "banned" ? <CheckCircle2 size={15} /> : <Ban size={15} />}
+                        {user.status === "banned" ? "解封" : "封禁"}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </section>
-    </div>
+    </main>
   );
 }
 
@@ -859,6 +1223,23 @@ function inferConversationTitle(messages: ChatMessage[]) {
   return firstUser ? firstUser.slice(0, 40) : "未命名对话";
 }
 
+function hasPendingAssistant(messages: ChatMessage[]) {
+  return messages.some((message) => message.role === "assistant" && message.status === "sending");
+}
+
+function findPreviousUserMessageIndex(messages: ChatMessage[], fromIndex: number) {
+  for (let index = fromIndex - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function isFetchInterrupted(error: unknown) {
+  return error instanceof TypeError && error.message === "Failed to fetch";
+}
+
 function settingsEqual(left: Settings, right: Settings) {
   return (
     left.apiBaseUrl === right.apiBaseUrl &&
@@ -868,13 +1249,18 @@ function settingsEqual(left: Settings, right: Settings) {
   );
 }
 
-function formatTime(value: number) {
+function formatDateTime(value: number) {
   return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
   }).format(value);
+}
+
+function announcementDismissKey(audience: string, announcementId: string) {
+  return `announcement-dismissed:${audience}:${announcementId}`;
 }
 
 async function waitForArtifact(settings: Settings, artifactId: string): Promise<MindMapArtifact> {
@@ -892,14 +1278,26 @@ async function waitForArtifact(settings: Settings, artifactId: string): Promise<
   throw new Error("生成超时，请稍后在 Studio 列表中查看结果");
 }
 
-async function waitForSourcesReady(settings: Settings, pendingSources: SourceItem[]): Promise<SourceItem[]> {
+async function waitForSourcesReady(
+  settings: Settings,
+  pendingSources: SourceItem[],
+  sourceKeysBeforeUpload: Set<string>,
+): Promise<SourceItem[]> {
+  const pendingIds = new Set(pendingSources.map((source) => source.doc_id));
+  const pendingUris = new Set(pendingSources.map((source) => source.source_uri));
   const pendingTitles = new Set(pendingSources.map((source) => source.title));
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
     await new Promise((resolve) => window.setTimeout(resolve, 1500));
     const rows = await listSources(settings);
-    const related = rows.filter((source) => pendingTitles.has(source.title));
-    if (related.some((source) => source.status === "ready" || source.status === "failed")) {
+    const pendingRows = rows.filter((source) => pendingIds.has(source.doc_id));
+    const newReadyRows = rows.filter(
+      (source) =>
+        source.status === "ready" &&
+        !sourceKeysBeforeUpload.has(sourceStateKey(source)) &&
+        (pendingUris.has(source.source_uri) || pendingTitles.has(source.title)),
+    );
+    if (pendingRows.some((source) => source.status === "failed") || newReadyRows.length > 0) {
       return rows;
     }
   }
@@ -907,15 +1305,16 @@ async function waitForSourcesReady(settings: Settings, pendingSources: SourceIte
 }
 
 function mergeSelectedState(next: SourceItem[], current: SourceItem[]) {
-  const selected = new Map(current.map((item) => [item.doc_id, item.selected ?? item.current]));
+  const selected = new Map(current.map((item) => [sourceStateKey(item), item.selected ?? item.current]));
   const merged = next.map((item) => ({
     ...item,
-    selected: selected.get(item.doc_id) ?? item.current,
+    selected: selected.get(sourceStateKey(item)) ?? item.current,
   }));
-  const activeTasks = current.filter(
-    (item) => item.status !== "ready" && !merged.some((nextItem) => nextItem.doc_id === item.doc_id),
-  );
-  return [...activeTasks, ...merged];
+  return merged;
+}
+
+function sourceStateKey(source: SourceItem) {
+  return `${source.doc_id}::${source.doc_version}`;
 }
 
 function ResizeDivider({

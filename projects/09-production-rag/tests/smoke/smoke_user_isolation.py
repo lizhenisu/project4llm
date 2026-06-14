@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -13,16 +14,17 @@ def main() -> None:
     old_runtime = os.environ.get("RAG_RUNTIME_DIR")
     old_object_store = os.environ.get("RAG_OBJECT_STORE_DIR")
     with tempfile.TemporaryDirectory() as temp_dir:
-        os.environ["RAG_RUNTIME_DIR"] = str(Path(temp_dir) / "runtime")
+        runtime_dir = Path(temp_dir) / "runtime"
+        os.environ["RAG_RUNTIME_DIR"] = str(runtime_dir)
         os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(temp_dir) / "object_store")
         try:
-            run_smoke()
+            run_smoke(runtime_dir)
         finally:
             restore_env("RAG_RUNTIME_DIR", old_runtime)
             restore_env("RAG_OBJECT_STORE_DIR", old_object_store)
 
 
-def run_smoke() -> None:
+def run_smoke(runtime_dir: Path) -> None:
     api = TestClient(create_app())
     alice = register(api, "alice")
     bob = register(api, "bob")
@@ -57,6 +59,23 @@ def run_smoke() -> None:
     )
     assert bob_rows.status_code == 200, bob_rows.text
     assert bob_rows.json()["conversations"] == []
+
+    feedback = api.post(
+        "/feedback",
+        headers=alice_headers,
+        json={
+            "request_id": "alice-feedback",
+            "rating": 1,
+            "tenant_id": bob["user"]["tenant_id"],
+            "acl_groups": ["spoofed"],
+            "selected_doc_ids": ["private-doc"],
+        },
+    )
+    assert feedback.status_code == 200, feedback.text
+    event = json.loads((runtime_dir / "feedback_events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert event["tenant_id"] == alice["user"]["tenant_id"]
+    assert event["auth_context"]["tenant_id"] == alice["user"]["tenant_id"]
+    assert event["auth_context"]["source"] == "headers"
     print("user isolation smoke passed")
 
 

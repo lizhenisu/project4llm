@@ -168,6 +168,7 @@ export function StudioPanel({
               <div onClick={() => !editingArtifactId && onOpenArtifact(artifact)} style={{ cursor: "pointer", flex: 1, minWidth: 0 }}>
                 {editingArtifactId === artifact.id ? (
                   <input
+                    className="inline-title-input"
                     type="text"
                     // eslint-disable-next-line jsx-a11y/no-autofocus
                     autoFocus
@@ -177,17 +178,6 @@ export function StudioPanel({
                     onKeyDown={(e) => {
                       if (e.key === "Enter") handleSaveTitle(artifact);
                       if (e.key === "Escape") setEditingArtifactId(null);
-                    }}
-                    style={{
-                      width: "100%",
-                      padding: "2px 4px",
-                      margin: "-2px -4px",
-                      border: "1px solid var(--line-strong)",
-                      borderRadius: "4px",
-                      fontSize: "inherit",
-                      fontWeight: 650,
-                      fontFamily: "inherit",
-                      outline: "none"
                     }}
                     onClick={(e) => e.stopPropagation()}
                   />
@@ -225,10 +215,11 @@ export function StudioPanel({
                   <MoreVertical size={18} />
                 </button>
                 {menuOpenId === artifact.id && menuPosition && createPortal(
-                  <div className="dropdown-menu" style={{ position: "fixed", top: menuPosition.top, right: menuPosition.right, zIndex: 9999, background: "white", border: "1px solid var(--line)", borderRadius: "var(--radius)", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", padding: "4px 0", minWidth: "120px" }}>
+                  <>
+                  <div className="dropdown-backdrop" onMouseDown={() => setMenuOpenId(null)} />
+                  <div className="dropdown-menu" style={{ top: menuPosition.top, right: menuPosition.right }} onMouseDown={(e) => e.stopPropagation()}>
                     <button
                       type="button"
-                      style={{ display: "block", width: "100%", padding: "8px 16px", textAlign: "left", background: "none", border: "none", cursor: "pointer", fontSize: "14px" }}
                       onClick={(e) => {
                         e.stopPropagation();
                         setMenuOpenId(null);
@@ -240,7 +231,7 @@ export function StudioPanel({
                     </button>
                     <button
                       type="button"
-                      style={{ display: "block", width: "100%", padding: "8px 16px", textAlign: "left", background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "var(--danger)" }}
+                      className="danger"
                       onClick={(e) => {
                         e.stopPropagation();
                         setMenuOpenId(null);
@@ -249,7 +240,8 @@ export function StudioPanel({
                     >
                       删除
                     </button>
-                  </div>,
+                  </div>
+                  </>,
                   document.body
                 )}
               </div>

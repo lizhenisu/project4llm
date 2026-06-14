@@ -1,6 +1,6 @@
 .workspace-shell {
   display: grid;
-  grid-template-rows: 58px auto minmax(0, 1fr) 26px;
+  grid-template-rows: 58px minmax(0, 1fr) 26px;
   height: 100vh;
   min-height: 720px;
 }
@@ -47,13 +47,49 @@
 }
 
 .avatar {
+  box-sizing: border-box;
   width: 30px;
   height: 30px;
+  padding: 0;
   border: 0;
-  background: #2f3531;
-  color: white;
+  background: var(--surface-muted);
+  color: var(--text-muted);
   font-size: 13px;
   font-weight: 700;
+  line-height: 0;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--line);
+  transition:
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    color 160ms ease;
+}
+
+.avatar:hover,
+.avatar:focus-visible {
+  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  outline: none;
+}
+
+.avatar.has-image {
+  background: transparent;
+  color: transparent;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.avatar.has-image:hover,
+.avatar.has-image:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  min-width: 100%;
+  min-height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .topbar-actions {
@@ -80,7 +116,6 @@
 }
 
 .account-menu button,
-.admin-dialog-header button,
 .announcement-form button,
 .auth-dialog button {
   display: inline-flex;
@@ -96,6 +131,20 @@
 .account-menu button {
   justify-content: flex-start;
   border-color: transparent;
+  color: var(--text);
+  transition:
+    transform 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+.account-menu button:hover,
+.account-menu button:focus-visible {
+  border-color: transparent;
+  background: var(--surface-muted);
+  transform: translateX(2px);
+  box-shadow: none;
+  outline: none;
 }
 
 .account-card {
@@ -117,31 +166,21 @@
   font-size: 12px;
 }
 
-.announcement-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 34px;
-  border-bottom: 1px solid var(--line);
-  background: #fff7d6;
-  padding: 0 18px;
-  color: #594400;
+.account-avatar-image,
+.account-avatar-fallback {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
   font-size: 13px;
+  font-weight: 700;
 }
 
-.announcement-bar.is-empty {
-  min-height: 0;
-  height: 0;
-  border: 0;
-  padding: 0;
-  overflow: hidden;
-}
-
-.announcement-bar span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.account-avatar-image {
+  object-fit: cover;
 }
 
 .primary-pill,
@@ -1256,7 +1295,7 @@ button:not(:disabled):active {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: 90;
   display: grid;
   place-items: center;
   background: rgb(30 31 28 / 38%);
@@ -1327,7 +1366,8 @@ button:not(:disabled):active {
 
 .settings-dialog label,
 .auth-dialog label,
-.announcement-form label {
+.announcement-form label,
+.account-section label {
   display: grid;
   gap: 6px;
   color: var(--text-muted);
@@ -1337,12 +1377,37 @@ button:not(:disabled):active {
 .settings-dialog input,
 .auth-dialog input,
 .announcement-form input,
-.announcement-form textarea {
+.announcement-form textarea,
+.account-section input,
+.inline-title-input {
   min-height: 38px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 0 10px;
   color: var(--text);
+  outline: none;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.settings-dialog input:focus,
+.auth-dialog input:focus,
+.announcement-form input:focus,
+.announcement-form textarea:focus,
+.account-section input:focus,
+.inline-title-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 12px 28px rgb(15 23 42 / 7%);
+}
+
+.inline-title-input {
+  width: 100%;
+  margin: -2px -4px;
+  padding: 2px 4px;
+  font-size: inherit;
+  font-weight: 650;
+  font-family: inherit;
 }
 
 .announcement-form textarea {
@@ -1351,8 +1416,7 @@ button:not(:disabled):active {
 }
 
 .auth-dialog,
-.admin-dialog,
-.profile-dialog {
+.announcement-modal {
   display: grid;
   gap: 14px;
   width: min(520px, 100%);
@@ -1364,15 +1428,123 @@ button:not(:disabled):active {
 }
 
 .auth-dialog h2,
-.admin-dialog h2,
+.account-page h1,
+.account-section h2,
 .admin-users h3 {
   margin: 0;
 }
 
-.admin-dialog {
-  width: min(860px, 100%);
-  max-height: min(760px, calc(100vh - 36px));
+.announcement-modal {
+  position: relative;
+  justify-items: start;
+  width: min(560px, 100%);
+  padding: 24px;
+}
+
+.announcement-modal h2,
+.announcement-modal p {
+  margin: 0;
+}
+
+.announcement-modal p {
+  color: var(--text);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.announcement-modal > span {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.announcement-modal-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius);
+  background: #fff7d6;
+  color: #725600;
+}
+
+.account-page {
+  min-width: 0;
   overflow: auto;
+  padding: 22px;
+}
+
+.page-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 auto 18px;
+  width: min(1120px, 100%);
+}
+
+.page-heading p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+}
+
+.account-page-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  gap: 16px;
+  width: min(1120px, 100%);
+  margin: 0 auto;
+}
+
+.admin-page-grid {
+  grid-template-columns: minmax(320px, 0.8fr) minmax(0, 1.4fr);
+}
+
+.account-section,
+.admin-users {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 8px 20px rgb(15 23 42 / 8%);
+  padding: 16px;
+}
+
+.profile-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+}
+
+.profile-hero div:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.profile-hero span {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.profile-avatar {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  overflow: hidden;
+  font-size: 22px;
+  font-weight: 750;
+}
+
+.profile-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .profile-list {
@@ -1399,20 +1571,15 @@ button:not(:disabled):active {
   overflow-wrap: anywhere;
 }
 
-.admin-dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
 .announcement-form {
   display: grid;
-  gap: 10px;
+  align-content: start;
+  gap: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface-muted);
-  padding: 12px;
+  background: var(--surface);
+  box-shadow: 0 8px 20px rgb(15 23 42 / 8%);
+  padding: 16px;
 }
 
 .announcement-form button,
@@ -1423,9 +1590,41 @@ button:not(:disabled):active {
   color: white;
 }
 
-.admin-users {
+.admin-settings-card {
+  grid-column: 1 / -1;
+}
+
+.admin-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.admin-setting-row strong,
+.latest-announcement strong {
+  color: var(--text);
+}
+
+.admin-setting-row p,
+.latest-announcement p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.latest-announcement {
   display: grid;
-  gap: 10px;
+  gap: 5px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.latest-announcement span,
+.latest-announcement small {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .admin-users table {
@@ -1444,6 +1643,36 @@ button:not(:disabled):active {
 .admin-users th {
   color: var(--text-muted);
   font-weight: 650;
+}
+
+.inline-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 9px;
+}
+
+.inline-action:hover:not(:disabled) {
+  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
+}
+
+.inline-action.danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+  color: var(--danger);
+}
+
+.muted-text {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.success-text {
+  color: var(--green);
 }
 
 .dialog-actions {
@@ -1568,8 +1797,42 @@ button:not(:disabled):active {
   }
 }
 
+.dropdown-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: transparent;
+}
+
+.dropdown-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 120px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 8px 22px rgb(15 23 42 / 14%);
+  padding: 4px 0;
+}
+
+.dropdown-menu button {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 8px 16px;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
 .dropdown-menu button:hover {
-  background: var(--surface-muted) !important;
+  background: var(--surface-muted);
+}
+
+.dropdown-menu button.danger {
+  color: var(--danger);
 }
 
 .delete-dialog {

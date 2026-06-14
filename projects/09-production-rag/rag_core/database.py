@@ -59,6 +59,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             salt TEXT NOT NULL,
             role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
             tenant_id TEXT NOT NULL UNIQUE,
+            avatar_url TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
             created_at INTEGER NOT NULL,
             last_login_at INTEGER
         );
@@ -136,6 +138,16 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             updated_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_source_tasks_tenant_updated ON source_tasks(tenant_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS source_title_overrides (
+            tenant_id TEXT NOT NULL,
+            doc_id TEXT NOT NULL,
+            doc_version INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(tenant_id, doc_id, doc_version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_source_title_overrides_tenant ON source_title_overrides(tenant_id);
         """
     )
     conn.execute(
@@ -143,6 +155,9 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         (str(SCHEMA_VERSION),),
     )
     ensure_column(conn, table="messages", column="request_id", definition="TEXT")
+    ensure_column(conn, table="messages", column="feedback_rating", definition="INTEGER")
+    ensure_column(conn, table="users", column="avatar_url", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, table="users", column="status", definition="TEXT NOT NULL DEFAULT 'active'")
 
 
 def ensure_column(conn: sqlite3.Connection, *, table: str, column: str, definition: str) -> None:

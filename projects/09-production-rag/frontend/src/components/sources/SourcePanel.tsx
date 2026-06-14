@@ -65,7 +65,11 @@ export function SourcePanel({
   }
 
   function toggle(docId: string) {
-    onSourcesChange(sources.map((source) => (source.doc_id === docId ? { ...source, selected: !source.selected } : source)));
+    onSourcesChange(
+      sources.map((source) =>
+        sourceInstanceKey(source) === docId ? { ...source, selected: !source.selected } : source,
+      ),
+    );
   }
 
   return (
@@ -91,13 +95,15 @@ export function SourcePanel({
           </label>
           {sources.map((source) => {
             const activeTask = source.status === "uploading" || source.status === "processing";
+            const sourceKey = sourceInstanceKey(source);
             return (
-            <div className={`source-row status-${source.status}${activeTask ? " is-active-task" : ""}`} key={source.doc_id}>
+            <div className={`source-row status-${source.status}${activeTask ? " is-active-task" : ""}`} key={sourceKey}>
               <FileText className="file-type-icon" size={20} />
               
               <div className="source-title" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "2px", overflow: "hidden" }}>
-                {editingSourceId === source.doc_id ? (
+                {editingSourceId === sourceKey ? (
                   <input
+                    className="inline-title-input"
                     autoFocus
                     value={editingTitle}
                     onChange={(e) => setEditingTitle(e.target.value)}
@@ -105,17 +111,6 @@ export function SourcePanel({
                     onKeyDown={(e) => {
                       if (e.key === "Enter") handleSaveTitle(source);
                       if (e.key === "Escape") setEditingSourceId(null);
-                    }}
-                    style={{
-                      width: "100%",
-                      padding: "2px 4px",
-                      margin: "-2px -4px",
-                      border: "1px solid var(--line-strong)",
-                      borderRadius: "4px",
-                      fontSize: "inherit",
-                      fontWeight: 650,
-                      fontFamily: "inherit",
-                      outline: "none"
                     }}
                     onClick={(e) => e.stopPropagation()}
                   />
@@ -142,7 +137,7 @@ export function SourcePanel({
                   style={{ background: "none", border: "none", cursor: "pointer", padding: "4px" }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (menuOpenId === source.doc_id) {
+                    if (menuOpenId === sourceKey) {
                       setMenuOpenId(null);
                     } else {
                       const rect = e.currentTarget.getBoundingClientRect();
@@ -150,21 +145,22 @@ export function SourcePanel({
                         top: rect.bottom + 4,
                         right: document.documentElement.clientWidth - rect.right,
                       });
-                      setMenuOpenId(source.doc_id);
+                      setMenuOpenId(sourceKey);
                     }
                   }}
                 >
                   <MoreVertical size={18} />
                 </button>
-                {menuOpenId === source.doc_id && menuPosition && createPortal(
-                  <div className="dropdown-menu" style={{ position: "fixed", top: menuPosition.top, right: menuPosition.right, zIndex: 9999, background: "white", border: "1px solid var(--line)", borderRadius: "var(--radius)", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", padding: "4px 0", minWidth: "120px" }}>
+                {menuOpenId === sourceKey && menuPosition && createPortal(
+                  <>
+                  <div className="dropdown-backdrop" onMouseDown={() => setMenuOpenId(null)} />
+                  <div className="dropdown-menu" style={{ top: menuPosition.top, right: menuPosition.right }} onMouseDown={(e) => e.stopPropagation()}>
                     <button
                       type="button"
-                      style={{ display: "block", width: "100%", padding: "8px 16px", textAlign: "left", background: "none", border: "none", cursor: "pointer", fontSize: "14px" }}
                       onClick={(e) => {
                         e.stopPropagation();
                         setMenuOpenId(null);
-                        setEditingSourceId(source.doc_id);
+                        setEditingSourceId(sourceKey);
                         setEditingTitle(source.title);
                       }}
                     >
@@ -172,7 +168,7 @@ export function SourcePanel({
                     </button>
                     <button
                       type="button"
-                      style={{ display: "block", width: "100%", padding: "8px 16px", textAlign: "left", background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "var(--danger)" }}
+                      className="danger"
                       onClick={(e) => {
                         e.stopPropagation();
                         setMenuOpenId(null);
@@ -181,7 +177,8 @@ export function SourcePanel({
                     >
                       移除
                     </button>
-                  </div>,
+                  </div>
+                  </>,
                   document.body
                 )}
               </div>
@@ -190,7 +187,7 @@ export function SourcePanel({
                 type="checkbox"
                 checked={Boolean(source.selected)}
                 disabled={source.status !== "ready"}
-                onChange={() => toggle(source.doc_id)}
+                onChange={() => toggle(sourceKey)}
               />
             </div>
           );
@@ -243,6 +240,10 @@ export function SourcePanel({
       ) : null}
     </aside>
   );
+}
+
+function sourceInstanceKey(source: SourceItem) {
+  return `${source.doc_id}::${source.doc_version}`;
 }
 
 function SourceReader({

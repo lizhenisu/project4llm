@@ -1,6 +1,26 @@
 import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "production-rag-auth-session",
+      JSON.stringify({
+        user: {
+          id: "test-user",
+          username: "tester",
+          display_name: "测试用户",
+          role: "user",
+          tenant_id: "team_a",
+          avatar_url: "",
+          status: "active",
+          created_at: Date.now(),
+          last_login_at: Date.now(),
+        },
+        token: "test-session",
+        expires_at: Date.now() + 86_400_000,
+      }),
+    );
+  });
   await page.route("**/announcements?**", async (route) => {
     await route.fulfill({ json: { announcements: [] } });
   });
@@ -40,7 +60,7 @@ test("opens parsed source content from a document-level source row", async ({ pa
   await page.route("**/artifacts?**", async (route) => {
     await route.fulfill({ json: { artifacts: [] } });
   });
-  await page.route("**/conversations?**", async (route) => {
+  await page.route("**/conversations**", async (route) => {
     await route.fulfill({ json: { conversations: [] } });
   });
   await page.route("**/sources/content/**", async (route) => {
@@ -69,6 +89,48 @@ test("opens parsed source content from a document-level source row", async ({ pa
   await expect(reader.getByText("这份资料介绍自然辩证法视角下的生态治理实践")).toBeVisible();
   await expect(reader.getByText("一、引言").first()).toBeVisible();
   await expect(reader.getByText("在 21 世纪全球生态危机日益严峻的背景下")).toBeVisible();
+});
+
+test("does not load protected workspace services before login", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.removeItem("production-rag-auth-session");
+  });
+  let protectedRequests = 0;
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    protectedRequests += 1;
+    await route.fulfill({ status: 401, json: { detail: "请先登录" } });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    protectedRequests += 1;
+    await route.fulfill({ status: 401, json: { detail: "请先登录" } });
+  });
+  await page.route("**/conversations?**", async (route) => {
+    protectedRequests += 1;
+    await route.fulfill({ status: 401, json: { detail: "请先登录" } });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("请先登录后使用知识库服务")).toBeVisible();
+  expect(protectedRequests).toBe(0);
+});
+
+test("opens login dialog when a guest sends from the chat input", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.removeItem("production-rag-auth-session");
+  });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+
+  await page.goto("/");
+  const input = page.getByPlaceholder("登录后即可发送");
+  await input.fill("自然辩证法的引言");
+  await expect(page.locator(".chat-input button")).toBeEnabled();
+  await input.press("Enter");
+  await expect(page.getByRole("dialog").getByRole("heading", { name: "登录账号" })).toBeVisible();
 });
 
 test("expands second-level mind map topics to reveal child outline items", async ({ page }) => {
@@ -248,6 +310,328 @@ test("shows marquee feedback for active source and studio tasks", async ({ page 
   await expect
     .poll(async () => artifactRow.evaluate((node) => getComputedStyle(node, "::after").animationName))
     .toBe("task-marquee");
+});
+
+test("removes the upload processing row after the parsed source is ready", async ({ page }) => {
+  let sourcesPolls = 0;
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    sourcesPolls += 1;
+    await route.fulfill({
+      json: {
+        sources:
+          sourcesPolls < 2
+            ? []
+            : [
+                {
+                  doc_id: "parsed-upload",
+                  title: "重复解析.pdf",
+                  source_type: "pdf",
+                  source_uri: "/uploads/parsed-upload.pdf",
+                  doc_version: 1,
+                  chunk_count: 3,
+                  acl_groups: ["engineering"],
+                  status: "ready",
+                  current: true,
+                  child_doc_ids: ["parsed-upload/page-1"],
+                },
+              ],
+      },
+    });
+  });
+  await page.route("**/sources/upload", async (route) => {
+    await route.fulfill({
+      json: {
+        status: "processing",
+        document_count: 0,
+        chunk_count: 0,
+        sources: [
+          {
+            doc_id: "upload-task",
+            title: "重复解析.pdf",
+            source_type: "pdf",
+            source_uri: "/uploads/upload-task.pdf",
+            doc_version: 1,
+            chunk_count: 0,
+            acl_groups: ["engineering"],
+            status: "processing",
+            current: false,
+            child_doc_ids: [],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "添加来源" }).click();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "重复解析.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("fake pdf"),
+  });
+
+  await expect(page.locator(".source-row.status-ready", { hasText: "重复解析.pdf" })).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".source-row.status-processing", { hasText: "重复解析.pdf" })).toHaveCount(0);
+});
+
+test("renames a source from the row menu and persists the new title", async ({ page }) => {
+  let sourceTitle = "自然辩证法.pdf";
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({
+      json: {
+        sources: [
+          {
+            doc_id: "source-natural",
+            title: sourceTitle,
+            source_type: "pdf",
+            source_uri: "/uploads/source-natural.pdf",
+            doc_version: 1,
+            chunk_count: 6,
+            acl_groups: ["engineering"],
+            status: "ready",
+            current: true,
+            child_doc_ids: ["source-natural/page-1"],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/sources/source-natural?**", async (route) => {
+    if (route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON();
+      sourceTitle = body.title;
+      await route.fulfill({ json: { status: "renamed", doc_id: "source-natural", title: sourceTitle } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/");
+  const row = page.locator(".source-row", { hasText: "自然辩证法.pdf" });
+  await row.locator(".row-icon-more").click();
+  await page.getByRole("button", { name: "重命名" }).click();
+  await page.locator(".source-row .inline-title-input").fill("自然辩证法-重命名.pdf");
+  await page.locator(".source-row .inline-title-input").press("Enter");
+
+  await expect(page.locator(".source-row", { hasText: "自然辩证法-重命名.pdf" })).toBeVisible();
+  await expect(page.locator(".source-row", { hasText: "自然辩证法.pdf" })).toHaveCount(0);
+});
+
+test("does not keep unrelated transient sources after upload polling completes", async ({ page }) => {
+  let sourcesPolls = 0;
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    sourcesPolls += 1;
+    const sources =
+      sourcesPolls < 2
+        ? []
+        : sourcesPolls < 4
+          ? [
+              {
+                doc_id: "stale-internship",
+                title: "深大_创维 AI 研究院实习介绍资料(1).pdf",
+                source_type: "pdf",
+                source_uri: "/uploads/stale.pdf",
+                doc_version: 1,
+                chunk_count: 2,
+                acl_groups: ["engineering"],
+                status: "ready",
+                current: true,
+                child_doc_ids: ["stale-internship/page-1"],
+              },
+              {
+                doc_id: "upload-task-natural",
+                title: "自然辩证法.pdf",
+                source_type: "pdf",
+                source_uri: "/uploads/upload-task-natural.pdf",
+                doc_version: 1,
+                chunk_count: 0,
+                acl_groups: ["engineering"],
+                status: "processing",
+                current: false,
+                child_doc_ids: [],
+              },
+            ]
+          : [
+              {
+                doc_id: "natural-ready",
+                title: "自然辩证法.pdf",
+                source_type: "pdf",
+                source_uri: "/uploads/natural-ready.pdf",
+                doc_version: 1,
+                chunk_count: 8,
+                acl_groups: ["engineering"],
+                status: "ready",
+                current: true,
+                child_doc_ids: ["natural-ready/page-1"],
+              },
+            ];
+    await route.fulfill({ json: { sources } });
+  });
+  await page.route("**/sources/upload", async (route) => {
+    await route.fulfill({
+      json: {
+        status: "processing",
+        document_count: 0,
+        chunk_count: 0,
+        sources: [
+          {
+            doc_id: "upload-task-natural",
+            title: "自然辩证法.pdf",
+            source_type: "pdf",
+            source_uri: "/uploads/upload-task-natural.pdf",
+            doc_version: 1,
+            chunk_count: 0,
+            acl_groups: ["engineering"],
+            status: "processing",
+            current: false,
+            child_doc_ids: [],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "添加来源" }).click();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "自然辩证法.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("fake pdf"),
+  });
+
+  await expect(page.locator(".source-row.status-ready", { hasText: "自然辩证法.pdf" })).toBeVisible({ timeout: 7_000 });
+  await expect(page.locator(".source-row", { hasText: "深大_创维 AI 研究院实习介绍资料(1).pdf" })).toHaveCount(0);
+  await expect(page.locator(".source-row.status-processing", { hasText: "自然辩证法.pdf" })).toHaveCount(0);
+});
+
+test("keeps duplicate filename versions stable while uploading another copy", async ({ page }) => {
+  let sourcesPolls = 0;
+  const existingSources = [1, 2, 3].map((version) => ({
+    doc_id: "自然辩证法",
+    title: "自然辩证法.pdf",
+    source_type: "pdf",
+    source_uri: `/uploads/natural-v${version}.pdf`,
+    doc_version: version,
+    chunk_count: 6,
+    acl_groups: ["engineering"],
+    status: "ready",
+    current: version === 3,
+    child_doc_ids: [`自然辩证法/page-${version}`],
+  }));
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    sourcesPolls += 1;
+    const sources =
+      sourcesPolls < 3
+        ? existingSources
+        : sourcesPolls < 5
+          ? [
+              {
+                doc_id: "upload-task-natural-4",
+                title: "自然辩证法.pdf",
+                source_type: "pdf",
+                source_uri: "/uploads/natural-v4-task.pdf",
+                doc_version: 4,
+                chunk_count: 0,
+                acl_groups: ["engineering"],
+                status: "processing",
+                current: false,
+                child_doc_ids: [],
+              },
+              ...existingSources,
+            ]
+          : [
+              ...existingSources.map((source) => ({ ...source, current: false })),
+              {
+                doc_id: "自然辩证法",
+                title: "自然辩证法.pdf",
+                source_type: "pdf",
+                source_uri: "/uploads/natural-v4.pdf",
+                doc_version: 4,
+                chunk_count: 8,
+                acl_groups: ["engineering"],
+                status: "ready",
+                current: true,
+                child_doc_ids: ["自然辩证法/page-4"],
+              },
+            ];
+    await route.fulfill({ json: { sources } });
+  });
+  await page.route("**/sources/upload", async (route) => {
+    await route.fulfill({
+      json: {
+        status: "processing",
+        document_count: 0,
+        chunk_count: 0,
+        sources: [
+          {
+            doc_id: "upload-task-natural-4",
+            title: "自然辩证法.pdf",
+            source_type: "pdf",
+            source_uri: "/uploads/natural-v4-task.pdf",
+            doc_version: 4,
+            chunk_count: 0,
+            acl_groups: ["engineering"],
+            status: "processing",
+            current: false,
+            child_doc_ids: [],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/");
+  await expect(page.locator(".source-row", { hasText: "自然辩证法.pdf" })).toHaveCount(3);
+
+  await page.getByRole("button", { name: "添加来源" }).click();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "自然辩证法.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("fake pdf"),
+  });
+
+  await expect(page.locator(".source-row.status-processing", { hasText: "自然辩证法.pdf" })).toHaveCount(1);
+  await expect(page.locator(".source-row", { hasText: "自然辩证法.pdf" })).toHaveCount(4);
+  await expect(page.locator(".source-row.status-ready", { hasText: "自然辩证法.pdf" })).toHaveCount(4, {
+    timeout: 7_000,
+  });
+  await expect(page.locator(".source-row.status-processing", { hasText: "自然辩证法.pdf" })).toHaveCount(0);
 });
 
 test("creates and opens a data table artifact from studio", async ({ page }) => {
@@ -468,6 +852,11 @@ test("rate limits studio artifact generation across mind map and data table tool
 });
 
 test("registers an admin user from the avatar menu and publishes an announcement", async ({ page }) => {
+  const now = Date.now();
+  let registrationEnabled = true;
+  await page.addInitScript(() => {
+    localStorage.removeItem("production-rag-auth-session");
+  });
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok" } });
   });
@@ -489,13 +878,50 @@ test("registers an admin user from the avatar menu and publishes an announcement
           display_name: "管理员",
           role: "admin",
           tenant_id: "tenant-admin",
-          created_at: Date.now(),
-          last_login_at: Date.now(),
+          avatar_url: "",
+          status: "active",
+          created_at: now,
+          last_login_at: now,
         },
         token: "session-admin",
-        expires_at: Date.now() + 86_400_000,
+        expires_at: now + 86_400_000,
       },
     });
+  });
+  await page.route("**/auth/me", async (route) => {
+    if (route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON();
+      await route.fulfill({
+        json: {
+          id: "user-admin",
+          username: body.username,
+          display_name: body.display_name,
+          role: "admin",
+          tenant_id: "tenant-admin",
+          avatar_url: body.avatar_url,
+          status: "active",
+          created_at: now,
+          last_login_at: now,
+        },
+      });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        id: "user-admin",
+        username: "admin",
+        display_name: "管理员",
+        role: "admin",
+        tenant_id: "tenant-admin",
+        avatar_url: "",
+        status: "active",
+        created_at: now,
+        last_login_at: now,
+      },
+    });
+  });
+  await page.route("**/auth/password", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
   });
   await page.route("**/admin/users", async (route) => {
     await route.fulfill({
@@ -507,10 +933,71 @@ test("registers an admin user from the avatar menu and publishes an announcement
             display_name: "管理员",
             role: "admin",
             tenant_id: "tenant-admin",
-            created_at: Date.now(),
-            last_login_at: Date.now(),
+            avatar_url: "",
+            status: "active",
+            created_at: now,
+            last_login_at: now,
+          },
+          {
+            id: "user-normal",
+            username: "reader",
+            display_name: "读者",
+            role: "user",
+            tenant_id: "tenant-reader",
+            avatar_url: "",
+            status: "active",
+            created_at: now,
+            last_login_at: null,
           },
         ],
+      },
+    });
+  });
+  await page.route("**/admin/users/user-normal/status", async (route) => {
+    const body = route.request().postDataJSON();
+    await route.fulfill({
+      json: {
+        id: "user-normal",
+        username: "reader",
+        display_name: "读者",
+        role: "user",
+        tenant_id: "tenant-reader",
+        avatar_url: "",
+        status: body.status,
+        created_at: now,
+        last_login_at: null,
+      },
+    });
+  });
+  await page.route("**/admin/settings", async (route) => {
+    await route.fulfill({
+      json: {
+        registration_enabled: registrationEnabled,
+        latest_announcement: {
+          id: "announcement-old",
+          title: "上一条公告",
+          content: "这是管理员上一次发布的公告。",
+          author_id: "user-admin",
+          author_name: "管理员",
+          created_at: now - 60_000,
+        },
+      },
+    });
+  });
+  await page.route("**/admin/settings/registration", async (route) => {
+    const body = route.request().postDataJSON();
+    registrationEnabled = body.registration_enabled;
+    await route.fulfill({
+      json: {
+        registration_enabled: registrationEnabled,
+        latest_announcement: {
+          id: "announcement-old",
+          title: "上一条公告",
+          content: "这是管理员上一次发布的公告。",
+          author_id: "user-admin",
+          author_name: "管理员",
+          created_at: now - 60_000,
+        },
       },
     });
   });
@@ -523,12 +1010,14 @@ test("registers an admin user from the avatar menu and publishes an announcement
         content: body.content,
         author_id: "user-admin",
         author_name: "管理员",
-        created_at: Date.now(),
+        created_at: now,
       },
     });
   });
 
   await page.goto("/");
+  const guestAvatar = page.getByRole("button", { name: "用户头像" });
+  await expect(guestAvatar.locator("svg")).toBeVisible();
   await page.getByRole("button", { name: "用户头像" }).click();
   await page.getByRole("menuitem", { name: /注册/ }).click();
   await page.getByRole("dialog").getByLabel("用户名").fill("admin");
@@ -538,20 +1027,45 @@ test("registers an admin user from the avatar menu and publishes an announcement
 
   await page.getByRole("button", { name: "用户头像" }).click();
   await expect(page.getByText("admin · 管理员")).toBeVisible();
+  await page.mouse.click(20, 20);
+  await expect(page.getByText("admin · 管理员")).toBeHidden();
+  await page.getByRole("button", { name: "用户头像" }).click();
   await page.getByRole("menuitem", { name: /个人信息/ }).click();
   await expect(page.getByRole("heading", { name: "个人信息" })).toBeVisible();
   await expect(page.getByText("tenant-admin")).toBeVisible();
-  await page.getByRole("button", { name: "关闭" }).click();
+  await expect(page.getByText("注册日期")).toBeVisible();
+  await page.getByLabel("显示名称").fill("管理员二号");
+  await page.getByLabel("头像地址").fill("https://example.com/avatar.png");
+  await page.getByRole("button", { name: "保存资料" }).click();
+  await expect(page.getByText("个人信息已保存")).toBeVisible();
+  await expect(page.getByRole("button", { name: "用户头像" }).locator("img")).toHaveAttribute(
+    "src",
+    "https://example.com/avatar.png",
+  );
+  await expect(page.getByRole("button", { name: "用户头像" })).not.toHaveCSS("background-color", "rgb(47, 53, 49)");
+  await page.getByRole("button", { name: "返回工作台" }).click();
   await page.getByRole("button", { name: "用户头像" }).click();
   await page.getByRole("menuitem", { name: /管理员控制台/ }).click();
   await expect(page.getByRole("heading", { name: "管理员控制台" })).toBeVisible();
-  await expect(page.getByText("tenant-admin")).toBeVisible();
+  await expect(page.getByText("当前允许新用户自行注册。")).toBeVisible();
+  await expect(page.getByText("上一条公告")).toBeVisible();
+  await expect(page.getByText("这是管理员上一次发布的公告。")).toBeVisible();
+  await page.getByRole("button", { name: "关闭注册" }).click();
+  await expect(page.getByText("当前已关闭新用户注册。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "允许注册" })).toBeVisible();
+  await expect(page.getByText("tenant-reader")).toBeVisible();
+  await page.getByRole("button", { name: "封禁" }).click();
+  await expect(page.getByText("已封禁")).toBeVisible();
 
   await page.getByLabel("公告标题").fill("系统维护");
   await page.getByLabel("公告内容").fill("今晚 23:00 进行例行维护。");
   await page.getByRole("button", { name: "发布公告" }).click();
-  await expect(page.getByText("系统维护")).toBeVisible();
-  await expect(page.getByText("今晚 23:00 进行例行维护。")).toBeVisible();
+  await expect(page.locator(".latest-announcement").getByText("系统维护")).toBeVisible();
+  const announcementDialog = page.getByRole("dialog").filter({ hasText: "系统维护" });
+  await expect(announcementDialog).toBeVisible();
+  await expect(announcementDialog.getByText("今晚 23:00 进行例行维护。")).toBeVisible();
+  await page.getByRole("button", { name: "关闭公告" }).click();
+  await expect(announcementDialog).toBeHidden();
 });
 
 test("clears the saved session after an authenticated request returns 401", async ({ page }) => {
@@ -611,6 +1125,25 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok" } });
   });
+  await page.route("**/auth/login", async (route) => {
+    await route.fulfill({
+      json: {
+        user: {
+          id: "test-user",
+          username: "tester",
+          display_name: "测试用户",
+          role: "user",
+          tenant_id: "team_a",
+          avatar_url: "",
+          status: "active",
+          created_at: Date.now(),
+          last_login_at: Date.now(),
+        },
+        token: "test-session",
+        expires_at: Date.now() + 86_400_000,
+      },
+    });
+  });
   await page.route("**/sources?**", async (route) => {
     await route.fulfill({
       json: {
@@ -634,7 +1167,7 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
   await page.route("**/artifacts?**", async (route) => {
     await route.fulfill({ json: { artifacts: [] } });
   });
-  await page.route("**/conversations?**", async (route) => {
+  await page.route("**/conversations**", async (route) => {
     if (route.request().method() === "GET") {
       await route.fulfill({ json: { conversations: [] } });
       return;
@@ -642,7 +1175,7 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
     const body = route.request().postDataJSON();
     await route.fulfill({ json: { ...body, id: "conversation-typewriter", updated_at: Date.now() } });
   });
-  await page.route("**/query", async (route) => {
+  await page.route("**/query**", async (route) => {
     await route.fulfill({
       json: {
         request_id: "typewriter-check",
@@ -667,7 +1200,17 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
   });
 
   await page.goto("/");
-  await page.getByPlaceholder("提问或创作内容").fill("典型的实践案例分析");
+  const chatTextarea = page.locator(".chat-input textarea");
+  await expect(chatTextarea).toBeVisible();
+  if ((await chatTextarea.getAttribute("placeholder")) === "登录后即可发送") {
+    await page.getByRole("button", { name: "用户头像" }).click();
+    await page.getByRole("menuitem", { name: /登录/ }).click();
+    await page.getByRole("dialog").getByLabel("用户名").fill("tester");
+    await page.getByRole("dialog").getByLabel("密码").fill("strong-password");
+    await page.getByRole("button", { name: "登录" }).click();
+    await expect(page.getByPlaceholder("提问或创作内容")).toBeVisible();
+  }
+  await page.locator('.chat-input textarea[placeholder="提问或创作内容"]').fill("典型的实践案例分析");
   await page.locator(".chat-input button").click();
 
   await expect(page.getByText("这是一段用于验证打字机效果")).toBeVisible();
@@ -693,4 +1236,210 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
   expect(inputBox!.height).toBeLessThan(90);
   expect(sendBox!.x + sendBox!.width).toBeLessThanOrEqual(inputBox!.x + inputBox!.width + 1);
   expect(textareaBox!.x).toBeGreaterThanOrEqual(inputBox!.x);
+});
+
+test("persists and resumes a pending answer after browser refresh", async ({ page }) => {
+  let storedConversation: any = null;
+  let queryCalls = 0;
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({
+      json: {
+        sources: [
+          {
+            doc_id: "自然辩证法",
+            title: "自然辩证法.pdf",
+            source_type: "pdf",
+            source_uri: "/uploads/natural.pdf",
+            doc_version: 1,
+            chunk_count: 6,
+            acl_groups: ["engineering"],
+            status: "ready",
+            current: true,
+            child_doc_ids: ["自然辩证法/page-1"],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "GET" && url.pathname.endsWith("/conversations")) {
+      await route.fulfill({
+        json: {
+          conversations: storedConversation
+            ? [
+                {
+                  id: storedConversation.id,
+                  tenant_id: storedConversation.tenant_id,
+                  title: storedConversation.title,
+                  message_count: storedConversation.messages.length,
+                  source_doc_ids: storedConversation.source_doc_ids,
+                  created_at: storedConversation.created_at,
+                  updated_at: storedConversation.updated_at,
+                },
+              ]
+            : [],
+        },
+      });
+      return;
+    }
+    if (route.request().method() === "GET") {
+      await route.fulfill({ json: storedConversation });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    storedConversation = {
+      ...body,
+      id: body.id || "conv-resume",
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    };
+    await route.fulfill({ json: storedConversation });
+  });
+  await page.route("**/query**", async (route) => {
+    queryCalls += 1;
+    if (queryCalls === 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    await route.fulfill({
+      json: {
+        request_id: `resume-${queryCalls}`,
+        answer: "刷新后继续完成的回答。",
+        citations: [
+          {
+            doc_id: "自然辩证法/page-1",
+            title: "自然辩证法 p1",
+            source_uri: "/uploads/natural.pdf",
+            source_type: "pdf",
+            chunk_index: 0,
+            score: 0.9,
+            rerank_score: 0.8,
+            acl_groups: ["engineering"],
+            metadata: { page_no: 1 },
+            text_preview: "证据片段",
+          },
+        ],
+        trace: {},
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByPlaceholder("提问或创作内容").fill("刷新期间继续处理吗");
+  await page.locator(".chat-input button").click();
+  await expect
+    .poll(() => storedConversation?.messages?.some((message: any) => message.status === "sending") ?? false)
+    .toBe(true);
+
+  await page.reload();
+
+  await expect(page.getByText("刷新后继续完成的回答。")).toBeVisible({ timeout: 8_000 });
+  expect(queryCalls).toBeGreaterThanOrEqual(2);
+  expect(storedConversation.messages.at(-1).status).toBe("done");
+  expect(storedConversation.messages.at(-1).content).toBe("刷新后继续完成的回答。");
+});
+
+test("persists assistant feedback rating after browser refresh", async ({ page }) => {
+  let storedConversation: any = {
+    id: "conv-feedback",
+    tenant_id: "team_a",
+    title: "反馈测试",
+    source_doc_ids: ["自然辩证法"],
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    messages: [
+      {
+        id: "m-user",
+        role: "user",
+        content: "自然辩证法的引言",
+        status: "done",
+        request_id: null,
+        citations: [],
+        created_at: Date.now() - 2,
+        feedback_rating: null,
+      },
+      {
+        id: "m-assistant",
+        role: "assistant",
+        content: "引言讨论自然观和实践观。",
+        status: "done",
+        request_id: "feedback-request",
+        citations: [
+          {
+            doc_id: "自然辩证法/page-1",
+            title: "自然辩证法 p1",
+            source_uri: "/uploads/natural.pdf",
+            source_type: "pdf",
+            chunk_index: 0,
+            score: 0.9,
+            rerank_score: 0.8,
+            acl_groups: ["engineering"],
+            metadata: { page_no: 1 },
+            text_preview: "证据片段",
+          },
+        ],
+        created_at: Date.now() - 1,
+        feedback_rating: null,
+      },
+    ],
+  };
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({ json: { sources: [] } });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/feedback", async (route) => {
+    await route.fulfill({ json: { status: "accepted", request_id: "feedback-request" } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "GET" && url.pathname.endsWith("/conversations")) {
+      await route.fulfill({
+        json: {
+          conversations: [
+            {
+              id: storedConversation.id,
+              tenant_id: storedConversation.tenant_id,
+              title: storedConversation.title,
+              message_count: storedConversation.messages.length,
+              source_doc_ids: storedConversation.source_doc_ids,
+              created_at: storedConversation.created_at,
+              updated_at: storedConversation.updated_at,
+            },
+          ],
+        },
+      });
+      return;
+    }
+    if (route.request().method() === "GET") {
+      await route.fulfill({ json: storedConversation });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    storedConversation = { ...body, created_at: storedConversation.created_at, updated_at: Date.now() };
+    await route.fulfill({ json: storedConversation });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button").filter({ has: page.locator("svg.lucide-thumbs-up") }).click();
+  await expect
+    .poll(() => storedConversation.messages[1].feedback_rating)
+    .toBe(1);
+
+  await page.reload();
+
+  const likedButton = page.getByRole("button").filter({ has: page.locator("svg.lucide-thumbs-up") });
+  await expect(likedButton.locator("svg")).toHaveAttribute("fill", "currentColor");
 });

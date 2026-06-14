@@ -14,8 +14,6 @@ from rag_core.artifacts import (
     MindMapArtifact,
     build_llm_table,
     build_mindmap_root,
-    create_mindmap_artifact,
-    create_table_artifact,
     delete_artifact,
     delete_metadata_artifact,
     fail_metadata_artifact,
@@ -23,7 +21,6 @@ from rag_core.artifacts import (
     list_metadata_artifacts,
     load_artifact,
     load_metadata_artifact,
-    save_artifact,
     save_metadata_artifact,
 )
 from rag_core.auth import build_auth_context, validate_bearer_token
@@ -47,17 +44,23 @@ from rag_core.sources import (
     get_source_content,
     ingest_uploaded_path,
     list_sources,
+    rename_source,
     save_uploaded_file,
 )
 from rag_core.user_auth import (
     authenticate_token,
     bearer_token,
+    change_user_password,
     create_announcement,
+    is_registration_enabled,
     list_announcements,
     list_public_users,
     login_user,
     logout_user,
     register_user,
+    set_registration_enabled,
+    set_user_status,
+    update_user_profile,
 )
 from search_multimodal import retrieve_multimodal
 
@@ -111,6 +114,8 @@ class FeedbackRequest(BaseModel):
     rating: int = Field(ge=-1, le=1)
     comment: str = ""
     selected_doc_ids: list[str] = Field(default_factory=list)
+    tenant_id: str = "team_a"
+    acl_groups: list[str] = Field(default_factory=list)
 
 
 class FeedbackResponse(BaseModel):
@@ -163,6 +168,16 @@ class DeleteSourceResponse(BaseModel):
     detail: dict[str, object]
 
 
+class RenameSourceRequest(BaseModel):
+    title: str
+
+
+class RenameSourceResponse(BaseModel):
+    status: str
+    doc_id: str
+    title: str
+
+
 class MindMapRequest(BaseModel):
     title: str = "思维导图"
     tenant_id: str = "team_a"
@@ -213,6 +228,7 @@ class ConversationMessageRequest(BaseModel):
     request_id: str | None = None
     citations: list[HitResponse] = Field(default_factory=list)
     created_at: int | None = None
+    feedback_rating: int | None = Field(default=None, ge=-1, le=1)
 
 
 class ConversationUpsertRequest(BaseModel):
@@ -259,6 +275,8 @@ class UserResponse(BaseModel):
     role: str
     tenant_id: str
     created_at: int
+    avatar_url: str = ""
+    status: str = "active"
     last_login_at: int | None = None
 
 
@@ -272,6 +290,21 @@ class AuthResponse(BaseModel):
     user: UserResponse
     token: str
     expires_at: int
+
+
+class ProfileUpdateRequest(BaseModel):
+    username: str
+    display_name: str
+    avatar_url: str = ""
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class UserStatusRequest(BaseModel):
+    status: str = Field(pattern="^(active|banned)$")
 
 
 class AnnouncementRequest(BaseModel):
@@ -290,6 +323,15 @@ class AnnouncementResponse(BaseModel):
 
 class AnnouncementListResponse(BaseModel):
     announcements: list[AnnouncementResponse]
+
+
+class AdminSettingsResponse(BaseModel):
+    registration_enabled: bool
+    latest_announcement: AnnouncementResponse | None = None
+
+
+class RegistrationSettingsRequest(BaseModel):
+    registration_enabled: bool
 
 
 class UserListResponse(BaseModel):
@@ -356,11 +398,78 @@ def create_app():
         user = require_current_user(authorization=authorization)
         return user_to_response(user)
 
+    @app.patch("/auth/me", response_model=UserResponse)
+    def update_me(
+        request: ProfileUpdateRequest,
+        authorization: str | None = Header(default=None),
+    ) -> UserResponse:
+        config = load_config()
+        current = require_current_user(authorization=authorization)
+        try:
+            user = update_user_profile(
+                config,
+                user_id=current.id,
+                username=request.username,
+                display_name=request.display_name,
+                avatar_url=request.avatar_url,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return user_to_response(user)
+
+    @app.patch("/auth/password")
+    def change_password(
+        request: PasswordChangeRequest,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        config = load_config()
+        current = require_current_user(authorization=authorization)
+        try:
+            change_user_password(
+                config,
+                user_id=current.id,
+                current_password=request.current_password,
+                new_password=request.new_password,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"status": "ok"}
+
     @app.get("/admin/users", response_model=UserListResponse)
     def admin_users(authorization: str | None = Header(default=None)) -> UserListResponse:
         config = load_config()
         require_admin(config=config, authorization=authorization)
         return UserListResponse(users=[user_to_response(user) for user in list_public_users(config)])
+
+    @app.patch("/admin/users/{user_id}/status", response_model=UserResponse)
+    def admin_update_user_status(
+        user_id: str,
+        request: UserStatusRequest,
+        authorization: str | None = Header(default=None),
+    ) -> UserResponse:
+        config = load_config()
+        actor = require_admin(config=config, authorization=authorization)
+        try:
+            user = set_user_status(config, actor_id=actor.id, user_id=user_id, status=request.status)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return user_to_response(user)
+
+    @app.get("/admin/settings", response_model=AdminSettingsResponse)
+    def admin_settings(authorization: str | None = Header(default=None)) -> AdminSettingsResponse:
+        config = load_config()
+        require_admin(config=config, authorization=authorization)
+        return admin_settings_response(config)
+
+    @app.patch("/admin/settings/registration", response_model=AdminSettingsResponse)
+    def admin_update_registration_settings(
+        request: RegistrationSettingsRequest,
+        authorization: str | None = Header(default=None),
+    ) -> AdminSettingsResponse:
+        config = load_config()
+        require_admin(config=config, authorization=authorization)
+        set_registration_enabled(config, enabled=request.registration_enabled)
+        return admin_settings_response(config)
 
     @app.post("/admin/announcements", response_model=AnnouncementResponse)
     def admin_create_announcement(
@@ -546,6 +655,37 @@ def create_app():
         )
         return DeleteSourceResponse(status="deleted", doc_id=doc_id, detail=detail)
 
+    @app.patch("/sources/{doc_id:path}", response_model=RenameSourceResponse)
+    def rename_source_endpoint(
+        doc_id: str,
+        request: RenameSourceRequest,
+        tenant_id: str = "team_a",
+        doc_version: int | None = None,
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> RenameSourceResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=tenant_id,
+            acl_groups=[],
+        )
+        try:
+            source = rename_source(
+                config=config,
+                tenant_id=auth_context.tenant_id,
+                doc_id=doc_id,
+                doc_version=doc_version,
+                title=request.title,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return RenameSourceResponse(status="renamed", doc_id=source.doc_id, title=source.title)
+
     @app.post("/search", response_model=SearchResponse)
     def search(
         request: SearchRequest,
@@ -631,12 +771,30 @@ def create_app():
         return response
 
     @app.post("/feedback", response_model=FeedbackResponse)
-    def feedback(request: FeedbackRequest) -> FeedbackResponse:
+    def feedback(
+        request: FeedbackRequest,
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> FeedbackResponse:
         config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=request.tenant_id,
+            acl_groups=request.acl_groups,
+        )
         append_event(
             config.runtime_dir,
             "feedback_events",
-            request.model_dump(),
+            {
+                **request.model_dump(),
+                "tenant_id": auth_context.tenant_id,
+                "acl_groups": auth_context.acl_groups,
+                "auth_context": auth_context.summary(),
+            },
         )
         return FeedbackResponse(
             status="accepted",
@@ -935,6 +1093,8 @@ def resolve_auth_context(
                 body_tenant_id=request.tenant_id,
                 body_acl_groups=request.acl_groups,
             )
+        if not config.api_token:
+            raise ValueError("请先登录")
         validate_bearer_token(config=config, authorization=authorization)
         return build_auth_context(
             config=config,
@@ -1055,6 +1215,8 @@ def resolve_auth_context_from_values(
                 body_tenant_id=tenant_id,
                 body_acl_groups=acl_groups,
             )
+        if not config.api_token:
+            raise ValueError("请先登录")
         validate_bearer_token(config=config, authorization=authorization)
         return build_auth_context(
             config=config,
@@ -1181,6 +1343,7 @@ def message_request_to_domain(message: ConversationMessageRequest) -> Conversati
         request_id=message.request_id,
         citations=[citation.model_dump() for citation in message.citations],
         created_at=message.created_at,
+        feedback_rating=message.feedback_rating,
     )
 
 
@@ -1198,6 +1361,7 @@ def conversation_to_response(conversation) -> ConversationResponse:
                 request_id=message.request_id,
                 citations=[HitResponse(**citation) for citation in message.citations],
                 created_at=message.created_at,
+                feedback_rating=message.feedback_rating,
             )
             for message in conversation.messages
         ],
@@ -1221,6 +1385,14 @@ def conversation_to_list_item(conversation) -> ConversationListItemResponse:
 
 def user_to_response(user) -> UserResponse:
     return UserResponse(**user.public_dict())
+
+
+def admin_settings_response(config) -> AdminSettingsResponse:
+    latest = list_announcements(config, limit=1)
+    return AdminSettingsResponse(
+        registration_enabled=is_registration_enabled(config),
+        latest_announcement=AnnouncementResponse(**latest[0]) if latest else None,
+    )
 
 
 def require_current_user(*, authorization: str | None):

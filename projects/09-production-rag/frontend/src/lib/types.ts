@@ -50,6 +50,7 @@ export type ChatMessage = {
   citations?: Citation[];
   status?: "sending" | "done" | "failed";
   created_at?: number | null;
+  feedbackRating?: 1 | -1 | null;
 };
 
 export type QueryResponse = {
@@ -121,6 +122,8 @@ export type AuthUser = {
   role: "admin" | "user";
   tenant_id: string;
   created_at: number;
+  avatar_url?: string;
+  status?: "active" | "banned";
   last_login_at?: number | null;
 };
 
@@ -137,4 +140,9 @@ export type Announcement = {
   author_id: string;
   author_name?: string | null;
   created_at: number;
+};
+
+export type AdminSettings = {
+  registration_enabled: boolean;
+  latest_announcement?: Announcement | null;
 };

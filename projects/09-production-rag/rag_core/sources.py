@@ -393,10 +393,11 @@ def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
         updated_at = int(row["updated_at"]) if row.get("updated_at") else None
         item["created_at"] = min_timestamp(item.get("created_at"), created_at)
         item["updated_at"] = max_timestamp(item.get("updated_at"), updated_at)
+    title_overrides = load_source_title_overrides(config=config, tenant_id=tenant_id)
     summaries = [
         SourceSummary(
             doc_id=item["doc_id"],
-            title=item["title"],
+            title=title_overrides.get((item["doc_id"], item["doc_version"]), item["title"]),
             source_type=item["source_type"],
             source_uri=item["source_uri"],
             doc_version=item["doc_version"],
@@ -447,6 +448,49 @@ def list_source_tasks(*, config: RagConfig, tenant_id: str) -> list[SourceSummar
         )
         for row in rows
     ]
+
+
+def load_source_title_overrides(*, config: RagConfig, tenant_id: str) -> dict[tuple[str, int], str]:
+    with connect_metadata_db(config) as conn:
+        rows = conn.execute(
+            """
+            SELECT doc_id, doc_version, title
+            FROM source_title_overrides
+            WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        ).fetchall()
+    return {(str(row["doc_id"]), int(row["doc_version"])): str(row["title"]) for row in rows}
+
+
+def rename_source(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    doc_id: str,
+    title: str,
+    doc_version: int | None = None,
+) -> SourceSummary:
+    clean_title = " ".join(title.split()).strip()
+    if not clean_title:
+        raise ValueError("来源标题不能为空")
+    if len(clean_title) > 160:
+        raise ValueError("来源标题不能超过 160 个字符")
+    source = get_source(config=config, tenant_id=tenant_id, doc_id=doc_id, doc_version=doc_version)
+    if source is None or source.status != "ready":
+        raise ValueError("来源不存在或尚未解析完成")
+    with connect_metadata_db(config) as conn:
+        conn.execute(
+            """
+            INSERT INTO source_title_overrides(tenant_id, doc_id, doc_version, title, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(tenant_id, doc_id, doc_version) DO UPDATE SET
+                title = excluded.title,
+                updated_at = excluded.updated_at
+            """,
+            (tenant_id, source.doc_id, source.doc_version, clean_title, now_ms()),
+        )
+    return replace(source, title=clean_title, updated_at=now_ms())
 
 
 def get_source(
@@ -562,6 +606,15 @@ def delete_source(
         )
         for target_doc_id in target_doc_ids
     )
+    if source is not None:
+        with connect_metadata_db(config) as conn:
+            conn.execute(
+                """
+                DELETE FROM source_title_overrides
+                WHERE tenant_id = ? AND doc_id = ? AND doc_version = ?
+                """,
+                (tenant_id, source.doc_id, source.doc_version),
+            )
     return {
         "filter": filter_expr,
         "milvus": result,

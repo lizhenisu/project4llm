@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  AdminSettings,
   Announcement,
   AuthResponse,
   AuthUser,
@@ -34,7 +35,7 @@ type RequestOptions = RequestInit & {
 };
 
 type ApiConversation = Omit<Conversation, "messages"> & {
-  messages: Array<Omit<ChatMessage, "requestId"> & { request_id?: string | null }>;
+  messages: Array<Omit<ChatMessage, "requestId" | "feedbackRating"> & { request_id?: string | null; feedback_rating?: 1 | -1 | null }>;
 };
 
 async function request<T>(path: string, options: RequestOptions): Promise<T> {
@@ -101,9 +102,10 @@ export function getSource(settings: Settings, docId: string): Promise<SourceItem
   );
 }
 
-export function getSourceContent(settings: Settings, docId: string): Promise<SourceContent> {
+export function getSourceContent(settings: Settings, docId: string, docVersion?: number): Promise<SourceContent> {
+  const versionParam = docVersion ? `&doc_version=${encodeURIComponent(docVersion)}` : "";
   return request<SourceContent>(
-    `/sources/content/${encodeURIComponent(docId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    `/sources/content/${encodeURIComponent(docId)}?tenant_id=${encodeURIComponent(settings.tenantId)}${versionParam}`,
     { settings },
   );
 }
@@ -121,10 +123,28 @@ export async function uploadSource(settings: Settings, file: File): Promise<Sour
   return payload.sources;
 }
 
-export function deleteSource(settings: Settings, docId: string) {
+export function deleteSource(settings: Settings, docId: string, docVersion?: number) {
+  const versionParam = docVersion ? `&doc_version=${encodeURIComponent(docVersion)}` : "";
   return request<{ status: string }>(
-    `/sources/${encodeURIComponent(docId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    `/sources/${encodeURIComponent(docId)}?tenant_id=${encodeURIComponent(settings.tenantId)}${versionParam}`,
     { method: "DELETE", settings },
+  );
+}
+
+export function renameSource(
+  settings: Settings,
+  docId: string,
+  title: string,
+  docVersion?: number,
+): Promise<{ status: string; doc_id: string; title: string }> {
+  const versionParam = docVersion ? `&doc_version=${encodeURIComponent(docVersion)}` : "";
+  return request<{ status: string; doc_id: string; title: string }>(
+    `/sources/${encodeURIComponent(docId)}?tenant_id=${encodeURIComponent(settings.tenantId)}${versionParam}`,
+    {
+      method: "PATCH",
+      settings,
+      json: { title },
+    },
   );
 }
 
@@ -167,6 +187,8 @@ export function sendFeedback(
       rating,
       comment,
       selected_doc_ids: selectedDocIds,
+      tenant_id: settings.tenantId,
+      acl_groups: settings.aclGroups,
     },
   });
 }
@@ -210,6 +232,7 @@ export function saveConversation(
         request_id: message.requestId || null,
         citations: message.citations || [],
         created_at: message.created_at || null,
+        feedback_rating: message.feedbackRating ?? null,
       })),
       source_doc_ids: params.sourceDocIds,
     },
@@ -229,6 +252,7 @@ function normalizeConversation(conversation: ApiConversation): Conversation {
     messages: conversation.messages.map((message) => ({
       ...message,
       requestId: message.request_id || undefined,
+      feedbackRating: message.feedback_rating ?? null,
     })),
   };
 }
@@ -346,6 +370,35 @@ export function getCurrentUser(settings: Settings): Promise<AuthUser> {
   return request<AuthUser>("/auth/me", { settings });
 }
 
+export function updateCurrentUser(
+  settings: Settings,
+  params: { username: string; displayName: string; avatarUrl: string },
+): Promise<AuthUser> {
+  return request<AuthUser>("/auth/me", {
+    method: "PATCH",
+    settings,
+    json: {
+      username: params.username,
+      display_name: params.displayName,
+      avatar_url: params.avatarUrl,
+    },
+  });
+}
+
+export function changeCurrentPassword(
+  settings: Settings,
+  params: { currentPassword: string; newPassword: string },
+): Promise<{ status: string }> {
+  return request<{ status: string }>("/auth/password", {
+    method: "PATCH",
+    settings,
+    json: {
+      current_password: params.currentPassword,
+      new_password: params.newPassword,
+    },
+  });
+}
+
 export async function listAnnouncements(settings: Settings): Promise<Announcement[]> {
   const payload = await request<{ announcements: Announcement[] }>("/announcements?limit=5", {
     settings,
@@ -358,6 +411,32 @@ export async function listAdminUsers(settings: Settings): Promise<AuthUser[]> {
     settings,
   });
   return payload.users;
+}
+
+export function getAdminSettings(settings: Settings): Promise<AdminSettings> {
+  return request<AdminSettings>("/admin/settings", {
+    settings,
+  });
+}
+
+export function updateRegistrationEnabled(settings: Settings, registrationEnabled: boolean): Promise<AdminSettings> {
+  return request<AdminSettings>("/admin/settings/registration", {
+    method: "PATCH",
+    settings,
+    json: { registration_enabled: registrationEnabled },
+  });
+}
+
+export function updateAdminUserStatus(
+  settings: Settings,
+  userId: string,
+  status: "active" | "banned",
+): Promise<AuthUser> {
+  return request<AuthUser>(`/admin/users/${encodeURIComponent(userId)}/status`, {
+    method: "PATCH",
+    settings,
+    json: { status },
+  });
 }
 
 export function publishAnnouncement(
