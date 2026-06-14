@@ -67,10 +67,14 @@ function loadWorkspacesInternal(userId: string | null): WorkspaceRecord[] {
           user_id: item.user_id ?? null,
           created_at: item.created_at || Date.now(),
           updated_at: item.updated_at || item.created_at || Date.now(),
-        }));
-      if (normalized.length > 0) {
-        return normalized;
+      }));
+      // Reject workspaces that don't belong to the requested user scope
+      const scoped = normalized.filter((w) => (w.user_id ?? null) === userId);
+      if (scoped.length > 0) {
+        return scoped;
       }
+      // If all stored workspaces are foreign, discard them and fall through to defaults
+      localStorage.removeItem(key);
     } catch {
       localStorage.removeItem(key);
     }
