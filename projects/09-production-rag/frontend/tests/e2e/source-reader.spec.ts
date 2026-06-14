@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -24,6 +25,60 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/announcements?**", async (route) => {
     await route.fulfill({ json: { announcements: [] } });
   });
+});
+
+async function mockWorkspaceShell(page: Page) {
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({ json: { sources: [] } });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+}
+
+test("manages database list in settings without exposing API fields", async ({ page }) => {
+  await mockWorkspaceShell(page);
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "数据库设置" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("Production RAG 知识库")).toBeVisible();
+  await expect(dialog.getByText("API Base URL")).toBeHidden();
+  await expect(dialog.getByText("Token")).toBeHidden();
+  await expect(dialog.getByText("Tenant")).toBeHidden();
+  await expect(dialog.getByText("ACL Groups")).toBeHidden();
+
+  await page.getByRole("button", { name: "新建数据库" }).click();
+  await page.getByLabel("当前数据库名称").fill("法规资料库");
+  await page.getByRole("button", { name: "重命名数据库" }).click();
+  await expect(dialog.getByText("法规资料库")).toBeVisible();
+  await expect(dialog.getByText("Production RAG 知识库")).toBeVisible();
+
+  await page.getByRole("button", { name: /Production RAG 知识库/ }).click();
+  await expect(page.getByLabel("当前数据库名称")).toHaveValue("Production RAG 知识库");
+});
+
+test("shows a masked personal login link on the profile page", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await mockWorkspaceShell(page);
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "用户头像" }).click();
+  await page.getByRole("menuitem", { name: /个人信息/ }).click();
+
+  const secretInput = page.locator(".secret-field input");
+  await expect(secretInput).toHaveValue("********");
+  await page.getByRole("button", { name: "显示专属登录链接" }).click();
+  await expect(secretInput).toHaveValue(/#token=test-session$/);
+  await page.getByRole("button", { name: "复制专属登录链接" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("#token=test-session");
 });
 
 test("opens parsed source content from a document-level source row", async ({ page }) => {

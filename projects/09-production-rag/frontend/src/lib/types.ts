@@ -116,6 +116,13 @@ export type Settings = {
   aclGroups: string[];
 };
 
+export type WorkspaceRecord = {
+  id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+};
+
 export type AuthUser = {
   id: string;
   username: string;

@@ -1395,6 +1395,54 @@ button:not(:disabled):active {
   line-height: 1.45;
 }
 
+.database-list {
+  display: grid;
+  gap: 8px;
+}
+
+.database-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  color: var(--text);
+  padding: 0 11px;
+  text-align: left;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.database-list button:hover,
+.database-list button:focus-visible {
+  border-color: var(--line-strong);
+  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 70%, transparent);
+  outline: none;
+}
+
+.database-list button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.database-list span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+.database-list small {
+  color: var(--text-muted);
+}
+
 .settings-dialog label,
 .auth-page-panel label,
 .announcement-form label,
@@ -1657,6 +1705,29 @@ button:not(:disabled):active {
   overflow-wrap: anywhere;
 }
 
+.login-link-section {
+  grid-column: 1 / -1;
+}
+
+.login-link-section > p {
+  margin: -6px 0 0;
+}
+
+.secret-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px 36px;
+  gap: 8px;
+}
+
+.secret-field input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.secret-field .icon-button {
+  width: 36px;
+  height: 38px;
+}
+
 .announcement-form {
   display: grid;
   align-content: start;
@@ -1870,6 +1941,10 @@ button:not(:disabled):active {
   .tool-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .account-page-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 760px) {
@@ -1902,6 +1977,10 @@ button:not(:disabled):active {
 
   .tool-grid {
     grid-template-columns: 1fr;
+  }
+
+  .secret-field {
+    grid-template-columns: minmax(0, 1fr) 36px 36px;
   }
 
   .chat-input {

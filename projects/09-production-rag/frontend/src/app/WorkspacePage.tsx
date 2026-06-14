@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { ArrowLeft, Ban, CheckCircle2, DatabaseZap, LogIn, LogOut, Megaphone, Settings as SettingsIcon, Shield, UserRound, X } from "lucide-react";
+import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, Eye, EyeOff, LogIn, LogOut, Megaphone, Settings as SettingsIcon, Shield, UserRound, X } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -35,8 +35,19 @@ import {
   uploadSource,
 } from "../lib/api";
 import { useAuth } from "../lib/AuthContext";
-import { DEFAULT_WORKSPACE_NAME, defaultSettings, loadSettings, loadWorkspaceName, saveSettings, saveWorkspaceName } from "../lib/storage";
-import type { AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, MindMapArtifact, Settings, SourceContent, SourceItem } from "../lib/types";
+import {
+  DEFAULT_WORKSPACE_NAME,
+  createWorkspaceRecord,
+  defaultSettings,
+  loadActiveWorkspaceId,
+  loadSettings,
+  loadWorkspaces,
+  saveActiveWorkspaceId,
+  saveSettings,
+  saveWorkspaceName,
+  saveWorkspaces,
+} from "../lib/storage";
+import type { AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, MindMapArtifact, Settings, SourceContent, SourceItem, WorkspaceRecord } from "../lib/types";
 
 type PanelLayout = {
   source: number;
@@ -55,7 +66,8 @@ const ARTIFACT_GENERATION_COOLDOWN_MS = 4_000;
 export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => void }) {
   const auth = useAuth();
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
-  const [workspaceName, setWorkspaceName] = useState(() => loadWorkspaceName());
+  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>(() => loadWorkspaces());
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(() => loadActiveWorkspaceId(loadWorkspaces()));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [activeView, setActiveView] = useState<AppView>("workspace");
@@ -87,6 +99,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   const refreshRunRef = useRef(0);
 
   const isAuthenticated = Boolean(auth.user && auth.token);
+  const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? workspaces[0];
+  const workspaceName = activeWorkspace?.name || DEFAULT_WORKSPACE_NAME;
   const selectedSources = useMemo(() => sources.filter((source) => source.selected), [sources]);
   const selectedDocIds = useMemo(
     () =>
@@ -116,8 +130,13 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }, [settings]);
 
   useEffect(() => {
+    saveWorkspaces(workspaces);
+  }, [workspaces]);
+
+  useEffect(() => {
+    saveActiveWorkspaceId(activeWorkspaceId);
     saveWorkspaceName(workspaceName);
-  }, [workspaceName]);
+  }, [activeWorkspaceId, workspaceName]);
 
   useEffect(() => {
     if (!accountMenuOpen) return;
@@ -653,13 +672,14 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }
 
   function handleNewWorkspace() {
-    const nextName = `${DEFAULT_WORKSPACE_NAME} ${new Date().toLocaleString("zh-CN", {
+    const nextWorkspace = createWorkspaceRecord(`${DEFAULT_WORKSPACE_NAME} ${new Date().toLocaleString("zh-CN", {
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-    })}`;
-    setWorkspaceName(nextName);
+    })}`);
+    setWorkspaces((items) => [nextWorkspace, ...items]);
+    setActiveWorkspaceId(nextWorkspace.id);
     setSources([]);
     setMessages([]);
     setConversationId(null);
@@ -671,7 +691,26 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   function handleRenameWorkspace(name: string) {
     if (!name.trim()) return;
-    setWorkspaceName(name.trim());
+    const nextName = name.trim();
+    setWorkspaces((items) =>
+      items.map((workspace) =>
+        workspace.id === activeWorkspaceId ? { ...workspace, name: nextName, updated_at: Date.now() } : workspace,
+      ),
+    );
+  }
+
+  function handleSelectWorkspace(id: string) {
+    if (id === activeWorkspaceId || !workspaces.some((workspace) => workspace.id === id)) return;
+    setActiveWorkspaceId(id);
+    setSources([]);
+    setMessages([]);
+    setConversationId(null);
+    setConversationTitle("未命名对话");
+    setArtifacts([]);
+    setActiveArtifact(null);
+    setActiveSourceContent(null);
+    suppressAutoConversationLoadRef.current = false;
+    void refresh(settings);
   }
 
   function closeAnnouncement() {
@@ -811,12 +850,13 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       <footer className="statusbar">{status}</footer>
       <SettingsDialog
         open={settingsOpen}
-        settings={settings}
         workspaceName={workspaceName}
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
         onClose={() => setSettingsOpen(false)}
-        onSave={(next) => setSettings({ ...defaultSettings, ...next })}
         onNewWorkspace={handleNewWorkspace}
         onRenameWorkspace={handleRenameWorkspace}
+        onSelectWorkspace={handleSelectWorkspace}
       />
       {announcementOpen && announcements[0] ? (
         <AnnouncementModal announcement={announcements[0]} onClose={closeAnnouncement} />
@@ -915,10 +955,13 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
   const [avatarUrl, setAvatarUrl] = useState(user.avatar_url || "");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [loginLinkVisible, setLoginLinkVisible] = useState(false);
+  const [loginLinkCopied, setLoginLinkCopied] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
+  const loginLink = useMemo(() => buildLoginLink(auth.token), [auth.token]);
 
   useEffect(() => {
     setUsername(user.username);
@@ -957,6 +1000,13 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
     } finally {
       setSavingPassword(false);
     }
+  }
+
+  async function copyLoginLink() {
+    if (!loginLink) return;
+    await navigator.clipboard.writeText(loginLink);
+    setLoginLinkCopied(true);
+    window.setTimeout(() => setLoginLinkCopied(false), 1600);
   }
 
   return (
@@ -1027,6 +1077,37 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
           {message ? <p className="success-text">{message}</p> : null}
           {error ? <p className="error-text">{error}</p> : null}
         </form>
+        <section className="account-section login-link-section">
+          <h2>专属登录链接</h2>
+          <p className="muted-text">请勿分享给别人。</p>
+          <label>
+            专属登录链接
+            <div className="secret-field">
+              <input
+                readOnly
+                value={loginLinkVisible ? loginLink : "********"}
+                aria-label="专属登录链接"
+              />
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={loginLinkVisible ? "隐藏专属登录链接" : "显示专属登录链接"}
+                onClick={() => setLoginLinkVisible((visible) => !visible)}
+              >
+                {loginLinkVisible ? <Eye size={16} /> : <EyeOff size={16} />}
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="复制专属登录链接"
+                onClick={copyLoginLink}
+                disabled={!loginLink}
+              >
+                {loginLinkCopied ? <Check size={16} /> : <Copy size={16} />}
+              </button>
+            </div>
+          </label>
+        </section>
       </section>
     </main>
   );
@@ -1255,6 +1336,12 @@ function settingsEqual(left: Settings, right: Settings) {
     left.tenantId === right.tenantId &&
     left.aclGroups.join(",") === right.aclGroups.join(",")
   );
+}
+
+function buildLoginLink(token: string) {
+  if (!token) return "";
+  const { origin, pathname, search } = window.location;
+  return `${origin}${pathname}${search}#token=${encodeURIComponent(token)}`;
 }
 
 function formatDateTime(value: number) {
