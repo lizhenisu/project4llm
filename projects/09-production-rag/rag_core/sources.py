@@ -69,8 +69,8 @@ class SourceContent:
     child_doc_ids: list[str]
     guide: str
     tags: list[str]
-    suggested_title: str = ""
     text: str
+    suggested_title: str = ""
 
 
 def save_uploaded_file(
