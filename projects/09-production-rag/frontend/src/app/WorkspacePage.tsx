@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { ArrowLeft, Ban, Bot, CheckCircle2, LogIn, LogOut, Megaphone, Settings as SettingsIcon, Shield, UserRound, X } from "lucide-react";
+import { ArrowLeft, Ban, CheckCircle2, DatabaseZap, LogIn, LogOut, Megaphone, Settings as SettingsIcon, Shield, UserRound, X } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -35,7 +35,7 @@ import {
   uploadSource,
 } from "../lib/api";
 import { useAuth } from "../lib/AuthContext";
-import { defaultSettings, loadSettings, saveSettings } from "../lib/storage";
+import { DEFAULT_WORKSPACE_NAME, defaultSettings, loadSettings, loadWorkspaceName, saveSettings, saveWorkspaceName } from "../lib/storage";
 import type { AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, MindMapArtifact, Settings, SourceContent, SourceItem } from "../lib/types";
 
 type PanelLayout = {
@@ -52,12 +52,12 @@ const MINDMAP_LAYOUT: PanelLayout = { source: 20, chat: 38, studio: 42 };
 const MIN_LAYOUT: PanelLayout = { source: 17, chat: 31, studio: 22 };
 const ARTIFACT_GENERATION_COOLDOWN_MS = 4_000;
 
-export function WorkspacePage() {
+export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => void }) {
   const auth = useAuth();
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  const [workspaceName, setWorkspaceName] = useState(() => loadWorkspaceName());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const [authDialogMode, setAuthDialogMode] = useState<"login" | "register" | null>(null);
   const [activeView, setActiveView] = useState<AppView>("workspace");
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
@@ -83,6 +83,8 @@ export function WorkspacePage() {
   const artifactGenerationBusyRef = useRef(false);
   const artifactGenerationReadyAtRef = useRef(0);
   const suppressAutoConversationLoadRef = useRef(false);
+  const authTokenRef = useRef<string | null>(auth.token);
+  const refreshRunRef = useRef(0);
 
   const isAuthenticated = Boolean(auth.user && auth.token);
   const selectedSources = useMemo(() => sources.filter((source) => source.selected), [sources]);
@@ -114,6 +116,10 @@ export function WorkspacePage() {
   }, [settings]);
 
   useEffect(() => {
+    saveWorkspaceName(workspaceName);
+  }, [workspaceName]);
+
+  useEffect(() => {
     if (!accountMenuOpen) return;
     function handleOutsideClick(event: MouseEvent) {
       if (!accountMenuRef.current?.contains(event.target as Node)) {
@@ -125,6 +131,7 @@ export function WorkspacePage() {
   }, [accountMenuOpen]);
 
   useEffect(() => {
+    authTokenRef.current = auth.token;
     setSettings((current) => {
       const next = {
         ...current,
@@ -141,11 +148,13 @@ export function WorkspacePage() {
     setMessages([]);
     setConversationId(null);
     setConversationTitle("未命名对话");
-      setArtifacts([]);
-      setActiveArtifact(null);
-      setActiveSourceContent(null);
-      setActiveView("workspace");
-      suppressAutoConversationLoadRef.current = false;
+    setArtifacts([]);
+    setActiveArtifact(null);
+    setActiveSourceContent(null);
+    setActiveView("workspace");
+    setBusy(false);
+    setTypingMessageId(null);
+    suppressAutoConversationLoadRef.current = false;
   }, [auth.user?.id]);
 
   useEffect(() => {
@@ -160,40 +169,52 @@ export function WorkspacePage() {
   }, [announcements, auth.user?.id]);
 
   async function refresh(nextSettings = settings) {
+    const runId = ++refreshRunRef.current;
+    const isCurrentRefresh = () => runId === refreshRunRef.current && nextSettings.token === authTokenRef.current;
     try {
       await health(nextSettings);
       if (!nextSettings.token) {
         const announcementRows = await listAnnouncements(nextSettings);
+        if (!isCurrentRefresh()) return;
         setSources([]);
         setArtifacts([]);
         setAnnouncements(announcementRows);
         setStatus("请先登录后使用知识库服务");
         return;
       }
+      if (!isCurrentRefresh()) return;
       setStatus("API 已连接");
       const [sourceRows, artifactRows, announcementRows] = await Promise.all([
         listSources(nextSettings),
         listArtifacts(nextSettings),
         listAnnouncements(nextSettings),
       ]);
+      if (!isCurrentRefresh()) return;
       setSources((current) => mergeSelectedState(sourceRows, current));
       setArtifacts(artifactRows);
       setAnnouncements(announcementRows);
-      await loadLatestConversation(nextSettings, sourceRows);
+      await loadLatestConversation(nextSettings, sourceRows, isCurrentRefresh);
     } catch (error) {
+      if (!isCurrentRefresh()) return;
       setStatus(error instanceof Error ? error.message : "连接失败");
     }
   }
 
-  async function loadLatestConversation(nextSettings: Settings, sourceRows: SourceItem[]) {
+  async function loadLatestConversation(
+    nextSettings: Settings,
+    sourceRows: SourceItem[],
+    isCurrentRefresh: () => boolean,
+  ) {
     if (suppressAutoConversationLoadRef.current) {
       return;
     }
     const rows = await listConversations(nextSettings);
+    if (!isCurrentRefresh()) return;
     if (conversationId || rows.length === 0 || messages.length > 0) {
       return;
     }
     const latest = await getConversation(nextSettings, rows[0].id);
+    if (!isCurrentRefresh()) return;
     setConversationId(latest.id);
     setConversationTitle(latest.title);
     const latestMessages = latest.messages.map(normalizeMessage);
@@ -215,7 +236,7 @@ export function WorkspacePage() {
 
   async function handleUpload(file: File) {
     if (!isAuthenticated) {
-      setAuthDialogMode("login");
+      onNavigate("/login");
       return;
     }
     const sourceKeysBeforeUpload = new Set(sources.map(sourceStateKey));
@@ -252,8 +273,9 @@ export function WorkspacePage() {
   }
 
   async function handleDeleteSource(source: SourceItem) {
-    setSources((items) => items.filter((item) => item.doc_id !== source.doc_id));
-    if (activeSourceContent?.doc_id === source.doc_id) {
+    const deletingKey = sourceStateKey(source);
+    setSources((items) => items.filter((item) => sourceStateKey(item) !== deletingKey));
+    if (activeSourceContent?.doc_id === source.doc_id && activeSourceContent.doc_version === source.doc_version) {
       setActiveSourceContent(null);
     }
     try {
@@ -294,9 +316,11 @@ export function WorkspacePage() {
   async function handleAsk(query: string) {
     if (!query.trim()) return;
     if (!isAuthenticated) {
-      setAuthDialogMode("login");
+      onNavigate("/login");
       return;
     }
+    const requestToken = authTokenRef.current;
+    const isCurrentSession = () => Boolean(requestToken) && authTokenRef.current === requestToken;
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -318,12 +342,14 @@ export function WorkspacePage() {
     let targetConversationId = conversationId;
     try {
       const savedPending = await persistConversation(baseMessages);
+      if (!isCurrentSession()) return;
       targetConversationId = savedPending?.id ?? targetConversationId;
       const response = await queryRag(settings, {
         query,
         docIds: selectedDocIds,
         history: messages.map((message) => `${message.role}: ${message.content}`).slice(-8),
       });
+      if (!isCurrentSession()) return;
       const nextMessages: ChatMessage[] = baseMessages.map((item) =>
           item.id === pending.id
             ? {
@@ -339,6 +365,7 @@ export function WorkspacePage() {
       setTypingMessageId(pending.id);
       await persistConversation(nextMessages, targetConversationId, selectedDocIds);
     } catch (error) {
+      if (!isCurrentSession()) return;
       if (isFetchInterrupted(error)) {
         return;
       }
@@ -351,11 +378,15 @@ export function WorkspacePage() {
       setTypingMessageId(null);
       await persistConversation(failedMessages, targetConversationId, selectedDocIds);
     } finally {
-      setBusy(false);
+      if (isCurrentSession()) {
+        setBusy(false);
+      }
     }
   }
 
   async function resumePendingAnswer(conversation: Conversation, nextSettings: Settings) {
+    const requestToken = nextSettings.token;
+    const isCurrentSession = () => Boolean(requestToken) && authTokenRef.current === requestToken;
     const pendingIndex = conversation.messages.findIndex(
       (message) => message.role === "assistant" && message.status === "sending",
     );
@@ -375,6 +406,7 @@ export function WorkspacePage() {
           .map((message) => `${message.role}: ${message.content}`)
           .slice(-8),
       });
+      if (!isCurrentSession()) return;
       const nextMessages: ChatMessage[] = conversation.messages.map((item, index) =>
         index === pendingIndex
           ? {
@@ -390,6 +422,7 @@ export function WorkspacePage() {
       setTypingMessageId(pending.id);
       await persistConversation(nextMessages, conversation.id, conversation.source_doc_ids, nextSettings);
     } catch (error) {
+      if (!isCurrentSession()) return;
       if (isFetchInterrupted(error)) {
         return;
       }
@@ -406,7 +439,9 @@ export function WorkspacePage() {
       setTypingMessageId(null);
       await persistConversation(failedMessages, conversation.id, conversation.source_doc_ids, nextSettings);
     } finally {
-      setBusy(false);
+      if (isCurrentSession()) {
+        setBusy(false);
+      }
     }
   }
 
@@ -576,20 +611,23 @@ export function WorkspacePage() {
   async function handleRenameSource(source: SourceItem, newTitle: string) {
     if (!newTitle.trim() || newTitle === source.title) return;
     const previousTitle = source.title;
-    setSources((items) => items.map((item) => (item.doc_id === source.doc_id ? { ...item, title: newTitle } : item)));
+    const renamingKey = sourceStateKey(source);
+    setSources((items) =>
+      items.map((item) => (sourceStateKey(item) === renamingKey ? { ...item, title: newTitle } : item)),
+    );
     try {
       const renamed = await renameSource(settings, source.doc_id, newTitle, source.doc_version);
       setSources((items) =>
-        items.map((item) => (item.doc_id === source.doc_id ? { ...item, title: renamed.title } : item)),
+        items.map((item) => (sourceStateKey(item) === renamingKey ? { ...item, title: renamed.title } : item)),
       );
-      if (activeSourceContent?.doc_id === source.doc_id) {
+      if (activeSourceContent?.doc_id === source.doc_id && activeSourceContent.doc_version === source.doc_version) {
         setActiveSourceContent({ ...activeSourceContent, title: renamed.title });
       }
     } catch (error) {
       console.error("Rename source failed:", error);
       setSources((items) =>
         items.map((item) =>
-          item.doc_id === source.doc_id
+          sourceStateKey(item) === renamingKey
             ? { ...item, title: previousTitle, error: error instanceof Error ? error.message : "重命名失败" }
             : item,
         ),
@@ -614,6 +652,28 @@ export function WorkspacePage() {
     await auth.logout();
   }
 
+  function handleNewWorkspace() {
+    const nextName = `${DEFAULT_WORKSPACE_NAME} ${new Date().toLocaleString("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`;
+    setWorkspaceName(nextName);
+    setSources([]);
+    setMessages([]);
+    setConversationId(null);
+    setConversationTitle("未命名对话");
+    setArtifacts([]);
+    setActiveArtifact(null);
+    setActiveSourceContent(null);
+  }
+
+  function handleRenameWorkspace(name: string) {
+    if (!name.trim()) return;
+    setWorkspaceName(name.trim());
+  }
+
   function closeAnnouncement() {
     const announcement = announcements[0];
     if (announcement) {
@@ -627,9 +687,9 @@ export function WorkspacePage() {
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark">
-            <Bot size={22} />
+            <DatabaseZap size={22} />
           </span>
-          <span>未命名的知识库</span>
+          <span>{workspaceName}</span>
         </div>
         <div className="topbar-actions">
           <IconButton label="设置" onClick={() => setSettingsOpen(true)}>
@@ -656,11 +716,11 @@ export function WorkspacePage() {
                 user={auth.user}
                 onLogin={() => {
                   setAccountMenuOpen(false);
-                  setAuthDialogMode("login");
+                  onNavigate("/login");
                 }}
                 onRegister={() => {
                   setAccountMenuOpen(false);
-                  setAuthDialogMode("register");
+                  onNavigate("/register");
                 }}
                 onProfile={() => {
                   setAccountMenuOpen(false);
@@ -752,12 +812,12 @@ export function WorkspacePage() {
       <SettingsDialog
         open={settingsOpen}
         settings={settings}
+        workspaceName={workspaceName}
         onClose={() => setSettingsOpen(false)}
         onSave={(next) => setSettings({ ...defaultSettings, ...next })}
+        onNewWorkspace={handleNewWorkspace}
+        onRenameWorkspace={handleRenameWorkspace}
       />
-      {authDialogMode ? (
-        <AuthDialog mode={authDialogMode} onClose={() => setAuthDialogMode(null)} />
-      ) : null}
       {announcementOpen && announcements[0] ? (
         <AnnouncementModal announcement={announcements[0]} onClose={closeAnnouncement} />
       ) : null}
@@ -844,68 +904,6 @@ function AnnouncementModal({ announcement, onClose }: { announcement: Announceme
         <p>{announcement.content}</p>
         <span>{announcement.author_name || "系统公告"} · {formatDateTime(announcement.created_at)}</span>
       </section>
-    </div>
-  );
-}
-
-function AuthDialog({ mode, onClose }: { mode: "login" | "register"; onClose: () => void }) {
-  const auth = useAuth();
-  const [username, setUsername] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const isRegister = mode === "register";
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setError("");
-    setSubmitting(true);
-    try {
-      if (isRegister) {
-        await auth.register(username, password, displayName);
-      } else {
-        await auth.login(username, password);
-      }
-      onClose();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "操作失败");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <form className="auth-dialog" role="dialog" aria-modal="true" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
-        <h2>{isRegister ? "注册账号" : "登录账号"}</h2>
-        <label>
-          用户名
-          <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
-        </label>
-        {isRegister ? (
-          <label>
-            显示名称
-            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" />
-          </label>
-        ) : null}
-        <label>
-          密码
-          <input
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            type="password"
-            autoComplete={isRegister ? "new-password" : "current-password"}
-          />
-        </label>
-        {error ? <p className="error-text">{error}</p> : null}
-        <div className="dialog-actions">
-          <button type="button" onClick={onClose}>取消</button>
-          <button type="submit" disabled={submitting || !username.trim() || !password}>
-            {submitting ? "处理中..." : isRegister ? "注册并登录" : "登录"}
-          </button>
-        </div>
-      </form>
     </div>
   );
 }
@@ -1129,8 +1127,18 @@ function AdminPage({
               <strong>新用户注册</strong>
               <p>{adminSettings?.registration_enabled ? "当前允许新用户自行注册。" : "当前已关闭新用户注册。"}</p>
             </div>
-            <button type="button" disabled={!adminSettings || settingsBusy} onClick={toggleRegistrationEnabled}>
-              {adminSettings?.registration_enabled ? "关闭注册" : "允许注册"}
+            <button
+              type="button"
+              className={`toggle-switch ${adminSettings?.registration_enabled ? "is-on" : ""}`}
+              role="switch"
+              aria-checked={Boolean(adminSettings?.registration_enabled)}
+              disabled={!adminSettings || settingsBusy}
+              onClick={toggleRegistrationEnabled}
+            >
+              <span className="toggle-track">
+                <span />
+              </span>
+              <span className="toggle-label">{adminSettings?.registration_enabled ? "允许注册" : "关闭注册"}</span>
             </button>
           </div>
         </section>

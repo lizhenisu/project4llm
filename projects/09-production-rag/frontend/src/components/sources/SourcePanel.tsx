@@ -96,12 +96,13 @@ export function SourcePanel({
           {sources.map((source) => {
             const activeTask = source.status === "uploading" || source.status === "processing";
             const sourceKey = sourceInstanceKey(source);
+            const isEditing = editingSourceId === sourceKey;
             return (
-            <div className={`source-row status-${source.status}${activeTask ? " is-active-task" : ""}`} key={sourceKey}>
+            <div className={`source-row status-${source.status}${activeTask ? " is-active-task" : ""}${isEditing ? " is-editing" : ""}`} key={sourceKey}>
               <FileText className="file-type-icon" size={20} />
               
-              <div className="source-title" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "2px", overflow: "hidden" }}>
-                {editingSourceId === sourceKey ? (
+              <div className={`source-title${isEditing ? " is-editing" : ""}`}>
+                {isEditing ? (
                   <input
                     className="inline-title-input"
                     autoFocus

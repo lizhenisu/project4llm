@@ -15,6 +15,7 @@ from rag_core.database import connect_metadata_db
 PBKDF2_ITERATIONS = 240_000
 SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 REGISTRATION_ENABLED_KEY = "registration_enabled"
+SESSION_TOKEN_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 
 @dataclass(frozen=True)
@@ -151,7 +152,7 @@ def login_user(config: RagConfig, *, username: str, password: str) -> tuple[User
             raise ValueError("用户名或密码错误")
         if str(row["status"] or "active") != "active":
             raise ValueError("账号已被封禁")
-        token = secrets.token_urlsafe(36)
+        token = generate_session_token()
         expires_at = timestamp + SESSION_TTL_SECONDS * 1000
         conn.execute(
             "INSERT INTO sessions(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
@@ -159,6 +160,10 @@ def login_user(config: RagConfig, *, username: str, password: str) -> tuple[User
         )
         conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (timestamp, row["id"]))
         return user_from_row(row, last_login_at=timestamp), token, expires_at
+
+
+def generate_session_token(length: int = 24) -> str:
+    return "".join(secrets.choice(SESSION_TOKEN_ALPHABET) for _ in range(length))
 
 
 def logout_user(config: RagConfig, *, token: str) -> None:

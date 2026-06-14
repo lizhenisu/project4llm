@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
 import csv
 import json
+import os
 import re
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
+from rag_core.embeddings import post_json, siliconflow_url
 from rag_core.types import ImageDocument, SourceDocument
 
 
@@ -432,6 +435,13 @@ def extract_pdf_text(path: Path) -> str:
 
 def extract_pdf_pages(path: Path) -> list[tuple[int, str]]:
     try:
+        return extract_pdf_pages_with_pymupdf(path)
+    except ImportError:
+        return extract_pdf_pages_with_pypdf(path)
+
+
+def extract_pdf_pages_with_pypdf(path: Path) -> list[tuple[int, str]]:
+    try:
         from pypdf import PdfReader
     except ImportError as exc:
         raise RuntimeError("PDF ingestion requires pypdf. Run `uv add pypdf`.") from exc
@@ -441,6 +451,165 @@ def extract_pdf_pages(path: Path) -> list[tuple[int, str]]:
         (page_no, _compact_whitespace(page.extract_text() or ""))
         for page_no, page in enumerate(reader.pages, start=1)
     ]
+
+
+def extract_pdf_pages_with_pymupdf(path: Path) -> list[tuple[int, str]]:
+    try:
+        import fitz
+    except ImportError as exc:
+        raise exc
+
+    image_captioner = PdfImageCaptioner.from_env()
+    max_captioned_images = int(os.environ.get("RAG_PDF_CAPTION_MAX_IMAGES", "24"))
+    captioned_images = 0
+    pages: list[tuple[int, str]] = []
+    with fitz.open(path) as document:
+        for page_index, page in enumerate(document, start=1):
+            parts = [
+                block
+                for block in extract_pymupdf_text_blocks(page)
+                if block.strip()
+            ]
+            table_parts = extract_pymupdf_tables(page)
+            if table_parts:
+                parts.extend(table_parts)
+            image_parts: list[str] = []
+            for image_index, image in enumerate(page.get_images(full=True), start=1):
+                image_note = f"图片 {image_index}: PDF 第 {page_index} 页内嵌图片。"
+                if image_captioner and captioned_images < max_captioned_images:
+                    caption = image_captioner.caption_pdf_image(
+                        document=document,
+                        image=image,
+                        label=f"{path.name} 第 {page_index} 页 图片 {image_index}",
+                    )
+                    captioned_images += 1
+                    if caption:
+                        image_note = f"图片 {image_index}: {caption}"
+                image_parts.append(image_note)
+            if image_parts:
+                parts.append("图片信息:\n" + "\n".join(image_parts))
+            text = "\n\n".join(parts)
+            pages.append((page_index, _compact_whitespace_preserve_lines(text)))
+    return pages
+
+
+def extract_pymupdf_text_blocks(page) -> list[str]:
+    blocks = []
+    for block in page.get_text("blocks"):
+        if len(block) < 5:
+            continue
+        text = _compact_whitespace_preserve_lines(str(block[4]))
+        if text:
+            blocks.append(text)
+    return blocks
+
+
+def extract_pymupdf_tables(page) -> list[str]:
+    if not hasattr(page, "find_tables"):
+        return []
+    try:
+        tables = page.find_tables()
+    except Exception:
+        return []
+    table_parts: list[str] = []
+    for table_index, table in enumerate(getattr(tables, "tables", []), start=1):
+        try:
+            rows = table.extract()
+        except Exception:
+            continue
+        markdown = table_rows_to_markdown(rows)
+        if markdown:
+            table_parts.append(f"表格 {table_index}:\n{markdown}")
+    return table_parts
+
+
+def table_rows_to_markdown(rows: list[list[Any]]) -> str:
+    cleaned = [
+        [_compact_whitespace(str(cell or "")) for cell in row]
+        for row in rows
+        if any(str(cell or "").strip() for cell in row)
+    ]
+    if not cleaned:
+        return ""
+    width = max(len(row) for row in cleaned)
+    normalized = [row[:width] + [""] * max(0, width - len(row)) for row in cleaned]
+    header = normalized[0]
+    body = normalized[1:]
+    return table_to_markdown(header, body)
+
+
+class PdfImageCaptioner:
+    def __init__(self, *, base_url: str, api_key: str, model: str) -> None:
+        self.base_url = base_url
+        self.api_key = api_key
+        self.model = model
+
+    @classmethod
+    def from_env(cls) -> "PdfImageCaptioner | None":
+        backend = os.environ.get("RAG_PDF_IMAGE_CAPTION_BACKEND", "siliconflow").lower()
+        if backend in {"", "none", "off", "disabled"}:
+            return None
+        api_key = os.environ.get("SILICONFLOW_API_KEY")
+        if not api_key:
+            return None
+        return cls(
+            base_url=os.environ.get("SILICONFLOW_URL", "https://api.siliconflow.cn"),
+            api_key=api_key,
+            model=os.environ.get("RAG_PDF_IMAGE_CAPTION_MODEL", "Qwen/Qwen3-VL-8B-Instruct"),
+        )
+
+    def caption_pdf_image(self, *, document, image, label: str) -> str:
+        xref = image[0]
+        try:
+            payload = document.extract_image(xref)
+        except Exception:
+            return ""
+        image_bytes = payload.get("image")
+        extension = payload.get("ext") or "png"
+        if not image_bytes:
+            return ""
+        media_type = f"image/{'jpeg' if extension.lower() == 'jpg' else extension.lower()}"
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        try:
+            response = post_json(
+                siliconflow_url(self.base_url, "/chat/completions"),
+                api_key=self.api_key,
+                payload={
+                    "model": self.model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "请用中文简洁描述这张论文或资料图片中的关键信息。"
+                                        "如果是图表，说明坐标、流程、结构或结论。"
+                                        f"图片来源: {label}"
+                                    ),
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{media_type};base64,{encoded}",
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                    "max_tokens": 256,
+                },
+            )
+        except Exception:
+            return ""
+        choices = response.get("choices") or []
+        if not choices:
+            return ""
+        message = choices[0].get("message") or {}
+        content = message.get("content") or ""
+        if isinstance(content, list):
+            content = " ".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in content)
+        return _compact_whitespace(str(content))
 
 
 def extract_html_text(path: Path) -> tuple[str, str | None]:
@@ -464,3 +633,18 @@ def extract_markdown_title(text: str) -> str | None:
 
 def _compact_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _compact_whitespace_preserve_lines(text: str) -> str:
+    lines = [_compact_whitespace(line) for line in text.splitlines()]
+    compacted: list[str] = []
+    previous_blank = False
+    for line in lines:
+        if not line:
+            if not previous_blank and compacted:
+                compacted.append("")
+            previous_blank = True
+            continue
+        compacted.append(line)
+        previous_blank = False
+    return "\n".join(compacted).strip()

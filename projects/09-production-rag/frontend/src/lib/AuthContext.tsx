@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { loginAccount, logoutAccount, registerAccount, setUnauthorizedHandler } from "./api";
+import { getCurrentUser, loginAccount, logoutAccount, registerAccount, setUnauthorizedHandler } from "./api";
 import { loadSettings } from "./storage";
 import type { AuthUser } from "./types";
 
@@ -15,15 +15,29 @@ type AuthContextValue = {
   token: string;
   login: (username: string, password: string) => Promise<void>;
   register: (username: string, password: string, displayName: string) => Promise<void>;
+  loginWithToken: (token: string) => Promise<void>;
   setUser: (user: AuthUser) => void;
   logout: () => Promise<void>;
 };
 
 const STORAGE_KEY = "production-rag-auth-session";
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<AuthSession | null>(() => loadAuthSession());
+
+  async function loginWithToken(token: string) {
+    const trimmed = token.trim();
+    const user = await getCurrentUser({ ...loadSettings(), token: trimmed });
+    const next = {
+      user,
+      token: trimmed,
+      expires_at: Date.now() + SESSION_TTL_MS,
+    };
+    persistAuthSession(next);
+    setSession(next);
+  }
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
@@ -31,6 +45,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(null);
     });
     return () => setUnauthorizedHandler(null);
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const token = params.get("token");
+    if (!token) return;
+    void loginWithToken(token).finally(() => {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    });
   }, []);
 
   const value = useMemo<AuthContextValue>(
@@ -51,6 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         persistAuthSession(response);
         setSession(response);
       },
+      loginWithToken,
       setUser(user) {
         setSession((current) => {
           if (!current) return current;

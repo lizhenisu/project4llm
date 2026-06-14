@@ -91,6 +91,51 @@ test("opens parsed source content from a document-level source row", async ({ pa
   await expect(reader.getByText("在 21 世纪全球生态危机日益严峻的背景下")).toBeVisible();
 });
 
+test("keeps source rename input focus shadow unclipped", async ({ page }) => {
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({
+      json: {
+        sources: [
+          {
+            doc_id: "rename-regression",
+            title: "需要重命名的原始文档.pdf",
+            source_type: "pdf",
+            source_uri: "/object_store/uploads/team_a/rename-regression.pdf",
+            doc_version: 1,
+            chunk_count: 3,
+            acl_groups: ["engineering"],
+            status: "ready",
+            current: true,
+            child_doc_ids: [],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/");
+  await page.locator(".source-row .row-icon-more").click();
+  await page.getByRole("button", { name: "重命名", exact: true }).click();
+
+  const row = page.locator(".source-row.is-editing");
+  const title = page.locator(".source-title.is-editing");
+  const input = page.locator(".inline-title-input");
+
+  await expect(input).toBeFocused();
+  await expect(row).toHaveCSS("overflow", "visible");
+  await expect(title).toHaveCSS("overflow", "visible");
+  await expect(input).not.toHaveCSS("box-shadow", "none");
+});
+
 test("does not load protected workspace services before login", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.removeItem("production-rag-auth-session");
@@ -117,7 +162,7 @@ test("does not load protected workspace services before login", async ({ page })
   expect(protectedRequests).toBe(0);
 });
 
-test("opens login dialog when a guest sends from the chat input", async ({ page }) => {
+test("navigates a guest to the login page when sending from the chat input", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.removeItem("production-rag-auth-session");
   });
@@ -130,7 +175,110 @@ test("opens login dialog when a guest sends from the chat input", async ({ page 
   await input.fill("自然辩证法的引言");
   await expect(page.locator(".chat-input button")).toBeEnabled();
   await input.press("Enter");
-  await expect(page.getByRole("dialog").getByRole("heading", { name: "登录账号" })).toBeVisible();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByRole("heading", { name: "登录账号" })).toBeVisible();
+  await expect(page.locator(".auth-page")).toHaveCSS("background-color", "rgb(237, 239, 250)");
+  await expect(page.locator(".auth-page-panel")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  await expect(page.locator(".auth-page-panel")).toHaveCSS("box-shadow", "none");
+  await expect(page.locator(".auth-page-submit")).toHaveCSS("color", "rgb(255, 255, 255)");
+});
+
+test("switches between dedicated login and register pages", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.removeItem("production-rag-auth-session");
+  });
+
+  await page.goto("/login");
+  await expect(page.getByRole("heading", { name: "登录账号" })).toBeVisible();
+  await page.getByRole("button", { name: "去注册" }).click();
+  await expect(page).toHaveURL(/\/register$/);
+  await expect(page.getByRole("heading", { name: "注册账号" })).toBeVisible();
+  await page.getByRole("button", { name: "去登录" }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByRole("heading", { name: "登录账号" })).toBeVisible();
+});
+
+test("updates workspace status immediately after login", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.removeItem("production-rag-auth-session");
+  });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/auth/login", async (route) => {
+    await route.fulfill({
+      json: {
+        user: {
+          id: "user-aak",
+          username: "aak",
+          display_name: "aak",
+          role: "user",
+          tenant_id: "team_a",
+          avatar_url: "",
+          status: "active",
+          created_at: Date.now(),
+          last_login_at: Date.now(),
+        },
+        token: "session-aak",
+        expires_at: Date.now() + 86_400_000,
+      },
+    });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({ json: { sources: [] } });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/login");
+  await page.getByLabel("用户名").fill("aak");
+  await page.getByLabel("密码").fill("12345678");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.locator(".statusbar")).toHaveText("API 已连接");
+});
+
+test("logs in directly from a hash token", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.removeItem("production-rag-auth-session");
+  });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/auth/me", async (route) => {
+    expect(route.request().headers().authorization).toBe("Bearer abc123abc123abc123abc123");
+    await route.fulfill({
+      json: {
+        id: "token-user",
+        username: "tokenuser",
+        display_name: "Token 用户",
+        role: "user",
+        tenant_id: "team_a",
+        avatar_url: "",
+        status: "active",
+        created_at: Date.now(),
+        last_login_at: Date.now(),
+      },
+    });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({ json: { sources: [] } });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/#token=abc123abc123abc123abc123");
+  await expect(page.getByRole("button", { name: "用户头像" })).toHaveText("T");
+  await expect(page).not.toHaveURL(/token=/);
 });
 
 test("expands second-level mind map topics to reveal child outline items", async ({ page }) => {
@@ -433,6 +581,65 @@ test("renames a source from the row menu and persists the new title", async ({ p
 
   await expect(page.locator(".source-row", { hasText: "自然辩证法-重命名.pdf" })).toBeVisible();
   await expect(page.locator(".source-row", { hasText: "自然辩证法.pdf" })).toHaveCount(0);
+});
+
+test("deletes only the selected version when duplicate source titles exist", async ({ page }) => {
+  let sources = [
+    {
+      doc_id: "duplicate-source",
+      title: "深大_创维 AI 研究院实习介绍资料(1).pdf",
+      source_type: "pdf",
+      source_uri: "/uploads/duplicate-v1.pdf",
+      doc_version: 1,
+      chunk_count: 4,
+      acl_groups: ["engineering"],
+      status: "ready",
+      current: true,
+      child_doc_ids: ["duplicate-source/page-1"],
+    },
+    {
+      doc_id: "duplicate-source",
+      title: "深大_创维 AI 研究院实习介绍资料(1).pdf",
+      source_type: "pdf",
+      source_uri: "/uploads/duplicate-v2.pdf",
+      doc_version: 2,
+      chunk_count: 5,
+      acl_groups: ["engineering"],
+      status: "ready",
+      current: true,
+      child_doc_ids: ["duplicate-source/page-1"],
+    },
+  ];
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({ json: { sources } });
+  });
+  await page.route("**/sources/duplicate-source?**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      const url = new URL(route.request().url());
+      const deletedVersion = Number(url.searchParams.get("doc_version"));
+      sources = sources.filter((source) => source.doc_version !== deletedVersion);
+      await route.fulfill({ json: { status: "deleted" } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/");
+  await expect(page.locator(".source-row", { hasText: "深大_创维 AI 研究院实习介绍资料(1).pdf" })).toHaveCount(2);
+  await page.locator(".source-row", { hasText: "深大_创维 AI 研究院实习介绍资料(1).pdf" }).first().locator(".row-icon-more").click();
+  await page.getByRole("button", { name: "移除" }).click();
+  await page.getByRole("button", { name: "确认移除" }).click();
+
+  await expect(page.locator(".source-row", { hasText: "深大_创维 AI 研究院实习介绍资料(1).pdf" })).toHaveCount(1);
 });
 
 test("does not keep unrelated transient sources after upload polling completes", async ({ page }) => {
@@ -1020,10 +1227,12 @@ test("registers an admin user from the avatar menu and publishes an announcement
   await expect(guestAvatar.locator("svg")).toBeVisible();
   await page.getByRole("button", { name: "用户头像" }).click();
   await page.getByRole("menuitem", { name: /注册/ }).click();
-  await page.getByRole("dialog").getByLabel("用户名").fill("admin");
-  await page.getByRole("dialog").getByLabel("显示名称").fill("管理员");
-  await page.getByRole("dialog").getByLabel("密码").fill("strong-password");
+  await expect(page).toHaveURL(/\/register$/);
+  await page.getByLabel("用户名").fill("admin");
+  await page.getByLabel("显示名称").fill("管理员");
+  await page.getByLabel("密码").fill("strong-password");
   await page.getByRole("button", { name: "注册并登录" }).click();
+  await expect(page).toHaveURL(/\/$/);
 
   await page.getByRole("button", { name: "用户头像" }).click();
   await expect(page.getByText("admin · 管理员")).toBeVisible();
@@ -1050,9 +1259,10 @@ test("registers an admin user from the avatar menu and publishes an announcement
   await expect(page.getByText("当前允许新用户自行注册。")).toBeVisible();
   await expect(page.getByText("上一条公告")).toBeVisible();
   await expect(page.getByText("这是管理员上一次发布的公告。")).toBeVisible();
-  await page.getByRole("button", { name: "关闭注册" }).click();
+  await expect(page.getByRole("switch", { name: "允许注册" })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("switch", { name: "允许注册" }).click();
   await expect(page.getByText("当前已关闭新用户注册。")).toBeVisible();
-  await expect(page.getByRole("button", { name: "允许注册" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "关闭注册" })).toHaveAttribute("aria-checked", "false");
   await expect(page.getByText("tenant-reader")).toBeVisible();
   await page.getByRole("button", { name: "封禁" }).click();
   await expect(page.getByText("已封禁")).toBeVisible();
@@ -1216,7 +1426,7 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
   await expect(page.getByText("这是一段用于验证打字机效果")).toBeVisible();
   await expect(page.getByText(finalMarker)).toBeHidden();
   await expect(page.getByText(finalMarker)).toBeVisible({ timeout: 5000 });
-  await expect(page.getByText("1. 自然辩证法.pdf · 第 1 页")).toBeVisible();
+  await expect(page.getByText("1. 自然辩证法.pdf · 第 1 页 · 重排分数 0.800")).toBeVisible();
   await expect(page.getByText("chunk 0")).toBeHidden();
 
   const chatBox = await page.locator(".chat-panel").boundingBox();
@@ -1344,6 +1554,74 @@ test("persists and resumes a pending answer after browser refresh", async ({ pag
   expect(queryCalls).toBeGreaterThanOrEqual(2);
   expect(storedConversation.messages.at(-1).status).toBe("done");
   expect(storedConversation.messages.at(-1).content).toBe("刷新后继续完成的回答。");
+});
+
+test("drops an in-flight answer response after logout", async ({ page }) => {
+  let queryResolve: (() => void) | null = null;
+  const queryReleased = new Promise<void>((resolve) => {
+    queryResolve = resolve;
+  });
+
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/auth/logout", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({
+      json: {
+        sources: [
+          {
+            doc_id: "natural",
+            title: "自然辩证法.pdf",
+            source_type: "pdf",
+            source_uri: "/uploads/natural.pdf",
+            doc_version: 1,
+            chunk_count: 6,
+            acl_groups: ["engineering"],
+            status: "ready",
+            current: true,
+            child_doc_ids: ["natural/page-1"],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ json: { conversations: [] } });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    await route.fulfill({ json: { ...body, id: "conv-logout-race", updated_at: Date.now() } });
+  });
+  await page.route("**/query**", async (route) => {
+    await queryReleased;
+    await route.fulfill({
+      json: {
+        request_id: "logout-race",
+        answer: "这段回答不应该在登出后的页面显示。",
+        citations: [],
+        trace: {},
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByPlaceholder("提问或创作内容").fill("总结当前文章");
+  await page.locator(".chat-input button").click();
+  await expect(page.getByText("正在检索资料并生成回答...")).toBeVisible();
+  await page.getByRole("button", { name: "用户头像" }).click();
+  await page.getByRole("menuitem", { name: /登出/ }).click();
+  queryResolve?.();
+
+  await expect(page.getByPlaceholder("登录后即可发送")).toBeVisible();
+  await expect(page.getByText("总结当前文章")).toHaveCount(0);
+  await expect(page.getByText("这段回答不应该在登出后的页面显示。")).toHaveCount(0);
 });
 
 test("persists assistant feedback rating after browser refresh", async ({ page }) => {

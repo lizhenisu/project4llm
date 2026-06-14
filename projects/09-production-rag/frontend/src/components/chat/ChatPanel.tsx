@@ -309,7 +309,14 @@ function Citations({ message }: { message: ChatMessage }) {
 function formatCitationSummary(citation: Citation) {
   const title = citationDisplayTitle(citation);
   const location = citationLocation(citation);
-  return location ? `${title} · ${location}` : title;
+  const score = citation.rerank_score ?? citation.score;
+  const scoreLabel = citation.rerank_score == null ? "检索分数" : "重排分数";
+  const parts = [title, location, `${scoreLabel} ${formatScore(score)}`].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function formatScore(score: number) {
+  return Number.isFinite(score) ? score.toFixed(3) : "未知";
 }
 
 function citationDisplayTitle(citation: Citation) {

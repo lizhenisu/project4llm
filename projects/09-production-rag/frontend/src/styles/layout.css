@@ -117,7 +117,7 @@
 
 .account-menu button,
 .announcement-form button,
-.auth-dialog button {
+.auth-page-panel button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -439,6 +439,11 @@ button:not(:disabled):active {
     transform 160ms ease;
 }
 
+.source-row.is-editing {
+  overflow: visible;
+  z-index: 2;
+}
+
 .source-row > *,
 .artifact-row > * {
   position: relative;
@@ -490,6 +495,18 @@ button:not(:disabled):active {
   background: transparent;
   padding: 0;
   text-align: left;
+}
+
+.source-title {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.source-title.is-editing {
+  overflow: visible;
 }
 
 .source-title:disabled {
@@ -1364,8 +1381,22 @@ button:not(:disabled):active {
   padding: 20px;
 }
 
+.settings-section {
+  display: grid;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
+}
+
+.settings-section p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .settings-dialog label,
-.auth-dialog label,
+.auth-page-panel label,
 .announcement-form label,
 .account-section label {
   display: grid;
@@ -1375,7 +1406,7 @@ button:not(:disabled):active {
 }
 
 .settings-dialog input,
-.auth-dialog input,
+.auth-page-panel input,
 .announcement-form input,
 .announcement-form textarea,
 .account-section input,
@@ -1392,7 +1423,7 @@ button:not(:disabled):active {
 }
 
 .settings-dialog input:focus,
-.auth-dialog input:focus,
+.auth-page-panel input:focus,
 .announcement-form input:focus,
 .announcement-form textarea:focus,
 .account-section input:focus,
@@ -1415,7 +1446,6 @@ button:not(:disabled):active {
   padding: 10px;
 }
 
-.auth-dialog,
 .announcement-modal {
   display: grid;
   gap: 14px;
@@ -1427,11 +1457,67 @@ button:not(:disabled):active {
   padding: 20px;
 }
 
-.auth-dialog h2,
+.auth-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  background: var(--bg);
+  padding: 24px;
+}
+
+.auth-page-panel {
+  display: grid;
+  gap: 14px;
+  width: min(420px, 100%);
+  border: 0;
+  border-radius: var(--radius);
+  background: #ffffff;
+  box-shadow: none;
+  padding: 28px;
+}
+
+.auth-page-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.auth-page-heading {
+  display: grid;
+  gap: 6px;
+}
+
+.auth-page-heading h1,
 .account-page h1,
 .account-section h2,
 .admin-users h3 {
   margin: 0;
+}
+
+.auth-page-heading p,
+.auth-page-switch {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.auth-page-switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.auth-page-switch button {
+  min-height: auto;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--accent-strong);
+  font-weight: 650;
 }
 
 .announcement-modal {
@@ -1583,15 +1669,73 @@ button:not(:disabled):active {
 }
 
 .announcement-form button,
-.auth-dialog button[type="submit"] {
+.auth-page-submit {
   justify-content: center;
   border-color: var(--accent);
   background: var(--accent);
-  color: white;
+  color: #ffffff;
+}
+
+.auth-page-submit:disabled {
+  border-color: color-mix(in srgb, var(--accent) 62%, #ffffff);
+  background: color-mix(in srgb, var(--accent) 62%, #ffffff);
+  color: #ffffff;
+  opacity: 1;
 }
 
 .admin-settings-card {
   grid-column: 1 / -1;
+}
+
+.toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 650;
+  transition:
+    color 160ms ease;
+}
+
+.toggle-track {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease;
+}
+
+.toggle-track span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: transform 160ms ease;
+}
+
+.toggle-switch.is-on {
+  color: color-mix(in srgb, var(--green) 72%, var(--text));
+}
+
+.toggle-switch.is-on .toggle-track {
+  border-color: color-mix(in srgb, var(--green) 50%, var(--line));
+  background: color-mix(in srgb, var(--green) 24%, #ffffff);
+}
+
+.toggle-switch.is-on .toggle-track span {
+  transform: translateX(20px);
 }
 
 .admin-setting-row {
