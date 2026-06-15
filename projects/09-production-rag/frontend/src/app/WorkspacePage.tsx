@@ -258,10 +258,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }, [announcements, auth.user?.id]);
 
   // Persist user's explicit source selection to localStorage so refresh doesn't override it.
-  // Only save after user-initiated changes — skip during initial refresh bootstrap.
-  const selectionSaveGateRef = useRef(false);
   useEffect(() => {
-    if (isAuthenticated && activeWorkspaceId && sources.length > 0 && selectionSaveGateRef.current) {
+    if (isAuthenticated && activeWorkspaceId && sources.length > 0) {
       saveCachedSelection(activeWorkspaceId, sources);
     }
   }, [sources, isAuthenticated, activeWorkspaceId]);
@@ -292,7 +290,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       const visibleRows = hasWorkspaceSources(workspaceId)
         ? filterWorkspaceSources(sourceRowsForList(sourceRows), wSources)
         : sourceRowsForList(sourceRows);
-      setSources((current) => mergeSelectedState(applyWorkspaceSourceTitles(visibleRows, workspaceId), current));
+      setSources((current) => mergeSelectedState(applyWorkspaceSourceTitles(visibleRows, workspaceId), current, workspaceId));
       const wArtifacts = loadWorkspaceArtifacts(workspaceId);
       const visibleArtifacts = hasWorkspaceArtifacts(workspaceId)
         ? artifactRows.filter((a) => wArtifacts.includes(a.id))
@@ -300,8 +298,6 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       setArtifacts(visibleArtifacts);
       setAnnouncements(announcementRows);
       await loadLatestConversation(nextSettings, visibleRows, isCurrentRefresh, workspaceId);
-      // Allow selection cache saves now that the full bootstrap is complete
-      selectionSaveGateRef.current = true;
     } catch (error) {
       if (!isCurrentRefresh()) return;
       setStatus(error instanceof Error ? error.message : "连接失败");
@@ -332,16 +328,11 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     setConversationTitle(latest.title);
     const latestMessages = latest.messages.map(normalizeMessage);
     setMessages(latestMessages);
+    // Only restore selection from conversation history when there is no user cache yet.
+    // If the user has already made explicit selections (cached), mergeSelectedState already
+    // handled it in refresh(), so skip the conversation-based override.
     const cachedSelection = loadCachedSelection(workspaceId);
-    if (cachedSelection !== null) {
-      // User has explicitly managed selection — respect cached state, don't override from conversation history
-      setSources((current) =>
-        (current.length ? current : sourceRows).map((source) => ({
-          ...source,
-          selected: source.status === "ready" && (cachedSelection.get(sourceStateKey(source)) ?? false),
-        })),
-      );
-    } else {
+    if (cachedSelection === null) {
       const selectedIds = new Set(latest.source_doc_ids);
       if (selectedIds.size > 0) {
         setSources((current) =>
@@ -398,7 +389,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       const wSources = loadWorkspaceSources(requestWorkspaceId);
       const filteredReady = filterWorkspaceSources(sourceRowsForList(readyRows), wSources);
       if (isCurrentWorkspace()) {
-        setSources((items) => mergeSelectedState(applyWorkspaceSourceTitles(filteredReady, requestWorkspaceId), items));
+        setSources((items) => mergeSelectedState(applyWorkspaceSourceTitles(filteredReady, requestWorkspaceId), items, requestWorkspaceId));
       }
       // Auto-rename workspace if it's still the auto-generated default name
       const currentAutoNamed = activeWorkspace?.auto_named;
@@ -1782,13 +1773,21 @@ function dedupeStrings(values: string[]) {
   return [...new Set(values)];
 }
 
-function mergeSelectedState(next: SourceItem[], current: SourceItem[]) {
+function mergeSelectedState(next: SourceItem[], current: SourceItem[], workspaceId: string) {
+  // Respect user's explicit selection from localStorage first.
+  const cached = loadCachedSelection(workspaceId);
+  if (cached !== null) {
+    return next.map((item) => ({
+      ...item,
+      selected: item.status === "ready" ? (cached.get(sourceStateKey(item)) ?? false) : false,
+    }));
+  }
+  // Fallback: merge from in-memory current state (for runtime updates).
   const selected = new Map(current.map((item) => [sourceStateKey(item), item.selected ?? item.current]));
-  const merged = next.map((item) => ({
+  return next.map((item) => ({
     ...item,
     selected: item.status === "ready" ? (selected.get(sourceStateKey(item)) ?? item.current) : false,
   }));
-  return merged;
 }
 
 function sourceStateKey(source: SourceItem) {
