@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import tempfile
 
 import rag_core.embeddings as embeddings
 import rag_core.rerankers as rerankers
@@ -95,6 +96,26 @@ def main() -> None:
         )
         assert image_model.encode(["image caption"]) == [[0.0, 0.0, 0.0]]
         assert image_model.encode_images([Path("/tmp/nonexistent.png")]) == [[0.0, 0.0, 0.0]]
+
+        vl_model = build_image_embedding_model(
+            replace(
+                config,
+                image_embedding_backend="siliconflow",
+                image_embedding_model="Qwen/Qwen3-VL-Embedding-8B",
+                image_embedding_dim=3,
+                image_embedding_batch_size=2,
+            ),
+        )
+        assert vl_model.encode(["similar transformer diagram"]) == [[0.2, 0.3, 0.5]]
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "image.png"
+            image_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+                b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+                b"\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00"
+                b"\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            assert vl_model.encode_images([image_path]) == [[0.9, 0.1, 0.0]]
     finally:
         embeddings.post_json = old_embedding_post_json
         rerankers.post_json = old_reranker_post_json
@@ -105,6 +126,18 @@ def main() -> None:
 def fake_embedding_post_json(url: str, *, api_key: str, payload: dict) -> dict:
     assert url == "https://api.siliconflow.cn/v1/embeddings"
     assert api_key == "test-key"
+    if payload["model"] == "Qwen/Qwen3-VL-Embedding-8B":
+        assert payload["encoding_format"] == "float"
+        assert payload["dimensions"] == 3
+        input_value = payload["input"]
+        if input_value == ["similar transformer diagram"]:
+            return {"data": [{"index": 0, "embedding": [0.2, 0.3, 0.5]}]}
+        assert isinstance(input_value, list)
+        assert len(input_value) == 1
+        assert input_value[0][0]["type"] == "image_url"
+        assert input_value[0][0]["image_url"]["url"].startswith("data:image/png;base64,")
+        return {"data": [{"index": 0, "embedding": [0.9, 0.1, 0.0]}]}
+
     assert payload["model"] == "BAAI/bge-m3"
     assert payload["input"] == ["alpha", "beta"]
     return {

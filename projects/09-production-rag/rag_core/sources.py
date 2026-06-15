@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from rag_core.config import RagConfig
 from rag_core.database import connect_metadata_db
-from rag_core.embeddings import build_embedding_model, zero_image_vector
+from rag_core.embeddings import build_embedding_model, build_image_embedding_model, zero_image_vector
 from rag_core.io import load_file_documents, load_table_documents
 from rag_core.milvus_store import (
     chunk_to_entity,
@@ -292,6 +292,7 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
             token_counter=text_model.count_tokens,
         )
     ]
+    image_chunks = pdf_image_chunks(redacted_docs)
     dense_vectors = text_model.encode([chunk.text for chunk in chunks])
     zero_image = zero_image_vector(config)
     entities = [
@@ -304,16 +305,125 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
         )
         for chunk, dense_vector in zip(chunks, dense_vectors, strict=True)
     ]
-    sources = summarize_ingested_sources(redacted_docs, chunks)
+    image_docs: list[SourceDocument] = []
+    if image_chunks:
+        image_model = build_image_embedding_model(config)
+        image_dense_vectors = text_model.encode([chunk.text for chunk in image_chunks])
+        image_vectors = encode_pdf_image_vectors(config=config, image_model=image_model, chunks=image_chunks)
+        entities.extend(
+            chunk_to_entity(
+                chunk,
+                dense_vector=dense_vector,
+                image_vector=image_vector,
+                embedding_model=text_model.model_name,
+                embedding_dim=text_model.dim,
+            )
+            for chunk, dense_vector, image_vector in zip(
+                image_chunks, image_dense_vectors, image_vectors, strict=True
+            )
+        )
+        image_docs = [
+            SourceDocument(
+                tenant_id=chunk.tenant_id,
+                doc_id=chunk.doc_id,
+                doc_version=chunk.doc_version,
+                source_type=chunk.source_type,
+                source_uri=chunk.source_uri,
+                title=chunk.title,
+                text=chunk.text,
+                language=chunk.language,
+                acl_groups=chunk.acl_groups,
+                metadata=chunk.metadata,
+            )
+            for chunk in image_chunks
+        ]
+    canonical_docs = [*redacted_docs, *image_docs]
+    all_chunks = [*chunks, *image_chunks]
+    sources = summarize_ingested_sources(canonical_docs, all_chunks)
     generate_ingested_source_guides(config=config, sources=sources, docs=redacted_docs)
     upsert_entities(client, collection_name=config.collection_name, entities=entities)
-    archive_source_documents(config.object_store_dir, redacted_docs)
-    publish_current_versions(config.object_store_dir, redacted_docs)
+    archive_source_documents(config.object_store_dir, canonical_docs)
+    publish_current_versions(config.object_store_dir, canonical_docs)
     return IngestSummary(
         sources=sources,
-        document_count=len(redacted_docs),
-        chunk_count=len(chunks),
+        document_count=len(canonical_docs),
+        chunk_count=len(all_chunks),
     )
+
+
+def pdf_image_chunks(docs: list[SourceDocument]) -> list[Chunk]:
+    chunks: list[Chunk] = []
+    for doc in docs:
+        for image_index, raw_block in enumerate(doc.metadata.get("display_blocks") or [], start=1):
+            if not isinstance(raw_block, dict) or raw_block.get("type") != "image":
+                continue
+            image_path = str(raw_block.get("path") or raw_block.get("image_uri") or "").strip()
+            if not image_path:
+                continue
+            title = str(raw_block.get("title") or f"Image {image_index}")
+            page_no = doc.metadata.get("page_no")
+            page_label = f"第 {page_no} 页" if page_no else ""
+            display_text = str(doc.metadata.get("display_text") or "").strip()
+            context = display_text[:1200]
+            text = (
+                f"标题路径: {doc.title} > {title}\n"
+                "来源: image\n"
+                f"图片位置: {page_label}\n"
+                f"图片描述: PDF 内嵌图片 {title}。\n"
+                f"页面上下文:\n{context}"
+            )
+            block = {
+                key: raw_block[key]
+                for key in ("type", "title", "path", "image_uri", "media_type")
+                if isinstance(raw_block.get(key), str) and str(raw_block.get(key)).strip()
+            }
+            chunks.append(
+                Chunk(
+                    tenant_id=doc.tenant_id,
+                    doc_id=f"{doc.doc_id}/image-{image_index}",
+                    doc_version=doc.doc_version,
+                    chunk_index=0,
+                    source_type="image",
+                    source_uri=image_path,
+                    title=f"{doc.title} {title}",
+                    text=text,
+                    language=doc.language,
+                    acl_groups=doc.acl_groups,
+                    metadata={
+                        **{
+                            key: value
+                            for key, value in doc.metadata.items()
+                            if key not in {"display_text", "display_blocks"}
+                        },
+                        "page_no": page_no,
+                        "page_start": doc.metadata.get("page_start", page_no),
+                        "page_end": doc.metadata.get("page_end", page_no),
+                        "image_uri": image_path,
+                        "linked_doc_id": doc.doc_id,
+                        "linked_source_type": doc.source_type,
+                        "linked_source_uri": doc.source_uri,
+                        "linked_title": doc.title,
+                        "derived_from_pdf_image": True,
+                        "display_blocks": [block],
+                    },
+                )
+            )
+    return chunks
+
+
+def encode_pdf_image_vectors(*, config: RagConfig, image_model, chunks: list[Chunk]) -> list[list[float]]:
+    image_paths = [Path(chunk.source_uri) for chunk in chunks]
+    existing = [path.exists() and path.is_file() for path in image_paths]
+    if all(existing):
+        return image_model.encode_images(image_paths)
+    zero_image = zero_image_vector(config)
+    vectors: list[list[float]] = []
+    for chunk, path_exists in zip(chunks, existing, strict=True):
+        if path_exists:
+            vectors.extend(image_model.encode_images([Path(chunk.source_uri)]))
+        else:
+            vectors.append(zero_image)
+    return vectors
 
 
 def summarize_ingested_sources(
@@ -330,19 +440,24 @@ def summarize_ingested_sources(
             metadata=doc.metadata,
         )
         key = (document_id, doc.doc_version)
+        doc_source_type = source_summary_source_type(doc.source_type, doc.metadata)
+        doc_source_uri = source_summary_source_uri(doc.source_uri, doc.metadata)
         item = grouped.setdefault(
             key,
             {
                 "doc_id": document_id,
                 "title": title,
-                "source_type": doc.source_type,
-                "source_uri": doc.source_uri,
+                "source_type": doc_source_type,
+                "source_uri": doc_source_uri,
                 "doc_version": doc.doc_version,
                 "acl_groups": set(),
                 "child_doc_ids": set(),
                 "chunk_keys": set(),
             },
         )
+        if not doc.metadata.get("derived_from_pdf_image"):
+            item["source_type"] = doc_source_type
+            item["source_uri"] = doc_source_uri
         item["acl_groups"].update(doc.acl_groups)
         item["child_doc_ids"].add(doc.doc_id)
         for chunk_key, count in chunk_counts.items():
@@ -433,8 +548,11 @@ def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
         item["doc_id"] = document_id
         item["doc_version"] = int(row["doc_version"])
         item["title"] = title
-        item["source_type"] = str(row["source_type"])
-        item["source_uri"] = str(row["source_uri"])
+        row_source_type = source_summary_source_type(str(row["source_type"]), metadata)
+        row_source_uri = source_summary_source_uri(str(row["source_uri"]), metadata)
+        if "source_type" not in item or not metadata.get("derived_from_pdf_image"):
+            item["source_type"] = row_source_type
+            item["source_uri"] = row_source_uri
         item["acl_groups"].update(list(row.get("acl_groups") or []))
         item["child_doc_ids"].add(child_doc_id)
         item["chunk_keys"].add((child_doc_id, int(row["chunk_index"])))
@@ -598,8 +716,9 @@ def get_source_content(
         )
 
     docs = sorted(docs, key=source_document_sort_key)
-    text = "\n\n".join(source_document_text_block(doc) for doc in docs if doc.text.strip()).strip()
-    display_blocks = source_document_display_blocks(config=config, tenant_id=tenant_id, docs=docs)
+    display_docs = [doc for doc in docs if not doc.metadata.get("derived_from_pdf_image")]
+    text = "\n\n".join(source_document_text_block(doc) for doc in display_docs if doc.text.strip()).strip()
+    display_blocks = source_document_display_blocks(config=config, tenant_id=tenant_id, docs=display_docs)
     guide_full = load_source_guide_full(
         config.object_store_dir,
         tenant_id=tenant_id,
@@ -618,7 +737,7 @@ def get_source_content(
         guide=guide or "来源指南尚未生成。请重新上传该来源以在入库准备流程中生成摘要。",
         suggested_title=suggested_title,
         tags=extract_source_tags(text),
-        text=source_document_display_text(docs) or text,
+        text=source_document_display_text(display_docs) or text,
         blocks=display_blocks,
     )
 
@@ -751,6 +870,22 @@ def source_document_identity(
     if "/page-" in doc_id:
         return doc_id.rsplit("/page-", 1)[0], title.rsplit(" p", 1)[0]
     return doc_id, title
+
+
+def source_summary_source_type(source_type: str, metadata: dict[str, Any]) -> str:
+    if metadata.get("derived_from_pdf_image"):
+        linked_type = str(metadata.get("linked_source_type") or "").strip()
+        if linked_type:
+            return linked_type
+    return source_type
+
+
+def source_summary_source_uri(source_uri: str, metadata: dict[str, Any]) -> str:
+    if metadata.get("derived_from_pdf_image"):
+        linked_uri = str(metadata.get("linked_source_uri") or "").strip()
+        if linked_uri:
+            return linked_uri
+    return source_uri
 
 
 def min_timestamp(left: int | None, right: int | None) -> int | None:

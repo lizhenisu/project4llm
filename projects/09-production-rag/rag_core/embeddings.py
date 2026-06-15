@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import base64
+import mimetypes
 import re
 from pathlib import Path
 from typing import Protocol
@@ -320,6 +322,96 @@ class NoopImageEmbeddingModel:
         return list(range(len(tokens)))
 
 
+class SiliconFlowVLImageEmbeddingModel:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str | None,
+        model_name: str,
+        dim: int,
+        batch_size: int,
+    ) -> None:
+        if not api_key:
+            raise RuntimeError("SILICONFLOW_API_KEY must be configured for SiliconFlow image embeddings.")
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._model_name = model_name
+        self._dim = dim
+        self._batch_size = max(1, batch_size)
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self._batch_size):
+            vectors.extend(self._embed_batch(texts[start : start + self._batch_size]))
+        self._check_dims(vectors)
+        return vectors
+
+    def encode_images(self, image_paths: list[Path]) -> list[list[float]]:
+        inputs = [
+            [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_url(path),
+                    },
+                }
+            ]
+            for path in image_paths
+        ]
+        vectors: list[list[float]] = []
+        for start in range(0, len(inputs), self._batch_size):
+            vectors.extend(self._embed_batch(inputs[start : start + self._batch_size]))
+        self._check_dims(vectors)
+        return vectors
+
+    def count_tokens(self, text: str) -> int:
+        return len(self.tokenize(text))
+
+    def tokenize(self, text: str) -> list[int]:
+        tokens = lexical_tokens(text)
+        return list(range(len(tokens)))
+
+    def _embed_batch(self, inputs: list) -> list[list[float]]:
+        if not inputs:
+            return []
+        payload = {
+            "model": self._model_name,
+            "input": inputs,
+            "encoding_format": "float",
+            "dimensions": self._dim,
+        }
+        data = post_json(
+            siliconflow_url(self._base_url, "/embeddings"),
+            api_key=self._api_key,
+            payload=payload,
+        )
+        items = sorted(data.get("data", []), key=lambda item: item.get("index", 0))
+        return [list(item["embedding"]) for item in items]
+
+    def _check_dims(self, vectors: list[list[float]]) -> None:
+        for vector in vectors:
+            if len(vector) != self._dim:
+                raise ValueError(
+                    f"Image embedding dim mismatch: expected {self._dim}, got {len(vector)}. "
+                    "Set IMAGE_EMBEDDING_DIM to match the SiliconFlow VL embedding model."
+                )
+
+
+def image_data_url(path: Path) -> str:
+    media_type = mimetypes.guess_type(path.name)[0] or "image/png"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{media_type};base64,{encoded}"
+
+
 def build_embedding_model(config: RagConfig) -> EmbeddingModel:
     if config.embedding_backend == "siliconflow":
         return SiliconFlowEmbeddingModel(
@@ -398,9 +490,17 @@ def build_image_embedding_model(config: RagConfig) -> ImageEmbeddingModel:
             device=config.model_device,
             dtype=config.model_dtype,
         )
+    if config.image_embedding_backend == "siliconflow":
+        return SiliconFlowVLImageEmbeddingModel(
+            base_url=config.siliconflow_base_url,
+            api_key=config.siliconflow_api_key,
+            model_name=config.image_embedding_model,
+            dim=config.image_embedding_dim,
+            batch_size=config.image_embedding_batch_size,
+        )
     raise ValueError(
         "Unsupported RAG_IMAGE_EMBEDDING_BACKEND="
-        f"{config.image_embedding_backend!r}. Use 'none' or 'clip'."
+        f"{config.image_embedding_backend!r}. Use 'none', 'clip', or 'siliconflow'."
     )
 
 

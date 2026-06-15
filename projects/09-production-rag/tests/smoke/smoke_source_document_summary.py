@@ -9,11 +9,12 @@ from rag_core.object_store import archive_source_documents
 from rag_core.sources import (
     dedupe_source_documents,
     next_source_doc_version,
+    pdf_image_chunks,
     source_document_display_blocks,
     summarize_ingested_sources,
 )
 from rag_core.text_utils import chunk_document
-from rag_core.types import SourceDocument
+from rag_core.types import Chunk, SourceDocument
 
 
 def main() -> None:
@@ -77,6 +78,24 @@ def main() -> None:
         blocks = source_document_display_blocks(config=config, tenant_id="team_a", docs=[image_doc])
         assert blocks[-1]["url"].startswith("/source-assets/uploads/team_a/upload-1/paper.assets/page-1-image-1.png?")
         assert "data:image/" not in str(blocks[-1])
+        image_chunks = pdf_image_chunks([image_doc])
+        assert len(image_chunks) == 1
+        assert image_chunks[0].source_type == "image"
+        assert image_chunks[0].doc_id == "自然辩证法/page-1/image-1"
+        assert image_chunks[0].source_uri == str(image_path)
+        assert image_chunks[0].metadata["linked_doc_id"] == "自然辩证法/page-1"
+        assert image_chunks[0].metadata["linked_source_type"] == "pdf"
+        assert image_chunks[0].metadata["linked_source_uri"] == "/tmp/自然辩证法.pdf"
+        assert image_chunks[0].metadata["derived_from_pdf_image"] is True
+        assert image_chunks[0].metadata["display_blocks"][0]["path"] == str(image_path)
+        derived_image_doc = source_document_from_chunk(image_chunks[0])
+        summary_with_image = summarize_ingested_sources(
+            [derived_image_doc, image_doc],
+            [*chunk_document(image_doc, chunk_size=100, overlap=0), image_chunks[0]],
+        )[0]
+        assert summary_with_image.source_type == "pdf"
+        assert summary_with_image.source_uri == "/tmp/自然辩证法.pdf"
+        assert "自然辩证法/page-1/image-1" in summary_with_image.child_doc_ids
 
     print("source document summary smoke passed")
 
@@ -88,6 +107,21 @@ def make_config(base_dir: Path) -> RagConfig:
         collection_name="test_collection",
         runtime_dir=base_dir / "runtime",
         object_store_dir=base_dir / "object_store",
+    )
+
+
+def source_document_from_chunk(chunk: Chunk) -> SourceDocument:
+    return SourceDocument(
+        tenant_id=chunk.tenant_id,
+        doc_id=chunk.doc_id,
+        doc_version=chunk.doc_version,
+        source_type=chunk.source_type,
+        source_uri=chunk.source_uri,
+        title=chunk.title,
+        text=chunk.text,
+        language=chunk.language,
+        acl_groups=chunk.acl_groups,
+        metadata=chunk.metadata,
     )
 
 
