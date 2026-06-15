@@ -129,3 +129,7 @@ projects/07-milvus-rag/milvus_lite_demo.db/
 ```
 
 Do not commit local Milvus database files, caches, `__pycache__/`, or `.venv/`.
+
+## Branch Management Rule
+
+**Do NOT automatically merge `dev` into `main` unless explicitly asked.** Always ask the user before merging or force-pushing to `main`. The `dev` branch is for development and experimentation; only the user decides when to promote changes to `main`.

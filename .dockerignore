@@ -6,11 +6,8 @@ node_modules
 dist
 build
 .env
-projects/08-industrial-rag/object_store
-projects/08-industrial-rag/volumes
-projects/08-industrial-rag/runtime
-projects/09-production-rag/object_store
-projects/09-production-rag/volumes
-projects/09-production-rag/runtime
-projects/09-production-rag/frontend/node_modules
-projects/09-production-rag/frontend/dist
+**/**/object_store
+**/**/volumes
+**/**/runtime
+**/**/node_modules
+**/**/dist
