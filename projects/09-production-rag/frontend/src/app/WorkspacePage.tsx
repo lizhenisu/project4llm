@@ -428,7 +428,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     }
   }
 
-  async function handleAsk(query: string) {
+  async function handleAsk(query: string, imageDataUrl?: string | null) {
     if (!query.trim()) return;
     if (!isAuthenticated) {
       onNavigate("/login");
@@ -474,6 +474,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         query,
         docIds: requestSelectedDocIds,
         history: requestHistory,
+        imageDataUrl,
       });
       if (!isCurrentSession()) return;
       const nextMessages: ChatMessage[] = baseMessages.map((item) =>

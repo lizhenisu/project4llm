@@ -291,7 +291,24 @@ function SourceReader({
             ) : null}
           </section>
           <article className="source-document-text">
-            {content.text ? (
+            {content.blocks?.length ? (
+              content.blocks.map((block, index) =>
+                block.type === "image" && block.url ? (
+                  <figure className="source-document-image" key={`${index}-${block.url.slice(0, 32)}`}>
+                    <img src={block.url} alt={block.title || block.page || "Document image"} />
+                    {block.page || block.title ? (
+                      <figcaption>{[block.page, block.title].filter(Boolean).join(" · ")}</figcaption>
+                    ) : null}
+                  </figure>
+                ) : block.text ? (
+                  <div className="source-document-block" key={`${index}-${block.text.slice(0, 16)}`}>
+                    {block.text.split(/\n{2,}/).map((paragraph, paragraphIndex) => (
+                      <p key={`${paragraphIndex}-${paragraph.slice(0, 16)}`}>{paragraph}</p>
+                    ))}
+                  </div>
+                ) : null,
+              )
+            ) : content.text ? (
               content.text.split(/\n{2,}/).map((block, index) => <p key={`${index}-${block.slice(0, 16)}`}>{block}</p>)
             ) : loading ? (
               <p className="source-loading">正在加载原始内容...</p>
@@ -318,11 +335,17 @@ function SourceUploadDialog({ onClose, onUpload }: { onClose: () => void; onUplo
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <div className="upload-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+      <div
+        className="upload-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="source-upload-dialog-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <button className="close-button" type="button" onClick={onClose}>
           ×
         </button>
-        <h2>添加来源</h2>
+        <h2 id="source-upload-dialog-title">添加来源</h2>
         <p>上传文件后，系统会解析、切分并写入知识库。</p>
         <div
           className={`drop-zone ${dragging ? "dragging" : ""}`}

@@ -154,6 +154,7 @@ export function queryRag(
     query: string;
     docIds: string[];
     history: string[];
+    imageDataUrl?: string | null;
   },
 ) {
   return request<QueryResponse>("/query", {
@@ -161,7 +162,8 @@ export function queryRag(
     settings,
     json: {
       query: params.query,
-      query_mode: "text",
+      query_mode: params.imageDataUrl ? "multimodal" : "text",
+      image_data_url: params.imageDataUrl || null,
       history: params.history,
       tenant_id: settings.tenantId,
       acl_groups: settings.aclGroups,

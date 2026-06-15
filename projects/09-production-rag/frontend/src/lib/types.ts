@@ -27,6 +27,13 @@ export type SourceContent = {
   guide: string;
   tags: string[];
   text: string;
+  blocks?: Array<{
+    type: "text" | "image";
+    text?: string;
+    title?: string;
+    url?: string;
+    page?: string;
+  }>;
   suggested_title?: string;
 };
 

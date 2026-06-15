@@ -1,4 +1,4 @@
-import { ArrowRight, Bot, Copy, MoreVertical, ThumbsDown, ThumbsUp, Check } from "lucide-react";
+import { ArrowRight, Bot, Check, Copy, ImagePlus, MoreVertical, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -15,7 +15,7 @@ type Props = {
   conversationTitle: string;
   typingMessageId: string | null;
   onTypingComplete: () => void;
-  onAsk: (query: string) => void;
+  onAsk: (query: string, imageDataUrl?: string | null) => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
   onDeleteConversation: () => void;
 };
@@ -33,10 +33,12 @@ export function ChatPanel({
   onDeleteConversation,
 }: Props) {
   const [draft, setDraft] = useState("");
+  const [attachedImage, setAttachedImage] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [inputHeight, setInputHeight] = useState(46);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const canSend = draft.trim().length > 0 && (authenticated ? selectedSources.length > 0 : true) && !busy;
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const canSend = (draft.trim().length > 0 || Boolean(attachedImage)) && (authenticated ? selectedSources.length > 0 : true) && !busy;
 
   useEffect(() => {
     function handleClickOutside() {
@@ -49,8 +51,16 @@ export function ChatPanel({
 
   function submit() {
     if (!canSend) return;
-    onAsk(draft.trim());
+    onAsk(draft.trim() || "请根据这张图片检索相关资料并回答。", attachedImage);
     setDraft("");
+    setAttachedImage(null);
+  }
+
+  function attachImage(file: File | undefined) {
+    if (!file || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => setAttachedImage(typeof reader.result === "string" ? reader.result : null);
+    reader.readAsDataURL(file);
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
@@ -148,6 +158,14 @@ export function ChatPanel({
           className="chat-input-resizer"
           onPointerDown={handlePointerDown}
         />
+        {attachedImage ? (
+          <div className="chat-image-attachment">
+            <img src={attachedImage} alt="待发送图片" />
+            <button type="button" aria-label="移除图片" onClick={() => setAttachedImage(null)}>
+              <X size={14} />
+            </button>
+          </div>
+        ) : null}
         <textarea
           id="chat-input-textarea"
           name="chat-message"
@@ -164,7 +182,20 @@ export function ChatPanel({
           }}
         />
         <span>{selectedSources.length} 个来源</span>
-        <button type="button" disabled={!canSend} onClick={submit}>
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          hidden
+          onChange={(event) => {
+            attachImage(event.target.files?.[0]);
+            event.currentTarget.value = "";
+          }}
+        />
+        <button type="button" aria-label="上传图片提问" disabled={!authenticated || busy} onClick={() => imageInputRef.current?.click()}>
+          <ImagePlus size={20} />
+        </button>
+        <button type="button" aria-label="发送消息" disabled={!canSend} onClick={submit}>
           <ArrowRight size={22} />
         </button>
       </div>
@@ -297,14 +328,27 @@ function useTypewriter(content: string, enabled: boolean) {
 function Citations({ message }: { message: ChatMessage }) {
   return (
     <div className="citations">
-      {message.citations?.map((citation, index) => (
-        <details key={`${citation.doc_id}-${citation.chunk_index}`}>
-          <summary>
-            {index + 1}. {formatCitationSummary(citation)}
-          </summary>
-          <p>{citation.text || citation.text_preview || citation.source_uri}</p>
-        </details>
-      ))}
+      {message.citations?.map((citation, index) => {
+        const images = citationImages(citation);
+        return (
+          <details key={`${citation.doc_id}-${citation.chunk_index}`}>
+            <summary>
+              {index + 1}. {formatCitationSummary(citation)}
+            </summary>
+            <p>{citation.text || citation.text_preview || citation.source_uri}</p>
+            {images.length ? (
+              <div className="citation-images">
+                {images.map((image) => (
+                  <figure key={image.url}>
+                    <img src={image.url} alt={image.title || "引用图片"} />
+                    {image.title ? <figcaption>{image.title}</figcaption> : null}
+                  </figure>
+                ))}
+              </div>
+            ) : null}
+          </details>
+        );
+      })}
     </div>
   );
 }
@@ -352,6 +396,34 @@ function metadataNumber(metadata: Record<string, unknown>, key: string) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
   return null;
+}
+
+function citationImages(citation: Citation) {
+  const images: Array<{ title: string; url: string }> = [];
+  const blocks = citation.metadata.display_blocks;
+  if (Array.isArray(blocks)) {
+    for (const block of blocks) {
+      if (!isRecord(block) || block.type !== "image") continue;
+      const url = typeof block.url === "string" ? block.url : "";
+      if (!isImageUrl(url)) continue;
+      const title = typeof block.title === "string" ? block.title : "";
+      images.push({ title, url });
+    }
+  }
+
+  const imageUrl = metadataString(citation.metadata, "image_url") || metadataString(citation.metadata, "image_uri");
+  if (isImageUrl(imageUrl) && images.every((image) => image.url !== imageUrl)) {
+    images.push({ title: citationDisplayTitle(citation), url: imageUrl });
+  }
+  return images;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isImageUrl(value: string) {
+  return /^data:image\/[a-z0-9.+-]+;base64,/i.test(value) || /^https?:\/\//i.test(value);
 }
 
 function filenameFromPath(path: string) {

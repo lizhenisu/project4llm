@@ -5,12 +5,28 @@ import csv
 import json
 import os
 import re
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
 from rag_core.embeddings import post_json, siliconflow_url
 from rag_core.types import ImageDocument, SourceDocument
+
+
+@dataclass(frozen=True)
+class PdfPage:
+    page_no: int
+    text: str
+    display_text: str
+    display_blocks: list[dict[str, str]]
+
+    def __iter__(self):
+        yield self.page_no
+        yield self.text
+
+    def __getitem__(self, index: int):
+        return (self.page_no, self.text)[index]
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -229,31 +245,46 @@ def load_pdf_page_documents(
     relative_path = path.relative_to(input_dir).as_posix()
     page_count = len(pages)
     docs: list[SourceDocument] = []
-    for page_no, text in pages:
-        if not text.strip():
+    for raw_page in pages:
+        page = normalize_pdf_page(raw_page)
+        if not page.text.strip() and not page.display_blocks:
             continue
         docs.append(
             SourceDocument(
                 tenant_id=tenant_id,
-                doc_id=f"{path.relative_to(input_dir).with_suffix('').as_posix()}/page-{page_no}",
+                doc_id=f"{path.relative_to(input_dir).with_suffix('').as_posix()}/page-{page.page_no}",
                 doc_version=doc_version,
                 source_type="pdf",
                 source_uri=str(path),
-                title=f"{path.stem} p{page_no}",
-                text=text,
+                title=f"{path.stem} p{page.page_no}",
+                text=page.text,
                 language=language,
                 acl_groups=acl_groups,
                 metadata={
                     "relative_path": relative_path,
                     "file_size_bytes": path.stat().st_size,
-                    "page_no": page_no,
-                    "page_start": page_no,
-                    "page_end": page_no,
+                    "page_no": page.page_no,
+                    "page_start": page.page_no,
+                    "page_end": page.page_no,
                     "page_count": page_count,
+                    "display_text": page.display_text,
+                    "display_blocks": page.display_blocks,
                 },
             )
         )
     return docs
+
+
+def normalize_pdf_page(page: PdfPage | tuple[int, str]) -> PdfPage:
+    if isinstance(page, PdfPage):
+        return page
+    page_no, text = page
+    return PdfPage(
+        page_no=page_no,
+        text=text,
+        display_text=text,
+        display_blocks=[],
+    )
 
 
 def split_markdown_sections(text: str) -> list[dict[str, Any]]:
@@ -430,17 +461,17 @@ def extract_file_text(path: Path) -> tuple[str, str | None]:
 
 
 def extract_pdf_text(path: Path) -> str:
-    return _compact_whitespace("\n".join(text for _, text in extract_pdf_pages(path)))
+    return _compact_whitespace("\n".join(page.text for page in extract_pdf_pages(path)))
 
 
-def extract_pdf_pages(path: Path) -> list[tuple[int, str]]:
+def extract_pdf_pages(path: Path) -> list[PdfPage]:
     try:
         return extract_pdf_pages_with_pymupdf(path)
     except ImportError:
         return extract_pdf_pages_with_pypdf(path)
 
 
-def extract_pdf_pages_with_pypdf(path: Path) -> list[tuple[int, str]]:
+def extract_pdf_pages_with_pypdf(path: Path) -> list[PdfPage]:
     try:
         from pypdf import PdfReader
     except ImportError as exc:
@@ -448,12 +479,17 @@ def extract_pdf_pages_with_pypdf(path: Path) -> list[tuple[int, str]]:
 
     reader = PdfReader(str(path))
     return [
-        (page_no, _compact_whitespace(page.extract_text() or ""))
+        PdfPage(
+            page_no=page_no,
+            text=_compact_whitespace(page.extract_text() or ""),
+            display_text=_compact_whitespace(page.extract_text() or ""),
+            display_blocks=[],
+        )
         for page_no, page in enumerate(reader.pages, start=1)
     ]
 
 
-def extract_pdf_pages_with_pymupdf(path: Path) -> list[tuple[int, str]]:
+def extract_pdf_pages_with_pymupdf(path: Path) -> list[PdfPage]:
     try:
         import fitz
     except ImportError as exc:
@@ -462,34 +498,51 @@ def extract_pdf_pages_with_pymupdf(path: Path) -> list[tuple[int, str]]:
     image_captioner = PdfImageCaptioner.from_env()
     max_captioned_images = int(os.environ.get("RAG_PDF_CAPTION_MAX_IMAGES", "24"))
     captioned_images = 0
-    pages: list[tuple[int, str]] = []
+    pages: list[PdfPage] = []
     with fitz.open(path) as document:
         for page_index, page in enumerate(document, start=1):
-            parts = [
+            text_parts = [
                 block
                 for block in extract_pymupdf_text_blocks(page)
                 if block.strip()
             ]
             table_parts = extract_pymupdf_tables(page)
             if table_parts:
-                parts.extend(table_parts)
-            image_parts: list[str] = []
+                text_parts.extend(table_parts)
+            retrieval_parts = list(text_parts)
+            display_blocks: list[dict[str, str]] = []
             for image_index, image in enumerate(page.get_images(full=True), start=1):
-                image_note = f"图片 {image_index}: PDF 第 {page_index} 页内嵌图片。"
+                image_data_url = pdf_image_data_url(document=document, image=image)
+                if image_data_url:
+                    display_blocks.append(
+                        {
+                            "type": "image",
+                            "title": f"Image {image_index}",
+                            "url": image_data_url,
+                        }
+                    )
+                image_note = f"Image {image_index}: embedded image on PDF page {page_index}."
                 if image_captioner and captioned_images < max_captioned_images:
                     caption = image_captioner.caption_pdf_image(
                         document=document,
                         image=image,
-                        label=f"{path.name} 第 {page_index} 页 图片 {image_index}",
+                        label=f"{path.name} page {page_index} image {image_index}",
+                        language_hint=detect_text_language("\n".join(text_parts)),
                     )
                     captioned_images += 1
                     if caption:
-                        image_note = f"图片 {image_index}: {caption}"
-                image_parts.append(image_note)
-            if image_parts:
-                parts.append("图片信息:\n" + "\n".join(image_parts))
-            text = "\n\n".join(parts)
-            pages.append((page_index, _compact_whitespace_preserve_lines(text)))
+                        image_note = f"Image {image_index} caption: {caption}"
+                retrieval_parts.append(image_note)
+            text = "\n\n".join(retrieval_parts)
+            display_text = "\n\n".join(text_parts)
+            pages.append(
+                PdfPage(
+                    page_no=page_index,
+                    text=_compact_whitespace_preserve_lines(text),
+                    display_text=_compact_whitespace_preserve_lines(display_text),
+                    display_blocks=display_blocks,
+                )
+            )
     return pages
 
 
@@ -558,7 +611,7 @@ class PdfImageCaptioner:
             model=os.environ.get("RAG_PDF_IMAGE_CAPTION_MODEL", "Qwen/Qwen3-VL-8B-Instruct"),
         )
 
-    def caption_pdf_image(self, *, document, image, label: str) -> str:
+    def caption_pdf_image(self, *, document, image, label: str, language_hint: str = "en") -> str:
         xref = image[0]
         try:
             payload = document.extract_image(xref)
@@ -568,8 +621,17 @@ class PdfImageCaptioner:
         extension = payload.get("ext") or "png"
         if not image_bytes:
             return ""
-        media_type = f"image/{'jpeg' if extension.lower() == 'jpg' else extension.lower()}"
-        encoded = base64.b64encode(image_bytes).decode("ascii")
+        prompt = (
+            "Describe the key information in this paper or source image concisely in English. "
+            "If it is a chart, describe axes, process, structure, or conclusion. "
+            f"Image source: {label}"
+            if language_hint == "en"
+            else (
+                "请用中文简洁描述这张论文或资料图片中的关键信息。"
+                "如果是图表，说明坐标、流程、结构或结论。"
+                f"图片来源: {label}"
+            )
+        )
         try:
             response = post_json(
                 siliconflow_url(self.base_url, "/chat/completions"),
@@ -582,16 +644,12 @@ class PdfImageCaptioner:
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": (
-                                        "请用中文简洁描述这张论文或资料图片中的关键信息。"
-                                        "如果是图表，说明坐标、流程、结构或结论。"
-                                        f"图片来源: {label}"
-                                    ),
+                                    "text": prompt,
                                 },
                                 {
                                     "type": "image_url",
                                     "image_url": {
-                                        "url": f"data:{media_type};base64,{encoded}",
+                                        "url": image_data_url_from_parts(extension=extension, image_bytes=image_bytes),
                                     },
                                 },
                             ],
@@ -610,6 +668,34 @@ class PdfImageCaptioner:
         if isinstance(content, list):
             content = " ".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in content)
         return _compact_whitespace(str(content))
+
+
+def pdf_image_data_url(*, document, image) -> str:
+    xref = image[0]
+    try:
+        payload = document.extract_image(xref)
+    except Exception:
+        return ""
+    image_bytes = payload.get("image")
+    extension = payload.get("ext") or "png"
+    if not image_bytes:
+        return ""
+    return image_data_url_from_parts(extension=extension, image_bytes=image_bytes)
+
+
+def image_data_url_from_parts(*, extension: str, image_bytes: bytes) -> str:
+    media_type = f"image/{'jpeg' if extension.lower() == 'jpg' else extension.lower()}"
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{media_type};base64,{encoded}"
+
+
+def detect_text_language(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return "en"
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", stripped))
+    alpha = len(re.findall(r"[A-Za-z]", stripped))
+    return "zh" if cjk > max(8, alpha // 3) else "en"
 
 
 def extract_html_text(path: Path) -> tuple[str, str | None]:

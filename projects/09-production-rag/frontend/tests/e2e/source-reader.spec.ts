@@ -455,7 +455,7 @@ test("keeps an in-flight answer scoped to the database where it started", async 
 
   await page.goto("/");
   await page.getByPlaceholder("提问或创作内容").fill("有哪些关键事实值得关注？");
-  await page.locator(".chat-input button").click();
+  await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByText("正在检索资料并生成回答...")).toBeVisible();
   await page.getByRole("button", { name: "设置" }).click();
   await page.getByRole("button", { name: /Production RAG 知识库 06\/14 23:54/ }).click();
@@ -531,7 +531,7 @@ test("keeps an in-flight upload scoped to the database where it started", async 
 
   await page.goto("/");
   await page.getByRole("button", { name: "添加来源" }).click();
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.getByRole("dialog", { name: "添加来源" }).locator('input[type="file"]').setInputFiles({
     name: "自然自然辩证法.pdf",
     mimeType: "application/pdf",
     buffer: Buffer.from("fake pdf"),
@@ -791,6 +791,18 @@ test("opens parsed source content from a document-level source row", async ({ pa
         guide: "这份资料介绍自然辩证法视角下的生态治理实践，并包含引言部分。",
         tags: ["一、引言", "生态治理"],
         text: "第 1 页\n\n一、引言\n\n在 21 世纪全球生态危机日益严峻的背景下，中国生态文明建设受到广泛关注。",
+        blocks: [
+          {
+            type: "text",
+            text: "Page 1\n\nAttention Is All You Need\n\nThe dominant sequence transduction models are based on complex recurrent or convolutional neural networks.",
+          },
+          {
+            type: "image",
+            title: "Image 1",
+            page: "Page 1",
+            url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+          },
+        ],
       },
     });
   });
@@ -803,8 +815,99 @@ test("opens parsed source content from a document-level source row", async ({ pa
   await expect(reader.getByRole("heading", { name: "自然辩证法.pdf" })).toBeVisible();
   await expect(reader.getByRole("heading", { name: "来源指南" })).toBeVisible();
   await expect(reader.getByText("这份资料介绍自然辩证法视角下的生态治理实践")).toBeVisible();
-  await expect(reader.getByText("一、引言").first()).toBeVisible();
-  await expect(reader.getByText("在 21 世纪全球生态危机日益严峻的背景下")).toBeVisible();
+  await expect(reader.getByText("Page 1", { exact: true })).toBeVisible();
+  await expect(reader.getByText("Attention Is All You Need")).toBeVisible();
+  await expect(reader.getByRole("img", { name: "Image 1" })).toBeVisible();
+  await expect(reader.getByText("第 1 页")).toHaveCount(0);
+});
+
+test("sends an attached chat image as a multimodal query", async ({ page }) => {
+  let queryPayload: any = null;
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({
+      json: {
+        sources: [
+          {
+            doc_id: "paper",
+            title: "attention is all you need.pdf",
+            source_type: "pdf",
+            source_uri: "/uploads/paper.pdf",
+            doc_version: 1,
+            chunk_count: 6,
+            acl_groups: ["engineering"],
+            status: "ready",
+            current: true,
+            child_doc_ids: ["paper/page-1"],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ json: { conversations: [] } });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    await route.fulfill({ json: { ...body, id: "conv-image-query", updated_at: Date.now() } });
+  });
+  await page.route("**/query", async (route) => {
+    queryPayload = route.request().postDataJSON();
+    await route.fulfill({
+      json: {
+        request_id: "image-query",
+        answer: "已根据图片检索到相关论文图示。",
+        citations: [
+          {
+            doc_id: "paper/page-1",
+            title: "attention is all you need p1",
+            source_uri: "/uploads/paper.pdf",
+            source_type: "pdf",
+            chunk_index: 0,
+            score: 0.8,
+            rerank_score: 0.7,
+            acl_groups: ["engineering"],
+            metadata: {
+              page_no: 1,
+              display_blocks: [
+                {
+                  type: "image",
+                  title: "Figure 1",
+                  url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+                },
+              ],
+            },
+            text_preview: "Figure evidence",
+          },
+        ],
+        trace: {},
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "上传图片提问" }).click();
+  await page.locator('.chat-input input[type="file"]').setInputFiles({
+    name: "query.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("fake image"),
+  });
+  await expect(page.getByRole("img", { name: "待发送图片" })).toBeVisible();
+  await page.getByPlaceholder("提问或创作内容").fill("这张图和论文中哪部分相关？");
+  await page.getByRole("button", { name: "发送消息" }).click();
+
+  await expect(page.getByText("已根据图片检索到相关论文图示。")).toBeVisible();
+  await page.locator(".citations details").click();
+  await expect(page.getByRole("img", { name: "Figure 1" })).toBeVisible();
+  expect(queryPayload.query_mode).toBe("multimodal");
+  expect(queryPayload.image_data_url).toMatch(/^data:image\/png;base64,/);
+  expect(queryPayload.doc_ids).toEqual(["paper/page-1"]);
 });
 
 test("keeps source rename input focus shadow unclipped", async ({ page }) => {
@@ -889,7 +992,7 @@ test("navigates a guest to the login page when sending from the chat input", asy
   await page.goto("/");
   const input = page.getByPlaceholder("登录后即可发送");
   await input.fill("自然辩证法的引言");
-  await expect(page.locator(".chat-input button")).toBeEnabled();
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeEnabled();
   await input.press("Enter");
   await expect(page).toHaveURL(/\/login$/);
   await expect(page.getByRole("heading", { name: "登录账号" })).toBeVisible();
@@ -1254,7 +1357,7 @@ test("removes the upload processing row after the parsed source is ready", async
 
   await page.goto("/");
   await page.getByRole("button", { name: "添加来源" }).click();
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.getByRole("dialog", { name: "添加来源" }).locator('input[type="file"]').setInputFiles({
     name: "重复解析.pdf",
     mimeType: "application/pdf",
     buffer: Buffer.from("fake pdf"),
@@ -1460,7 +1563,7 @@ test("does not keep unrelated transient sources after upload polling completes",
 
   await page.goto("/");
   await page.getByRole("button", { name: "添加来源" }).click();
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.getByRole("dialog", { name: "添加来源" }).locator('input[type="file"]').setInputFiles({
     name: "自然辩证法.pdf",
     mimeType: "application/pdf",
     buffer: Buffer.from("fake pdf"),
@@ -1560,7 +1663,7 @@ test("replaces the visible current version while uploading another copy", async 
   await expect(page.locator(".source-row", { hasText: "自然辩证法.pdf" })).toHaveCount(1);
 
   await page.getByRole("button", { name: "添加来源" }).click();
-  await page.locator('input[type="file"]').setInputFiles({
+  await page.getByRole("dialog", { name: "添加来源" }).locator('input[type="file"]').setInputFiles({
     name: "自然辩证法.pdf",
     mimeType: "application/pdf",
     buffer: Buffer.from("fake pdf"),
@@ -2155,7 +2258,7 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
     await expect(page.getByPlaceholder("提问或创作内容")).toBeVisible();
   }
   await page.locator('.chat-input textarea[placeholder="提问或创作内容"]').fill("典型的实践案例分析");
-  await page.locator(".chat-input button").click();
+  await page.getByRole("button", { name: "发送消息" }).click();
 
   await expect(page.getByText("这是一段用于验证打字机效果")).toBeVisible();
   await expect(page.getByText(finalMarker)).toBeHidden();
@@ -2170,7 +2273,7 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
   const assistantBox = await page.locator(".assistant-message").boundingBox();
   const inputBox = await page.locator(".chat-input").boundingBox();
   const textareaBox = await page.locator(".chat-input textarea").boundingBox();
-  const sendBox = await page.locator(".chat-input button").boundingBox();
+  const sendBox = await page.getByRole("button", { name: "发送消息" }).boundingBox();
   expect(chatBox).toBeTruthy();
   expect(userBox).toBeTruthy();
   expect(assistantBox).toBeTruthy();
@@ -2279,7 +2382,7 @@ test("persists and resumes a pending answer after browser refresh", async ({ pag
 
   await page.goto("/");
   await page.getByPlaceholder("提问或创作内容").fill("刷新期间继续处理吗");
-  await page.locator(".chat-input button").click();
+  await page.getByRole("button", { name: "发送消息" }).click();
   await expect
     .poll(() => storedConversation?.messages?.some((message: any) => message.status === "sending") ?? false)
     .toBe(true);
@@ -2349,7 +2452,7 @@ test("drops an in-flight answer response after logout", async ({ page }) => {
 
   await page.goto("/");
   await page.getByPlaceholder("提问或创作内容").fill("总结当前文章");
-  await page.locator(".chat-input button").click();
+  await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByText("正在检索资料并生成回答...")).toBeVisible();
   await page.getByRole("button", { name: "用户头像" }).click();
   await page.getByRole("menuitem", { name: /登出/ }).click();

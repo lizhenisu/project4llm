@@ -26,7 +26,11 @@ def main() -> None:
     assert "Attention fixture" in text
     assert "表格" in text
     assert "| Layer | Value |" in text
-    assert "图片信息" in text
+    assert "Image 1: embedded image on PDF page 1." in text
+    assert "图片信息" not in text
+    assert pages[0].display_text
+    assert pages[0].display_blocks[0]["type"] == "image"
+    assert pages[0].display_blocks[0]["url"].startswith("data:image/")
     print("smoke_pdf_pymupdf_extraction=ok")
 
 

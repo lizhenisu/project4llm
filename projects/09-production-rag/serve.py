@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import base64
 from dataclasses import replace
 from typing import Any
 
@@ -68,6 +69,7 @@ from search_multimodal import retrieve_multimodal
 class QueryRequest(BaseModel):
     query: str = Field(min_length=1)
     query_mode: str = Field(default="text", pattern="^(text|multimodal)$")
+    image_data_url: str | None = None
     history: list[str] = Field(default_factory=list)
     tenant_id: str = "team_a"
     acl_groups: list[str] = Field(default_factory=list)
@@ -161,6 +163,7 @@ class SourceContentResponse(BaseModel):
     guide: str
     tags: list[str]
     text: str
+    blocks: list[dict[str, str]] = Field(default_factory=list)
     suggested_title: str = ""
 
 
@@ -1231,10 +1234,37 @@ def resolve_auth_context_from_values(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
+def materialize_query_image(request: QueryRequest) -> str | None:
+    if not request.image_data_url:
+        return None
+    prefix, separator, encoded = request.image_data_url.partition(",")
+    if separator != "," or not prefix.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="image_data_url must be a data:image URL")
+    media_type = prefix.removeprefix("data:").split(";", 1)[0]
+    extension = media_type.split("/", 1)[1].lower()
+    if extension == "jpeg":
+        extension = "jpg"
+    if extension not in {"png", "jpg", "webp", "gif"}:
+        raise HTTPException(status_code=400, detail="Unsupported query image type")
+    try:
+        image_bytes = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid query image data") from exc
+    if len(image_bytes) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Query image is too large")
+    config = load_config()
+    query_dir = config.runtime_dir / "query_images"
+    query_dir.mkdir(parents=True, exist_ok=True)
+    image_path = query_dir / f"{uuid.uuid4().hex}.{extension}"
+    image_path.write_bytes(image_bytes)
+    return str(image_path)
+
+
 def resolve_search_result(request: SearchRequest, auth_context):
     if request.query_mode == "multimodal":
+        query = materialize_query_image(request) or request.query
         return retrieve_multimodal(
-            request.query,
+            query,
             tenant_id=auth_context.tenant_id,
             candidate_limit=request.candidate_limit,
             context_limit=request.context_limit,
@@ -1261,8 +1291,9 @@ def resolve_search_result(request: SearchRequest, auth_context):
 
 def resolve_answer_result(request: QueryRequest, auth_context):
     if request.query_mode == "multimodal":
+        query = materialize_query_image(request) or request.query
         return answer_multimodal_query(
-            request.query,
+            query,
             tenant_id=auth_context.tenant_id,
             candidate_limit=request.candidate_limit,
             context_limit=request.context_limit,

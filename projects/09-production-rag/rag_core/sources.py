@@ -71,6 +71,7 @@ class SourceContent:
     guide: str
     tags: list[str]
     text: str
+    blocks: list[dict[str, str]] = field(default_factory=list)
     suggested_title: str = ""
 
 
@@ -592,10 +593,12 @@ def get_source_content(
             guide="未找到已归档的解析正文。可以重新上传该来源以恢复文档详情。",
             tags=[],
             text="",
+            blocks=[],
         )
 
     docs = sorted(docs, key=source_document_sort_key)
     text = "\n\n".join(source_document_text_block(doc) for doc in docs if doc.text.strip()).strip()
+    display_blocks = source_document_display_blocks(docs)
     guide_full = load_source_guide_full(
         config.object_store_dir,
         tenant_id=tenant_id,
@@ -614,7 +617,8 @@ def get_source_content(
         guide=guide or "来源指南尚未生成。请重新上传该来源以在入库准备流程中生成摘要。",
         suggested_title=suggested_title,
         tags=extract_source_tags(text),
-        text=text,
+        text=source_document_display_text(docs) or text,
+        blocks=display_blocks,
     )
 
 
@@ -779,6 +783,57 @@ def source_document_text_block(doc: SourceDocument) -> str:
     if page_no is None:
         return text
     return f"第 {page_no} 页\n\n{text}"
+
+
+def source_document_display_text(docs: list[SourceDocument]) -> str:
+    blocks = [
+        block["text"]
+        for block in source_document_display_blocks(docs)
+        if block.get("type") == "text" and block.get("text")
+    ]
+    return "\n\n".join(blocks).strip()
+
+
+def source_document_display_blocks(docs: list[SourceDocument]) -> list[dict[str, str]]:
+    blocks: list[dict[str, str]] = []
+    for doc in docs:
+        page_label = localized_page_label(doc)
+        display_text = str(doc.metadata.get("display_text") or doc.text).strip()
+        if display_text:
+            blocks.append(
+                {
+                    "type": "text",
+                    "text": f"{page_label}\n\n{display_text}" if page_label else display_text,
+                }
+            )
+        for raw_block in doc.metadata.get("display_blocks") or []:
+            if not isinstance(raw_block, dict):
+                continue
+            block_type = str(raw_block.get("type") or "")
+            if block_type != "image":
+                continue
+            image_url = str(raw_block.get("url") or "")
+            if not image_url.startswith("data:image/"):
+                continue
+            blocks.append(
+                {
+                    "type": "image",
+                    "title": str(raw_block.get("title") or "Image"),
+                    "url": image_url,
+                    "page": page_label,
+                }
+            )
+    return blocks
+
+
+def localized_page_label(doc: SourceDocument) -> str:
+    page_no = doc.metadata.get("page_no")
+    if page_no is None:
+        return ""
+    display_text = str(doc.metadata.get("display_text") or doc.text)
+    cjk_count = sum(1 for char in display_text if "\u4e00" <= char <= "\u9fff")
+    alpha_count = sum(1 for char in display_text if char.isalpha() and char.isascii())
+    return f"第 {page_no} 页" if cjk_count > max(8, alpha_count // 3) else f"Page {page_no}"
 
 
 def extract_source_tags(text: str, *, limit: int = 5) -> list[str]:
