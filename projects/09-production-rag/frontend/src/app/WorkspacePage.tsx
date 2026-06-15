@@ -327,7 +327,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         (current.length ? current : sourceRows).map((source) => ({
           ...source,
           selected:
-            selectedIds.has(source.doc_id) || Boolean(source.child_doc_ids?.some((docId) => selectedIds.has(docId))),
+            source.status === "ready" && (selectedIds.has(source.doc_id) || Boolean(source.child_doc_ids?.some((docId) => selectedIds.has(docId)))),
         })),
       );
     }
@@ -361,7 +361,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       const uploaded = await uploadSource(settings, file);
       if (isCurrentWorkspace()) {
         setSources((items) => [
-          ...uploaded.map(item => ({ ...item, selected: true })), // Auto-select newly uploaded items
+          ...uploaded.map(item => ({ ...item, selected: item.status === "ready" })), // Auto-select only ready items
           ...items.filter((item) => item.doc_id !== temp.doc_id)
         ]);
       }
@@ -1764,7 +1764,7 @@ function mergeSelectedState(next: SourceItem[], current: SourceItem[]) {
   const selected = new Map(current.map((item) => [sourceStateKey(item), item.selected ?? item.current]));
   const merged = next.map((item) => ({
     ...item,
-    selected: selected.get(sourceStateKey(item)) ?? item.current,
+    selected: item.status === "ready" ? (selected.get(sourceStateKey(item)) ?? item.current) : false,
   }));
   return merged;
 }

@@ -67,7 +67,7 @@ export function SourcePanel({
   function toggle(docId: string) {
     onSourcesChange(
       sources.map((source) =>
-        sourceInstanceKey(source) === docId ? { ...source, selected: !source.selected } : source,
+        sourceInstanceKey(source) === docId && source.status === "ready" ? { ...source, selected: !source.selected } : source,
       ),
     );
   }
