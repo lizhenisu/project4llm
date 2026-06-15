@@ -126,12 +126,16 @@ cp .env.example .env
 # 4. 启动所有服务
 docker compose up -d
 
-# 5. 检查服务状态
+# 5. （可选）一键配置 HTTPS 域名
+sudo bash scripts/setup_caddy.sh your-domain.com
+
+# 6. 检查服务状态
 docker compose ps
 curl http://localhost:8008/health
 
-# 6. 访问前端
+# 7. 访问前端
 # http://<服务器IP>:8080
+# 或 https://your-domain.com（如果已配置 Caddy）
 ```
 
 ### 4.4 轻量服务器优化建议

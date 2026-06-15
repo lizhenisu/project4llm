@@ -44,10 +44,13 @@ cd frontend && npm install && npm run dev -- --host 0.0.0.0
 ### 生产环境（Docker Compose）
 
 ```bash
-# 完整部署
+# 1. 完整部署
 docker compose up -d
 
-# 访问
+# 2. 一键配置 HTTPS（自动获取 Let's Encrypt 证书）
+sudo bash scripts/setup_caddy.sh your-domain.com
+
+# 访问 https://your-domain.com
 # 前端: http://localhost:8080
 # API:  http://localhost:8008
 # Milvus: localhost:19530
