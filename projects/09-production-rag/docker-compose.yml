@@ -59,9 +59,6 @@ services:
       RAG_QUERY_REWRITE_HISTORY_TURNS: "6"
       RAG_QUERY_REWRITE_MAX_TOKENS: "256"
       RAG_ANSWER_BACKEND: ${RAG_ANSWER_BACKEND:-llm}
-      NEW_API_URL: ${RAG_LLM_BASE_URL:-https://api.siliconflow.cn}
-      NEW_API_KEY: ${RAG_LLM_API_KEY:-${SILICONFLOW_API_KEY:-}}
-      LLM_MODEL: ${LLM_MODEL:-deepseek-ai/DeepSeek-V4-Flash}
     ports:
       - "8008:8008"
     volumes:
