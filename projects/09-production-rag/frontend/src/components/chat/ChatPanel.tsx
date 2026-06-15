@@ -192,12 +192,14 @@ export function ChatPanel({
             event.currentTarget.value = "";
           }}
         />
-        <button type="button" aria-label="上传图片提问" disabled={!authenticated || busy} onClick={() => imageInputRef.current?.click()}>
-          <ImagePlus size={20} />
-        </button>
-        <button type="button" aria-label="发送消息" disabled={!canSend} onClick={submit}>
-          <ArrowRight size={22} />
-        </button>
+        <div className="chat-input-actions">
+          <button type="button" aria-label="上传图片提问" disabled={!authenticated || busy} onClick={() => imageInputRef.current?.click()}>
+            <ImagePlus size={20} />
+          </button>
+          <button type="button" aria-label="发送消息" disabled={!canSend} onClick={submit}>
+            <ArrowRight size={22} />
+          </button>
+        </div>
       </div>
       {previewImage ? <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} /> : null}
     </section>

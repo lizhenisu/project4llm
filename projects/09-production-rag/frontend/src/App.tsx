@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AuthPage } from "./app/AuthPage";
+import { ArchitecturePage } from "./app/ArchitecturePage";
 import { WorkspacePage } from "./app/WorkspacePage";
 import { AuthProvider } from "./lib/AuthContext";
 
@@ -22,11 +23,14 @@ export function App() {
   }
 
   const authMode = pathname === "/register" ? "register" : pathname === "/login" ? "login" : null;
+  const isArchitecture = pathname === "/architecture";
 
   return (
     <AuthProvider>
       {authMode ? (
         <AuthPage mode={authMode} onNavigate={navigate} />
+      ) : isArchitecture ? (
+        <ArchitecturePage onBack={() => navigate("/", { replace: true })} />
       ) : (
         <WorkspacePage onNavigate={navigate} />
       )}

@@ -229,7 +229,32 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     }
     const audience = auth.user?.id ?? "guest";
     const key = announcementDismissKey(audience, announcement.id);
-    setAnnouncementOpen(sessionStorage.getItem(key) !== "1");
+    const dismissedKey = `announcement-dismissed:${key}`;
+    const heartbeatKey = `announcement-heartbeat:${key}`;
+    const heartbeatInterval = 5_000;
+    const heartbeatGapMs = 8_000;
+
+    // Emit heartbeat so we can detect when all tabs are closed.
+    const beat = () => localStorage.setItem(heartbeatKey, String(Date.now()));
+    beat();
+    const interval = window.setInterval(beat, heartbeatInterval);
+
+    const lastBeat = Number(localStorage.getItem(heartbeatKey) || 0);
+    const browserSessionExpired = Date.now() - lastBeat > heartbeatGapMs;
+
+    if (browserSessionExpired) {
+      // New browser session — clear old tab-local dismissals and show announcement.
+      sessionStorage.removeItem(dismissedKey);
+      setAnnouncementOpen(true);
+    } else if (sessionStorage.getItem(dismissedKey) === "1") {
+      // Already dismissed in this tab session (e.g. after refresh).
+      setAnnouncementOpen(false);
+    } else {
+      // Same browser session, first tab that loaded this announcement.
+      setAnnouncementOpen(true);
+    }
+
+    return () => window.clearInterval(interval);
   }, [announcements, auth.user?.id]);
 
   async function refresh(nextSettings = settings, workspaceId = activeWorkspaceId) {
@@ -915,7 +940,9 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   function closeAnnouncement() {
     const announcement = announcements[0];
     if (announcement) {
-      sessionStorage.setItem(announcementDismissKey(auth.user?.id ?? "guest", announcement.id), "1");
+      const audience = auth.user?.id ?? "guest";
+      const key = announcementDismissKey(audience, announcement.id);
+      sessionStorage.setItem(`announcement-dismissed:${key}`, "1");
     }
     setAnnouncementOpen(false);
   }
@@ -1056,7 +1083,10 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
           />
         </main>
       )}
-      <footer className="statusbar">{status}</footer>
+      <footer className="statusbar">
+        <span>{status}</span>
+        <span className="version-badge" onClick={() => onNavigate("/architecture")} title="查看系统架构">v0.1.0</span>
+      </footer>
       <SettingsDialog
         open={settingsOpen}
         workspaces={workspaces}

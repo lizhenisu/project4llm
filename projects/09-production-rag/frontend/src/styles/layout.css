@@ -1091,6 +1091,12 @@ button:not(:disabled):active {
   padding: 0;
 }
 
+.chat-input-actions {
+  display: flex;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
 .tool-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2157,6 +2163,7 @@ button:not(:disabled):active {
 .statusbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   border-top: 1px solid var(--line);
   padding: 0 12px;
   color: var(--text-muted);
@@ -2323,4 +2330,150 @@ button:not(:disabled):active {
 
 .delete-dialog {
   width: min(400px, 100%);
+}
+
+.version-badge {
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.version-badge:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* Architecture page */
+.architecture-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.architecture-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 16px;
+  flex-shrink: 0;
+}
+
+.architecture-header h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.architecture-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 24px 48px;
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--text);
+}
+
+.architecture-content h1 {
+  font-size: 24px;
+  margin-top: 24px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+
+.architecture-content h2 {
+  font-size: 20px;
+  margin-top: 32px;
+  margin-bottom: 10px;
+}
+
+.architecture-content h3 {
+  font-size: 16px;
+  margin-top: 20px;
+  margin-bottom: 8px;
+}
+
+.architecture-content p {
+  margin: 8px 0;
+}
+
+.architecture-content ul,
+.architecture-content ol {
+  padding-left: 24px;
+  margin: 8px 0;
+}
+
+.architecture-content li {
+  margin: 4px 0;
+}
+
+.architecture-content code {
+  background: var(--surface-muted);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: "SF Mono", "Menlo", "Monaco", monospace;
+}
+
+.architecture-content pre {
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.architecture-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.architecture-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+.architecture-content th,
+.architecture-content td {
+  border: 1px solid var(--line);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.architecture-content th {
+  background: var(--surface-muted);
+  font-weight: 600;
+}
+
+.architecture-content blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 12px 0;
+  padding: 4px 16px;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+  border-radius: 0 6px 6px 0;
+}
+
+.architecture-content hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 24px 0;
+}
+
+.architecture-content a {
+  color: var(--accent);
+}
+
+.architecture-content img {
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 8px 0;
 }
