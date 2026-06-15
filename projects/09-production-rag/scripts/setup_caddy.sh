@@ -7,6 +7,7 @@ set -euo pipefail
 #
 # Usage:
 #   sudo bash setup_caddy.sh <your-domain>
+#   sudo bash setup_caddy.sh           # interactive prompt
 #
 # Example:
 #   sudo bash setup_caddy.sh your-domain.com
@@ -29,34 +30,54 @@ log()  { echo -e "${GREEN}[+]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 err()  { echo -e "${RED}[x]${NC} $*"; exit 1; }
 
-# ── Parse args ──────────────────────────────────────────────
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <domain>"
-  echo "Example: $0 your-domain.com"
-  exit 1
+# ── Parse or prompt for domain ──────────────────────────────
+if [[ $# -ge 1 ]]; then
+  DOMAIN="$1"
+else
+  echo -n "Enter domain (e.g. your-domain.com): "
+  read -r DOMAIN
+  if [[ -z "$DOMAIN" ]]; then
+    err "No domain provided. Aborting."
+  fi
 fi
-
-DOMAIN="$1"
 
 if [[ ! "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ ]]; then
   err "Invalid domain: $DOMAIN"
 fi
 
 log "Setting up Caddy reverse proxy for https://${DOMAIN} → http://localhost:8080"
+echo
 
 # ── Check we're root ────────────────────────────────────────
 if [[ "$(id -u)" -ne 0 ]]; then
   err "This script must be run as root (sudo). It installs packages and writes system configs."
 fi
 
-# ── Ensure the web container is reachable ───────────────────
-if ! curl -s -o /dev/null -w '' http://localhost:8080/; then
-  warn "localhost:8080 is not responding. Make sure 'docker compose up -d' has been run."
-  read -rp "Continue anyway? [y/N] " answer
-  [[ "$answer" =~ ^[Yy]$ ]] || exit 0
+# ── Check Caddy already serving this domain ─────────────────
+if systemctl is-active --quiet caddy 2>/dev/null; then
+  CADDYFILE="/etc/caddy/Caddyfile"
+  if [[ -f "$CADDYFILE" ]] && grep -qF "${DOMAIN}" "$CADDYFILE" 2>/dev/null; then
+    warn "Caddy is already serving ${DOMAIN}."
+    read -rp "Reconfigure anyway? [y/N] " answer
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+      log "Cancelled."
+      exit 0
+    fi
+  fi
 fi
 
-# ── Install Caddy ──────────────────────────────────────────
+# ── Detect if this is the first run ─────────────────────────
+FIRST_RUN="false"
+if ! command -v caddy &>/dev/null; then
+  FIRST_RUN="true"
+fi
+
+if [[ "$FIRST_RUN" == "false" ]] && ! systemctl is-active --quiet caddy 2>/dev/null; then
+  # Caddy is installed but not running — first setup or previous cleanup
+  FIRST_RUN="true"
+fi
+
+# ── Idempotency: skip install if already present ────────────
 if ! command -v caddy &>/dev/null; then
   log "Installing Caddy..."
   if command -v apt-get &>/dev/null; then
@@ -82,6 +103,13 @@ if ! command -v caddy &>/dev/null; then
   log "Caddy installed: $(caddy version | head -1)"
 else
   log "Caddy is already installed: $(caddy version | head -1)"
+fi
+
+# ── Ensure the web container is reachable ───────────────────
+if ! curl -s -o /dev/null -w '' http://localhost:8080/; then
+  warn "localhost:8080 is not responding. Make sure 'docker compose up -d' has been run."
+  read -rp "Continue anyway? [y/N] " answer
+  [[ "$answer" =~ ^[Yy]$ ]] || exit 0
 fi
 
 # ── Write Caddyfile ─────────────────────────────────────────
@@ -128,6 +156,7 @@ if systemctl is-active --quiet caddy; then
   log "Caddy is running (systemctl status caddy)."
 else
   warn "Caddy did not start. Check: journalctl -u caddy --no-pager -n 30"
+  exit 1
 fi
 
 echo
@@ -139,3 +168,8 @@ echo "  - It may take up to 30 seconds for the first certificate to be obtained.
 echo "  - Caddy auto-renews certificates; no maintenance needed."
 echo "  - Logs: journalctl -u caddy -f"
 echo "  - Config: ${CADDYFILE}"
+echo
+if [[ "$FIRST_RUN" == "true" ]]; then
+  echo "This script is safe to re-run — reconfiguring the same domain overwrites the old config (backed up)."
+  echo "To switch domains, run again with a new domain."
+fi
