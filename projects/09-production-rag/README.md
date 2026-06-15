@@ -46,10 +46,14 @@ cd frontend && npm install && npm run dev -- --host 0.0.0.0
 
 ```bash
 # 1. 配置环境变量
-# docker-compose.yml 通过 env_file: ../../.env 在容器运行时注入变量。
+# docker-compose.yml 通过 env_file: ../../.env 在容器运行时注入变量，
 # 因此 .env 文件必须放在仓库根目录（即 ../../.env），而不是本项目目录。
-cp ../../.env.example ../../.env
-# 编辑 ../../.env，至少填入 SILICONFLOW_API_KEY 和 NEW_API_KEY
+# 注意: .env.example 在本项目目录下，所以源路径是 ./.env.example。
+cp .env.example ../../.env
+# 编辑 ../../.env 至少填入 SILICONFLOW_API_KEY 和 NEW_API_KEY。
+# 另外，务必清空 RAG_MILVUS_URI（置为 RAG_MILVUS_URI=），
+# 否则该变量会覆盖 docker-compose 中设置的 MILVUS_URI，
+# 导致容器试图打开本地 Milvus Lite 文件而非连接远程 Milvus 服务。
 # 见下方"LLM 配置"节了解完整变量列表。
 
 # 2. 完整部署
