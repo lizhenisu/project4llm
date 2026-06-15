@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter
 
@@ -109,22 +109,26 @@ def retrieve_multimodal(
         doc_ids=doc_ids,
         source_types=resolved_source_types,
     )
-    text_embedding_start = perf_counter()
-    text_query_vector = text_model.encode([rewritten_query])[0]
-    text_embedding_ms = elapsed_ms(text_embedding_start)
-    text_search_start = perf_counter()
-    text_hits = hybrid_search(
-        client,
-        collection_name=config.collection_name,
-        query_vector=text_query_vector,
-        query_text=rewritten_query,
-        filter_expr=filter_expr,
-        limit=max(candidate_limit, 10),
-    )
-    text_search_ms = elapsed_ms(text_search_start)
-
+    is_image_file_query = query_path.exists() and query_path.is_file()
+    text_embedding_ms = 0.0
+    text_search_ms = 0.0
+    text_hits: list[SearchHit] = []
+    if not is_image_file_query:
+        text_embedding_start = perf_counter()
+        text_query_vector = text_model.encode([rewritten_query])[0]
+        text_embedding_ms = elapsed_ms(text_embedding_start)
+        text_search_start = perf_counter()
+        text_hits = hybrid_search(
+            client,
+            collection_name=config.collection_name,
+            query_vector=text_query_vector,
+            query_text=rewritten_query,
+            filter_expr=filter_expr,
+            limit=max(candidate_limit, 10),
+        )
+        text_search_ms = elapsed_ms(text_search_start)
     image_embedding_start = perf_counter()
-    if query_path.exists() and query_path.is_file():
+    if is_image_file_query:
         image_query_vector = image_model.encode_images([query_path])[0]
     else:
         image_query_vector = image_model.encode([rewritten_query])[0]
@@ -139,13 +143,16 @@ def retrieve_multimodal(
     )
     image_search_ms = elapsed_ms(image_search_start)
     fusion_start = perf_counter()
-    candidates = reciprocal_rank_fusion(
-        [
-            ("text_hybrid", text_hits),
-            ("image_vector", image_hits),
-        ],
-        limit=candidate_limit,
-    )
+    if is_image_file_query:
+        candidates = image_only_candidates(image_hits, limit=candidate_limit)
+    else:
+        candidates = reciprocal_rank_fusion(
+            [
+                ("text_hybrid", text_hits),
+                ("image_vector", image_hits),
+            ],
+            limit=candidate_limit,
+        )
     fusion_ms = elapsed_ms(fusion_start)
     packing_start = perf_counter()
     hits, packing_stats = pack_context(
@@ -170,7 +177,7 @@ def retrieve_multimodal(
         source_types=resolved_source_types,
         doc_ids=doc_ids or [],
         filter_expr=filter_expr,
-        retrieval_mode="multimodal_text_image_fusion",
+        retrieval_mode="image_vector_file_query" if is_image_file_query else "multimodal_text_image_fusion",
         candidate_count=len(candidates),
         reranked_count=len(candidates),
         context_count=len(hits),
@@ -194,6 +201,25 @@ def retrieve_multimodal(
         reranked=candidates,
         trace=trace,
     )
+
+
+def image_only_candidates(image_hits: list[SearchHit], *, limit: int) -> list[SearchHit]:
+    candidates: list[SearchHit] = []
+    for rank, hit in enumerate(image_hits[:limit], start=1):
+        metadata = {
+            **hit.metadata,
+            "fusion": {
+                "mode": "image_only",
+                "channels": {"image_vector": rank},
+                "channel_scores": {"image_vector": hit.score},
+            },
+        }
+        candidates.append(replace_search_hit_metadata(hit, metadata))
+    return candidates
+
+
+def replace_search_hit_metadata(hit: SearchHit, metadata: dict) -> SearchHit:
+    return replace(hit, metadata=metadata)
 
 
 def run_multimodal_search(

@@ -356,17 +356,7 @@ class SiliconFlowVLImageEmbeddingModel:
         return vectors
 
     def encode_images(self, image_paths: list[Path]) -> list[list[float]]:
-        inputs = [
-            [
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": image_data_url(path),
-                    },
-                }
-            ]
-            for path in image_paths
-        ]
+        inputs = [{"image": image_data_url(path)} for path in image_paths]
         vectors: list[list[float]] = []
         for start in range(0, len(inputs), self._batch_size):
             vectors.extend(self._embed_batch(inputs[start : start + self._batch_size]))

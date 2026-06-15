@@ -134,8 +134,7 @@ def fake_embedding_post_json(url: str, *, api_key: str, payload: dict) -> dict:
             return {"data": [{"index": 0, "embedding": [0.2, 0.3, 0.5]}]}
         assert isinstance(input_value, list)
         assert len(input_value) == 1
-        assert input_value[0][0]["type"] == "image_url"
-        assert input_value[0][0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert input_value[0]["image"].startswith("data:image/png;base64,")
         return {"data": [{"index": 0, "embedding": [0.9, 0.1, 0.0]}]}
 
     assert payload["model"] == "BAAI/bge-m3"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +37,7 @@ def main() -> None:
     test_context_helper_backfills_later_hits()
     test_text_pipeline_backfills_after_doc_limit()
     test_multimodal_pipeline_backfills_after_doc_limit()
+    test_multimodal_image_file_query_uses_image_scores_only()
     print("smoke_context_backfill=ok")
 
 
@@ -126,6 +128,48 @@ def test_multimodal_pipeline_backfills_after_doc_limit() -> None:
     assert result.trace.candidate_count == 3
     assert result.trace.context_count == 2
     assert result.trace.dropped_by_doc_limit == 1
+
+
+def test_multimodal_image_file_query_uses_image_scores_only() -> None:
+    config = make_config()
+    image_hits = [
+        make_hit("figure-1-transformer", 0, score=0.91),
+        make_hit("figure-2-attention", 0, score=0.72),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        image_path = Path(tmp) / "query.png"
+        image_path.write_bytes(b"fake-png")
+        with (
+            patch("search_multimodal.load_config", return_value=config),
+            patch("search_multimodal.connect", return_value=object()),
+            patch("search_multimodal.ensure_collection"),
+            patch("search_multimodal.build_embedding_model", return_value=FakeEmbeddingModel()),
+            patch(
+                "search_multimodal.build_image_embedding_model",
+                return_value=FakeImageEmbeddingModel(),
+            ),
+            patch("search_multimodal.load_current_versions", return_value={}),
+            patch("search_multimodal.build_filter_expr", return_value='tenant_id == "team_a"'),
+            patch("search_multimodal.hybrid_search", side_effect=AssertionError("text search should be skipped")),
+            patch("search_multimodal.reciprocal_rank_fusion", side_effect=AssertionError("RRF should be skipped")),
+            patch("search_multimodal.image_search", return_value=image_hits),
+        ):
+            result = retrieve_multimodal(
+                str(image_path),
+                tenant_id="team_a",
+                acl_groups=["ops"],
+                candidate_limit=2,
+                context_limit=2,
+                request_id="smoke-image-file-query",
+            )
+    assert [hit.doc_id for hit in result.candidates] == ["figure-1-transformer", "figure-2-attention"]
+    assert [hit.score for hit in result.candidates] == [0.91, 0.72]
+    assert result.trace.retrieval_mode == "image_vector_file_query"
+    assert result.trace.stage_latency_ms["text_embedding"] == 0.0
+    assert result.trace.stage_latency_ms["text_search"] == 0.0
+    assert result.candidates[0].metadata["fusion"]["mode"] == "image_only"
+    assert result.candidates[0].metadata["fusion"]["channels"] == {"image_vector": 1}
+    assert result.candidates[0].metadata["fusion"]["channel_scores"]["image_vector"] == 0.91
 
 
 def make_config():
