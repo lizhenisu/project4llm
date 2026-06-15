@@ -135,6 +135,19 @@ def run_smoke() -> None:
     assert query_body["citations"]
     assert query_body["citations"][0]["doc_id"] == "api-runbook"
 
+    asset_path = config.object_store_dir / "uploads" / "team_a" / "asset-smoke" / "figure.png"
+    asset_path.parent.mkdir(parents=True)
+    asset_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0bIDATx\xdac\xfc\xff\x1f\x00"
+        b"\x03\x03\x02\x00\xef\xbf\xa7\xdb\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    asset = api.get("/source-assets/uploads/team_a/asset-smoke/figure.png?tenant_id=team_a")
+    assert asset.status_code == 200, asset.text
+    assert asset.headers["content-type"].startswith("image/png")
+    cross_tenant_asset = api.get("/source-assets/uploads/team_a/asset-smoke/figure.png?tenant_id=other")
+    assert cross_tenant_asset.status_code == 404
+
     feedback = api.post(
         "/feedback",
         headers=headers,

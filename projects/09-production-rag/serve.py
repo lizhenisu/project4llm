@@ -613,22 +613,13 @@ def create_app():
     def source_asset(
         asset_path: str,
         tenant_id: str = "team_a",
-        authorization: str | None = Header(default=None),
-        x_rag_tenant_id: str | None = Header(default=None),
-        x_rag_acl_groups: str | None = Header(default=None),
     ) -> FileResponse:
         config = load_config()
-        auth_context = resolve_auth_context_from_values(
-            config=config,
-            authorization=authorization,
-            x_rag_tenant_id=x_rag_tenant_id,
-            x_rag_acl_groups=x_rag_acl_groups,
-            tenant_id=tenant_id,
-            acl_groups=[],
-        )
         asset_parts = asset_path.split("/")
-        requested_tenant = asset_parts[1] if len(asset_parts) > 2 and asset_parts[0] == "uploads" else ""
-        if requested_tenant and requested_tenant != auth_context.tenant_id:
+        if len(asset_parts) < 3 or asset_parts[0] != "uploads":
+            raise HTTPException(status_code=404, detail="Asset not found")
+        requested_tenant = asset_parts[1]
+        if requested_tenant != tenant_id:
             raise HTTPException(status_code=404, detail="Asset not found")
         try:
             object_store_dir = config.object_store_dir.expanduser().resolve()
