@@ -257,6 +257,13 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     return () => window.clearInterval(interval);
   }, [announcements, auth.user?.id]);
 
+  // Persist user's explicit source selection to localStorage so refresh doesn't override it
+  useEffect(() => {
+    if (isAuthenticated && activeWorkspaceId && sources.length > 0) {
+      saveCachedSelection(activeWorkspaceId, sources);
+    }
+  }, [sources, isAuthenticated, activeWorkspaceId]);
+
   async function refresh(nextSettings = settings, workspaceId = activeWorkspaceId) {
     const runId = ++refreshRunRef.current;
     const isCurrentRefresh = () => runId === refreshRunRef.current && nextSettings.token === authTokenRef.current;
@@ -321,15 +328,26 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     setConversationTitle(latest.title);
     const latestMessages = latest.messages.map(normalizeMessage);
     setMessages(latestMessages);
-    const selectedIds = new Set(latest.source_doc_ids);
-    if (selectedIds.size > 0) {
+    const cachedSelection = loadCachedSelection(workspaceId);
+    if (cachedSelection !== null) {
+      // User has explicitly managed selection — respect cached state, don't override from conversation history
       setSources((current) =>
         (current.length ? current : sourceRows).map((source) => ({
           ...source,
-          selected:
-            source.status === "ready" && (selectedIds.has(source.doc_id) || Boolean(source.child_doc_ids?.some((docId) => selectedIds.has(docId)))),
+          selected: source.status === "ready" && (cachedSelection.get(sourceStateKey(source)) ?? false),
         })),
       );
+    } else {
+      const selectedIds = new Set(latest.source_doc_ids);
+      if (selectedIds.size > 0) {
+        setSources((current) =>
+          (current.length ? current : sourceRows).map((source) => ({
+            ...source,
+            selected:
+              source.status === "ready" && (selectedIds.has(source.doc_id) || Boolean(source.child_doc_ids?.some((docId) => selectedIds.has(docId)))),
+          })),
+        );
+      }
     }
     if (hasPendingAssistant(latestMessages)) {
       void resumePendingAnswer({ ...latest, messages: latestMessages }, nextSettings, workspaceId);
@@ -477,7 +495,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     const pending: ChatMessage = {
       id: crypto.randomUUID(),
       role: "assistant",
-      content: "思考中...",
+      content: requestSelectedDocIds.length > 0 ? "正在检索资料并生成回答..." : "思考中...",
       status: "sending",
       created_at: Date.now(),
     };
@@ -1771,6 +1789,23 @@ function mergeSelectedState(next: SourceItem[], current: SourceItem[]) {
 
 function sourceStateKey(source: SourceItem) {
   return `${source.doc_id}::${source.doc_version}`;
+}
+
+const SELECTION_CACHE_PREFIX = "source-selection:";
+
+function loadCachedSelection(workspaceId: string): Map<string, boolean> | null {
+  try {
+    const raw = localStorage.getItem(`${SELECTION_CACHE_PREFIX}${workspaceId}`);
+    if (raw === null) return null;
+    return new Map(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedSelection(workspaceId: string, sources: SourceItem[]) {
+  const entries: [string, boolean][] = sources.map((s) => [sourceStateKey(s), s.selected ?? false]);
+  localStorage.setItem(`${SELECTION_CACHE_PREFIX}${workspaceId}`, JSON.stringify(entries));
 }
 
 function ResizeDivider({
