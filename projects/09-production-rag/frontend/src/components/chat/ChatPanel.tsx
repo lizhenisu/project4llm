@@ -39,7 +39,7 @@ export function ChatPanel({
   const [inputHeight, setInputHeight] = useState(46);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const canSend = (draft.trim().length > 0 || Boolean(attachedImage)) && (authenticated ? selectedSources.length > 0 : true) && !busy;
+  const canSend = (draft.trim().length > 0 || Boolean(attachedImage)) && !busy;
 
   useEffect(() => {
     function handleClickOutside() {
@@ -171,7 +171,7 @@ export function ChatPanel({
           name="chat-message"
           ref={textareaRef}
           value={draft}
-          placeholder={authenticated ? (selectedSources.length ? "提问或创作内容" : "请先添加并选择来源") : "登录后即可发送"}
+          placeholder={authenticated ? "提问或创作内容" : "登录后即可发送"}
           onChange={(event) => setDraft(event.target.value)}
           style={{ minHeight: `${inputHeight}px`, maxHeight: '600px' }}
           onKeyDown={(event) => {

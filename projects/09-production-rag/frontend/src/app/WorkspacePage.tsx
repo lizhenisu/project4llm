@@ -477,7 +477,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     const pending: ChatMessage = {
       id: crypto.randomUUID(),
       role: "assistant",
-      content: "正在检索资料并生成回答...",
+      content: "思考中...",
       status: "sending",
       created_at: Date.now(),
     };

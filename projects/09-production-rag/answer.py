@@ -4,10 +4,10 @@ import argparse
 import json
 from dataclasses import dataclass
 
-from rag_core.answering import build_prompt, generate_answer
+from rag_core.answering import build_prompt, generate_answer, generate_chat
 from rag_core.config import load_config
 from rag_core.pipeline import retrieve_and_rerank
-from rag_core.types import SearchHit
+from rag_core.types import SearchHit, TraceInfo
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,14 @@ def answer_query(
     request_id: str | None = None,
 ) -> AnswerResult:
     config = load_config()
+    has_doc_filter = bool(doc_ids or source_types or doc_version)
+    if not has_doc_filter:
+        # Pure LLM chat mode — no Milvus retrieval
+        return answer_query_without_retrieval(
+            query,
+            history=history,
+            request_id=request_id,
+        )
     retrieval = retrieve_and_rerank(
         query,
         tenant_id=tenant_id,
@@ -55,6 +63,58 @@ def answer_query(
         candidates=retrieval.candidates,
         reranked=retrieval.reranked,
         trace=retrieval.trace,
+        generation=generation,
+    )
+
+
+def answer_query_without_retrieval(
+    query: str,
+    *,
+    history: list[str] | None = None,
+    request_id: str | None = None,
+) -> AnswerResult:
+    """Pure LLM chat mode — bypasses Milvus retrieval entirely. Passes conversation history directly to LLM."""
+    import uuid as _uuid
+    config = load_config()
+    resolved_request_id = request_id or str(_uuid.uuid4())
+    # Build messages from history + current query — no system prompt, no RAG context
+    chat_messages: list[dict[str, str]] = []
+    if history:
+        for msg in history:
+            prefix, _, content = msg.partition(": ")
+            role = "assistant" if prefix == "assistant" else "user"
+            chat_messages.append({"role": role, "content": content})
+    chat_messages.append({"role": "user", "content": query})
+    generation = generate_chat(config, chat_messages)
+    trace = TraceInfo(
+        request_id=resolved_request_id,
+        original_query=query,
+        rewritten_query=query,
+        rewrite_backend="none",
+        tenant_id="",
+        acl_groups=[],
+        doc_version=None,
+        current_versions={},
+        embedding_model="none",
+        source_types=[],
+        doc_ids=[],
+        filter_expr="",
+        retrieval_mode="direct_llm_no_retrieval",
+        candidate_count=0,
+        reranked_count=0,
+        context_count=0,
+        dropped_by_score=0,
+        dropped_by_doc_limit=0,
+        dropped_by_budget=0,
+        stage_latency_ms={"rewrite": 0},
+    )
+    return AnswerResult(
+        request_id=resolved_request_id,
+        answer=generation.answer,
+        hits=[],
+        candidates=[],
+        reranked=[],
+        trace=trace,
         generation=generation,
     )
 

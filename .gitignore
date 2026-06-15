@@ -17,10 +17,10 @@ wheels/
 projects/07-milvus-rag/milvus_lite_demo.db/
 projects/08-industrial-rag/industrial_rag_demo.db/
 projects/08-industrial-rag/object_store/
-projects/08-industrial-rag/volumes/
-projects/08-industrial-rag/runtime/
+**/**/volumes/
+**/**/runtime/
 projects/09-production-rag/industrial_rag_demo.db/
-projects/09-production-rag/object_store/
+**/**/object_store/
 projects/09-production-rag/volumes/
 projects/09-production-rag/runtime/
 projects/09-production-rag/frontend/dist/

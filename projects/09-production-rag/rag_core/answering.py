@@ -59,6 +59,35 @@ def generate_answer(config: RagConfig, query: str, hits: list[SearchHit]) -> Ans
     )
 
 
+def generate_chat(config: RagConfig, messages: list[dict[str, str]]) -> AnswerGeneration:
+    """Pure chat mode — no system prompt, just pass conversation history as-is to LLM."""
+    start = perf_counter()
+    if config.answer_backend != "llm":
+        raise ValueError(
+            f"Unsupported RAG_ANSWER_BACKEND={config.answer_backend!r}; use llm"
+        )
+    if not config.llm_base_url or not config.llm_api_key:
+        raise RuntimeError("NEW_API_URL/NEW_API_KEY must be configured for chat generation.")
+
+    from openai import OpenAI
+
+    client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
+    response = client.chat.completions.create(
+        model=config.llm_model,
+        messages=messages,
+    )
+    answer = response.choices[0].message.content or ""
+    if not answer.strip():
+        raise RuntimeError("LLM chat generation returned empty content.")
+    return AnswerGeneration(
+        answer=answer,
+        llm_model=config.llm_model,
+        llm_backend="newapi",
+        latency_ms=elapsed_ms(start),
+        token_usage=extract_usage(response),
+    )
+
+
 def elapsed_ms(start: float) -> float:
     return round((perf_counter() - start) * 1000, 2)
 
