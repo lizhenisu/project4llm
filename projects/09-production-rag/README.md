@@ -1,146 +1,213 @@
-# 09-production-rag
+# 09 Production RAG
 
-目标：在 `08-industrial-rag` 后端能力基础上，演进成一个可部署到服务器的完整 RAG 系统。09 面向真实上线形态组织：TypeScript 前端、FastAPI 后端、入库任务、运维工具、发布门禁和 Docker Compose 部署。
+> 基于 Milvus 的企业级多模态 RAG 知识库系统 —— 支持文本+图片混合检索、思维导图生成、多租户 ACL 和生产级 Docker 部署。
 
-## 当前状态
+## 功能概览
 
-- 前端工作台：`frontend/`
-- 后端 API：`serve.py`
-- RAG 核心模块：`rag_core/`
-- 来源与产物 API：`rag_core/sources.py`、`rag_core/artifacts.py`
-- 入库入口：`ingest_files.py`、`ingest_markdown.py`、`ingest_tables.py`、`ingest_text.py`、`ingest_image.py`
-- 检索与回答工具：`search_*.py`、`answer.py`、`answer_multimodal.py`
-- 运维工具：`check_config.py`、`monitor_events.py`、`collection_stats.py`、`list_documents.py`、`delete_document.py`
-- 上线门禁：`eval_retrieval.py`、`eval_answer.py`、`release_gate.py`、`benchmark_latency.py`
-- 测试和样例数据：`tests/`
+- **📄 多格式文档摄入**：PDF（PyMuPDF 解析 + 嵌入图片 OCR）、Markdown、HTML、TXT、CSV/TSV
+- **🔍 混合检索**：Dense（语义向量）+ Sparse（BM25 关键词）→ RRF 融合 + BGE-Reranker 精排
+- **🖼️ 多模态问答**：PDF 图片提取 → Vision LLM 描述 → 图文联合检索
+- **🤖 LLM 智能增强**：查询改写、答案生成、思维导图、数据表格、文档摘要
+- **🔐 多租户 ACL**：PBKDF2 密码认证、Tenant 隔离、用户角色管理
+- **📊 Studio**：基于已选来源一键生成思维导图和数据表格
+- **🧪 完整评估框架**：Recall@K、MRR@K、nDCG@K、答案忠实度、发布门禁
+- **🐳 Docker 一键部署**：ETCD + MinIO + Milvus + FastAPI + Nginx/React
 
-## 项目准备文档
+## 快速开始
 
-- `docs/EXECUTION_PLAN.md`：09 前后端分离、TypeScript 前端、部署和阶段执行计划。
-- `docs/PREPARE_ENV.md`：正式编码前的环境检查、Node/npm/Docker 准备建议。
-- `docs/frontend-design/`：前端参考图、UI 设计规格和 vibecoding 准备过程。
-
-## 本地运行
-
-从仓库根目录激活环境：
+### 开发环境（热重载）
 
 ```bash
-source .venv/bin/activate
-```
-
-进入项目目录：
-
-```bash
-cd projects/09-production-rag
-```
-
-复制并填写配置：
-
-```bash
+# 1. 配置环境
 cp .env.example .env
-```
+# 编辑 .env，填入 LLM API Key 等配置
 
-初始化 schema：
+# 2. 启动基础设施（Milvus 向量数据库等）
+docker compose up -d milvus
 
-```bash
+# 3. 初始化 Schema
 python schema.py --reset
+
+# 4. 启动后端（--reload 热重载）
+source ../../.venv/bin/activate
+MILVUS_URI="http://127.0.0.1:19530" \
+RAG_OBJECT_STORE_DIR="$(pwd)/object_store" \
+RAG_RUNTIME_DIR="$(pwd)/runtime" \
+uvicorn serve:app --reload --host 0.0.0.0 --port 8008
+
+# 5. 启动前端（Vite 热重载，默认 :5173）
+cd frontend && npm install && npm run dev -- --host 0.0.0.0
 ```
 
-启动 API：
+前端通过 Vite Proxy 将 `/api/*` 代理到 `http://127.0.0.1:8008`。访问 `http://localhost:5173` 即可使用。
+
+### 生产环境（Docker Compose）
 
 ```bash
-uvicorn serve:app --host 0.0.0.0 --port 8008
+# 完整部署
+docker compose up -d
+
+# 访问
+# 前端: http://localhost:8080
+# API:  http://localhost:8008
+# Milvus: localhost:19530
+
+# 可选：批量摄入
+RAG_TEXT_INPUT="/data/docs" \
+RAG_IMAGE_INPUT="/data/images" \
+docker compose --profile ingest up rag-ingest
 ```
 
-启动前端开发服务：
+## 项目结构
 
-```bash
-cd frontend
-npm install
-npm run dev -- --host 0.0.0.0
+```
+09-production-rag/
+├── serve.py                  # FastAPI 应用入口
+├── schema.py                 # Milvus Collection 初始化
+├── answer.py                 # 文本 RAG 问答入口
+├── answer_multimodal.py      # 多模态 RAG 问答入口
+├── search_*.py               # 各类检索脚本（dense/sparse/hybrid/multimodal）
+├── rerank.py                 # 重排序独立脚本
+├── ingest_*.py               # 文档摄入脚本（files/pdf/markdown/text/tables/images）
+├── eval_retrieval.py         # 检索评估
+├── eval_answer.py            # 答案评估
+├── release_gate.py           # 发布门禁
+├── benchmark_latency.py      # 延时基准测试
+├── Makefile                  # 常用命令快捷入口
+├── Dockerfile                # API 镜像构建
+├── docker-compose.yml        # 完整部署编排
+├── .env.example              # 环境变量参考
+│
+├── rag_core/                 # RAG 核心模块
+│   ├── config.py             # 配置管理（38 项环境变量）
+│   ├── pipeline.py           # 检索管道编排
+│   ├── rewrite.py            # LLM 查询改写
+│   ├── embeddings.py         # 嵌入模型（SiliconFlow/BGE/CLIP）
+│   ├── milvus_store.py       # Milvus Schema、索引、混合检索
+│   ├── rerankers.py          # 重排序（SiliconFlow/BGE Cross-Encoder）
+│   ├── context.py            # 上下文打包（三重约束）
+│   ├── answering.py          # LLM 答案生成
+│   ├── prompts.py            # System/User Prompt 模板
+│   ├── io.py                 # PDF/HTML/MD 解析 + 图片提取
+│   ├── text_utils.py         # 结构化分块（代码块/表格保持完整）
+│   ├── sources.py            # 来源管理（上传、解读、删除、版本）
+│   ├── artifacts.py          # 思维导图/数据表格生成
+│   ├── conversations.py      # 对话 CRUD
+│   ├── object_store.py       # JSONL 文档归档
+│   ├── versioning.py         # 版本发布与解析
+│   ├── auth.py               # ACL 鉴权上下文
+│   ├── user_auth.py          # 用户注册/登录/Session
+│   ├── database.py           # SQLite 元数据库（WAL 模式）
+│   ├── pii.py                # PII 检测与脱敏
+│   ├── guards.py             # 跨租户查询防护
+│   ├── events.py             # 事件日志
+│   ├── source_guides.py      # LLM 文档摘要
+│   ├── citations.py          # 引用评估工具
+│   ├── types.py              # 核心数据模型
+│   └── readiness.py          # 健康检查报告
+│
+├── frontend/                 # React + TypeScript 前端
+│   └── src/
+│       ├── App.tsx           # 路由（/、/login、/register、/architecture）
+│       ├── app/
+│       │   ├── WorkspacePage.tsx  # 工作台主页
+│       │   ├── AuthPage.tsx       # 登录/注册
+│       │   ├── ArchitecturePage.tsx # 系统架构文档
+│       │   └── SettingsDialog.tsx
+│       ├── components/
+│       │   ├── chat/ChatPanel.tsx
+│       │   ├── sources/SourcePanel.tsx
+│       │   ├── studio/StudioPanel.tsx
+│       │   └── ui/
+│       └── lib/
+│           ├── api.ts        # API 客户端
+│           ├── AuthContext.tsx
+│           ├── storage.ts    # 本地持久化
+│           └── types.ts
+│
+├── docs/                     # 项目文档
+│   ├── ARCHITECTURE.md       # 系统架构详解（18 章）
+│   ├── RELEASE_CHECKLIST.md  # 发布检查清单
+│   ├── EXECUTION_PLAN.md     # 开发执行计划
+│   ├── PREPARE_ENV.md        # 环境准备指南
+│   ├── frontend-design/      # 前端 UI 设计参考
+│   └── archive/              # 历史版本文档
+│
+├── tests/                    # 测试用例
+├── scripts/                  # 部署辅助脚本
+├── object_store/             # 文档归档与版本数据
+├── runtime/                  # 运行时数据（DB、对话、日志）
+└── volumes/                  # Docker 持久化卷
 ```
 
-前端默认请求同源 `/api`。本地直接连后端时，可在页面右上角设置里把 API Base URL 改为 `http://127.0.0.1:8008`。
+## LLM 配置
 
-生产构建：
-
-```bash
-cd frontend
-npm run build
-```
-
-## 生产入库
-
-生产入库必须显式指定输入，不再默认读取教学样例：
+本项目默认使用 SiliconFlow API 网关，所有 Embedding、Rerank、Chat 调用均通过其 OpenAI 兼容端点：
 
 ```bash
-python ingest_text.py --input /path/to/source_docs.jsonl
-python ingest_image.py --input /path/to/image_docs.jsonl
-python ingest_files.py --input-dir /path/to/files --tenant-id team_a --acl-group engineering
-python ingest_tables.py --input-dir /path/to/tables --tenant-id team_a --acl-group ops
-```
-
-容器入库任务读取环境变量：
-
-```bash
-RAG_TEXT_INPUT=/data/source_docs.jsonl
-RAG_IMAGE_INPUT=/data/image_docs.jsonl
-```
-
-运行入库 profile 时需要显式提供待入库输入，避免生产任务无输入却静默完成。
-
-## Docker Compose
-
-```bash
-docker compose up -d milvus rag-api rag-web
-```
-
-Compose 默认使用 SiliconFlow 托管的 embedding/rerank/LLM API，并默认禁用本地图像 embedding，避免轻量服务器启动时加载 torch/transformers 本地权重：
-
-- `RAG_EMBEDDING_BACKEND=siliconflow`
-- `EMBEDDING_MODEL=BAAI/bge-m3`
-- `RAG_RERANK_BACKEND=siliconflow`
-- `RERANK_MODEL=BAAI/bge-reranker-v2-m3`
-- `RAG_IMAGE_EMBEDDING_BACKEND=none`
-- `RAG_QUERY_REWRITE_BACKEND=llm`
-- `RAG_ANSWER_BACKEND=llm`
-- `NEW_API_URL=https://api.siliconflow.cn`
-- `RAG_LLM_API_KEY` / `LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash`
-- `SILICONFLOW_API_KEY`
-
-LLM 配置示例：
-
-```bash
+# .env 关键配置
 RAG_LLM_BASE_URL=https://api.siliconflow.cn
-RAG_LLM_API_KEY=your-siliconflow-api-key
+RAG_LLM_API_KEY=sk-your-key
 LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash
+
+# 嵌入模型
+RAG_EMBEDDING_BACKEND=siliconflow
+EMBEDDING_MODEL=BAAI/bge-m3
+
+# 重排序模型
+RAG_RERANK_BACKEND=siliconflow
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+
+# 图片嵌入（默认启用）
+RAG_IMAGE_EMBEDDING_BACKEND=siliconflow    # 改为 none 关闭多模态
+IMAGE_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-8B
 ```
 
-如需启用本地 CLIP 图像检索，再显式设置 `RAG_IMAGE_EMBEDDING_BACKEND=clip` 和 `IMAGE_EMBEDDING_MODEL=openai/clip-vit-base-patch32`。
+也可切换为本地模型（需 GPU）：
+- `RAG_EMBEDDING_BACKEND=bge` → 本地加载 BGE-M3
+- `RAG_RERANK_BACKEND=bge` → 本地加载 BGE-Reranker-v2-m3
 
-访问：
+## API 端点
 
-```text
-http://localhost:8080
-```
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 健康检查 |
+| POST | `/query` | RAG 查询（核心） |
+| POST | `/search` | 仅检索 |
+| GET/POST | `/sources` | 来源文档管理 |
+| POST | `/sources/upload` | 文件上传 |
+| GET | `/sources/content/{doc_id}` | 文档内容展示 |
+| GET/POST | `/conversations` | 对话管理 |
+| GET/POST | `/artifacts` | Studio 产物 |
+| POST | `/artifacts/mindmap` | 生成思维导图 |
+| POST | `/feedback` | 答案反馈 |
+| GET | `/announcements` | 公告 |
+| POST | `/auth/register` | 注册 |
+| POST | `/auth/login` | 登录 |
+| GET | `/admin/*` | 管理员接口 |
 
-可选入库 profile：
+## 文档
 
-```bash
-docker compose --profile ingest run --rm rag-ingest
-```
+| 文档 | 说明 |
+|------|------|
+| [系统架构](docs/ARCHITECTURE.md) | 完整 RAG 系统架构详解（LLM、检索管道、多模态、Milvus Schema 等） |
+| [发布检查清单](docs/RELEASE_CHECKLIST.md) | 生产发布验收步骤 |
+| [执行计划](docs/EXECUTION_PLAN.md) | 开发执行与重构计划 |
+| [环境准备](docs/PREPARE_ENV.md) | 开发环境搭建指南 |
+| [前端设计](docs/frontend-design/readme.md) | UI 设计规格与组件规划 |
 
-GitHub Actions 会在 `main`/`master` 变更 09 项目时构建 GHCR 镜像。服务器如需直接拉取镜像而不是本地构建，可使用：
+## 技术栈
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull rag-api rag-web
-docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d milvus rag-api rag-web
-```
+| 层级 | 技术 |
+|------|------|
+| 前端 | React 19 + TypeScript + Vite |
+| 后端 | FastAPI + Uvicorn (Python 3.14) |
+| 向量数据库 | Milvus 2.6（HNSW + BM25 + 图片索引） |
+| 元数据库 | SQLite（WAL 模式） |
+| 对象存储 | 本地文件系统（JSONL 归档 + 版本管理） |
+| LLM 网关 | SiliconFlow API（OpenAI 兼容） |
+| 容器化 | Docker Compose（ETCD + MinIO + Milvus + API + Web） |
 
-## Web 功能
+## 许可证
 
-- 上传 PDF、Markdown、TXT、HTML、CSV、TSV 来源。
-- 选择一个或多个来源进行带引用问答。
-- 对回答进行点赞/点踩反馈。
-- 基于已选来源调用 LLM 生成、展示并下载思维导图 Artifact。
-- 在设置里切换 API 地址、Token、Tenant 和 ACL Groups。
+MIT

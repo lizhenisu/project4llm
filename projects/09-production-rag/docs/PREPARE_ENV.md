@@ -1,214 +1,171 @@
-# 09 Production RAG 开发前环境准备
+# 09 Production RAG 环境准备与部署指南
 
-本文档记录正式编写 09 前端和部署能力前，需要提前准备的环境、依赖和工具。
+本文档记录 `09-production-rag` 的开发环境搭建和轻量服务器（2 核 2G）部署要点。
 
-## 1. 当前环境检查结果
+## 1. 开发环境要求
 
-在当前机器上已经确认：
+| 项目 | 最低版本 | 说明 |
+|------|---------|------|
+| Python | 3.14+ | |
+| uv | 0.11+ | Python 包管理器 |
+| Node.js | 20+ | 前端开发和构建 |
+| npm | 11+ | |
+| Docker | 24+ | 运行 Milvus 等基础设施容器 |
+| Docker Compose | v2 | |
+| git | 任意 | |
 
-| 项目 | 当前状态 | 结论 |
-| --- | --- | --- |
-| Python | `Python 3.14.4` | 可用 |
-| 虚拟环境 | `.venv` 可激活 | 可用 |
-| uv | `uv 0.11.17` | 可用 |
-| Python 依赖 | `uv pip check` 通过 | 后端依赖健康 |
-| Node.js | `node v24.16.0` | 可用 |
-| npm | `npm 11.13.0` | 可用 |
-| Docker | CLI 和 daemon 可访问 | 可用 |
-| Docker Compose | 可显示版本 | 可用 |
-
-后端 Python、前端 Node 工具链和 Docker 当前都可用。本文档仍保留安装建议，方便读者在自己的机器上复现环境准备过程。
-
-## 2. 需要的工具
-
-### 2.1 必需
-
-- Python 3.14
-- uv
-- Node.js 20+，推荐 22+
-- npm
-- Docker
-- Docker Compose v2
-- git
-- curl
-- ca-certificates
-
-### 2.2 建议安装
-
-- jq：调试 JSON API。
-- unzip：处理下载包或前端构建产物。
-- build-essential / pkg-config：部分 Python 或 Node 原生依赖编译时需要。
-
-## 3. 环境诊断脚本
-
-本项目只提供普通用户检查脚本，不提供自动安装脚本：
+### 1.1 检查脚本
 
 ```bash
 bash projects/09-production-rag/scripts/prepare_user_env.sh
 ```
 
-它会检查：
+该脚本仅输出诊断结果，不会安装任何包或调用 sudo。
 
-- Python 版本。
-- uv 版本。
-- Python 依赖兼容性。
-- Node/npm 是否可用。
-- Docker/Compose 是否可用。
-- 09 后端关键入口的 Python 语法。
+## 2. 本地开发环境搭建
 
-脚本只输出诊断结果和建议，不会安装包，不会修改系统配置，也不会调用 sudo。
-
-注意：`uv pip check` 默认可能尝试写 `~/.cache/uv`。当前脚本会使用：
-
-```text
-/tmp/practice4llm-uv-cache
-```
-
-避免在受限环境下写用户 home cache。
-
-## 4. Node/npm 准备建议
-
-如果环境里 `node` 不存在，或 `npm` 指向 Windows 路径但不可用，建议选择一种方式处理：
-
-### 4.1 WSL 内安装 Node/npm
-
-适合希望前端开发完全运行在 Linux / WSL 内的情况。
-
-建议安装 Node.js 20+ 或 22+。可以使用系统包管理器、NodeSource、nvm、fnm 等任一方式，但要保证：
+### 2.1 Python 后端
 
 ```bash
-node --version
-npm --version
+# 从仓库根目录
+source .venv/bin/activate
+uv pip check
+cd projects/09-production-rag
+
+# 初始化 Milvus Schema
+python schema.py --reset
+
+# 启动后端（热重载）
+uvicorn serve:app --reload --host 127.0.0.1 --port 8008
 ```
 
-在 WSL shell 中直接可用，且不要依赖 `/mnt/c/Program Files/nodejs/npm`。
-
-### 4.2 修复 PATH，使用 Windows Node
-
-不推荐作为主方案，因为 WSL 与 Windows Node/npm 在路径、文件监听和 node_modules 上容易出问题。如果坚持使用，应确认：
-
-```bash
-node --version
-npm --version
-```
-
-在 WSL shell 中都能正常执行。
-
-## 5. Docker 准备建议
-
-如果你更想使用 Windows Docker Desktop，而不是 WSL 内 Docker：
-
-1. 打开 Docker Desktop。
-2. 进入 Settings。
-3. 打开 Resources。
-4. 打开 WSL Integration。
-5. 启用当前 Ubuntu 发行版。
-6. 重新打开 WSL shell。
-7. 验证：
-
-```bash
-docker --version
-docker compose version
-docker ps
-```
-
-如果你希望在 WSL 内直接运行 Docker，也可以自行安装 Docker Engine，并确保当前用户能访问 Docker daemon：
-
-```bash
-docker --version
-docker compose version
-docker ps
-```
-
-不建议同时混用 Docker Desktop WSL 集成和 WSL 内 Docker Engine，避免 socket、权限和上下文混乱。
-
-## 6. 前端项目初始化前置条件
-
-当前前端已经初始化完成。重新安装依赖时执行：
+### 2.2 前端
 
 ```bash
 cd projects/09-production-rag/frontend
 npm install
-npm run build
+npm run dev -- --host 0.0.0.0
 ```
 
-### 6.1 Playwright E2E 测试
+前端通过 Vite Proxy 将 `/api/*` 代理到 `http://127.0.0.1:8008`。访问 `http://localhost:5173`。
 
-前端已配置 Playwright，用于验证来源列表、文档原文阅读、对话菜单等真实浏览器交互。
-
-首次运行前安装浏览器：
-
-```bash
-cd projects/09-production-rag/frontend
-npx playwright install chromium
-```
-
-如果系统缺少 Chromium 运行库，按 Playwright 提示安装依赖：
-
-```bash
-cd projects/09-production-rag/frontend
-sudo env "PATH=$PATH" npx playwright install-deps chromium
-```
-
-在 Ubuntu 26.04 上，当前 Playwright 版本尚未正式识别 `ubuntu26.04-x64`，可以使用 Ubuntu 24.04 兼容浏览器包：
-
-```bash
-cd projects/09-production-rag/frontend
-PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64 npx playwright install chromium
-sudo env "PATH=$PATH" PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64 npx playwright install-deps chromium
-npm run test:e2e:ubuntu26
-```
-
-如果 Node/npm 是通过 nvm 安装的，必须使用上面的 `sudo env "PATH=$PATH" ...` 写法；否则 `sudo` 后 root 的 `PATH` 中没有用户级 nvm 路径，会出现 `sudo: 'npx': command not found`。
-
-普通环境运行：
-
-```bash
-cd projects/09-production-rag/frontend
-npm run test:e2e
-```
-
-## 7. 后端开发前置条件
-
-从仓库根目录：
-
-```bash
-source .venv/bin/activate
-uv pip check
-python -m py_compile projects/09-production-rag/serve.py
-```
-
-如果本地要跑 Milvus Lite 或后端 API：
+### 2.3 基础设施容器
 
 ```bash
 cd projects/09-production-rag
-python schema.py --reset
-uvicorn serve:app --host 127.0.0.1 --port 8008
+docker compose up -d milvus
 ```
 
-## 8. 部署联调前置条件
+仅在本地需要 Milvus 向量数据库时启动。Embedding、Rerank、LLM 调用走 SiliconFlow API，无需本地 GPU。
 
-部署联调前应满足：
+## 3. Playwright E2E 测试
 
 ```bash
+cd projects/09-production-rag/frontend
+
+# 安装浏览器
+npx playwright install chromium
+
+# Ubuntu 26.04 需要覆盖平台标识
+PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64 npx playwright install chromium
+sudo env "PATH=$PATH" PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64 npx playwright install-deps chromium
+
+# 运行测试
+npm run test:e2e           # 标准环境
+npm run test:e2e:ubuntu26  # Ubuntu 26.04
+```
+
+如果 Node/npm 通过 nvm 安装，`sudo` 时必须用 `sudo env "PATH=$PATH" ...` 写法，否则 root 的 PATH 中找不到 npx。
+
+## 4. 轻量服务器部署（2 核 2G）
+
+### 4.1 资源评估
+
+在 2 核 2G 云服务器上部署时，资源占用如下：
+
+| 容器 | 内存占用（大约） | 说明 |
+|------|-----------------|------|
+| `rag-milvus` | ~600 MB | Milvus Standalone 模式 |
+| `rag-etcd` | ~100 MB | Milvus 元数据 |
+| `rag-minio` | ~150 MB | Milvus 对象存储 |
+| `rag-api` | ~200 MB | FastAPI + Uvicorn（纯 API 调用，无本地模型） |
+| `rag-web` | ~30 MB | Nginx 静态文件服务 |
+| **合计** | **~1.1 GB** | 剩余 ~900 MB 给系统和突发负载 |
+
+**完全可以部署在 2 核 2G 服务器上。**
+
+### 4.2 Docker 镜像不包含 torch/transformers
+
+这是关键点。Docker 镜像使用 `requirements-api.txt`，仅包含 8 个轻量依赖：
+
+```
+fastapi  openai  pydantic  pymilvus  pymupdf  pypdf  python-multipart  uvicorn
+```
+
+**不会下载 torch（~2.5 GB）、transformers（~2 GB）、sentence-transformers 等大型 ML 框架**。所有 Embedding、Rerank、LLM 调用均通过 SiliconFlow API 网关完成，模型推理发生在 SiliconFlow 云端，不在你的服务器上。
+
+`pyproject.toml` 中的 torch、transformers 等依赖仅用于本地开发环境的 `bge`/`clip` 本地模型后端。Docker Compose 部署时，环境变量默认使用 `siliconflow` 后端，不会触发这些库的 lazy import。
+
+### 4.3 部署步骤
+
+```bash
+# 1. 确保 Docker 和 Docker Compose 可用
 docker --version
 docker compose version
-docker ps
+
+# 2. 进入项目目录
+cd projects/09-production-rag
+
+# 3. 配置环境变量
+cp .env.example .env
+# 编辑 .env，至少填入:
+#   SILICONFLOW_API_KEY=sk-...
+#   RAG_LLM_API_KEY=sk-...
+#   LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash
+
+# 4. 启动所有服务
+docker compose up -d
+
+# 5. 检查服务状态
+docker compose ps
+curl http://localhost:8008/health
+
+# 6. 访问前端
+# http://<服务器IP>:8080
 ```
 
-然后在 `projects/09-production-rag` 下运行：
+### 4.4 轻量服务器优化建议
+
+1. **图片嵌入走 API，无需本地资源**：默认 `RAG_IMAGE_EMBEDDING_BACKEND=siliconflow`，通过 `Qwen/Qwen3-VL-Embedding-8B` 模型 API 生成图片向量，不下载本地模型，不占额外内存和磁盘。如需关闭可设为 `none`
+2. **控制 Milvus 内存**：Docker Compose 中 Milvus 使用 Standalone 模式，如需限制内存可在 `docker-compose.yml` 中为 `milvus` 服务添加 `mem_limit: 800m`
+3. **关闭不必要的 profile**：不要使用 `--profile ingest` 在轻量服务器上跑批量摄入，摄入任务在另一台机器上执行后同步 `object_store/` 即可
+4. **磁盘空间**：`volumes/`（Milvus 数据）和 `object_store/`（文档归档）会随使用增长，建议挂载数据盘或定期清理旧版本
+
+## 5. 生产部署方式对比
+
+| 方式 | 适用场景 | 说明 |
+|------|---------|------|
+| `docker compose up -d` | 单机部署 | 全部服务在一台机器上 |
+| GHCR 镜像 | CI/CD 流水线 | 避免在生产服务器上构建镜像 |
+| `docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d` | 从 GitHub Container Registry 拉取预构建镜像 | 适合不想在服务器上安装 Node/npm 构建前端的场景 |
+
+## 6. 环境诊断常见问题
+
+### Docker Daemon 权限
+
+如果 `docker ps` 报权限错误：
 
 ```bash
-docker compose up -d milvus rag-api rag-web
+sudo usermod -aG docker $USER
+# 重新登录后生效
 ```
 
-## 9. 当前建议
+### WSL 内 Docker
 
-下一步先完成工具链：
+如果使用 Windows Docker Desktop + WSL 集成，确保在 Docker Desktop → Settings → Resources → WSL Integration 中启用了当前发行版。
 
-1. 运行 `scripts/prepare_user_env.sh`，查看缺少哪些工具。
-2. 重新打开 shell。
-3. 自行选择 Node/npm 安装方式。
-4. 自行选择 Docker Desktop WSL 集成或 WSL 内 Docker Engine。
-5. 再次运行 `scripts/prepare_user_env.sh`。
-6. 确认 Node/npm/Docker 可用后，再开始初始化 `frontend/`。
+不建议同时混用 Docker Desktop WSL 集成和 WSL 内独立 Docker Engine。
+
+### uv pip check 报缓存错误
+
+脚本会使用 `/tmp/practice4llm-uv-cache` 避免写用户 home cache，这在受限环境下是正常的。

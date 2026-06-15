@@ -51,7 +51,7 @@ services:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
       RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
-      RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-none}
+      RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "1024"
       RAG_RUNTIME_DIR: /app/projects/09-production-rag/runtime
@@ -103,7 +103,7 @@ services:
       RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
       RAG_TEXT_INPUT: ${RAG_TEXT_INPUT:-}
       RAG_IMAGE_INPUT: ${RAG_IMAGE_INPUT:-}
-      RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-none}
+      RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "1024"
     volumes:
