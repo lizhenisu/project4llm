@@ -257,9 +257,11 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     return () => window.clearInterval(interval);
   }, [announcements, auth.user?.id]);
 
-  // Persist user's explicit source selection to localStorage so refresh doesn't override it
+  // Persist user's explicit source selection to localStorage so refresh doesn't override it.
+  // Only save after user-initiated changes — skip during initial refresh bootstrap.
+  const selectionSaveGateRef = useRef(false);
   useEffect(() => {
-    if (isAuthenticated && activeWorkspaceId && sources.length > 0) {
+    if (isAuthenticated && activeWorkspaceId && sources.length > 0 && selectionSaveGateRef.current) {
       saveCachedSelection(activeWorkspaceId, sources);
     }
   }, [sources, isAuthenticated, activeWorkspaceId]);
@@ -298,6 +300,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       setArtifacts(visibleArtifacts);
       setAnnouncements(announcementRows);
       await loadLatestConversation(nextSettings, visibleRows, isCurrentRefresh, workspaceId);
+      // Allow selection cache saves now that the full bootstrap is complete
+      selectionSaveGateRef.current = true;
     } catch (error) {
       if (!isCurrentRefresh()) return;
       setStatus(error instanceof Error ? error.message : "连接失败");
