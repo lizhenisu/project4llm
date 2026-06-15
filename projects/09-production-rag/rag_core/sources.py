@@ -9,6 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO
+from urllib.parse import quote
 
 from rag_core.config import RagConfig
 from rag_core.database import connect_metadata_db
@@ -598,7 +599,7 @@ def get_source_content(
 
     docs = sorted(docs, key=source_document_sort_key)
     text = "\n\n".join(source_document_text_block(doc) for doc in docs if doc.text.strip()).strip()
-    display_blocks = source_document_display_blocks(docs)
+    display_blocks = source_document_display_blocks(config=config, tenant_id=tenant_id, docs=docs)
     guide_full = load_source_guide_full(
         config.object_store_dir,
         tenant_id=tenant_id,
@@ -788,13 +789,13 @@ def source_document_text_block(doc: SourceDocument) -> str:
 def source_document_display_text(docs: list[SourceDocument]) -> str:
     blocks = [
         block["text"]
-        for block in source_document_display_blocks(docs)
+        for block in source_document_display_blocks(config=None, tenant_id="", docs=docs)
         if block.get("type") == "text" and block.get("text")
     ]
     return "\n\n".join(blocks).strip()
 
 
-def source_document_display_blocks(docs: list[SourceDocument]) -> list[dict[str, str]]:
+def source_document_display_blocks(*, config: RagConfig | None, tenant_id: str, docs: list[SourceDocument]) -> list[dict[str, str]]:
     blocks: list[dict[str, str]] = []
     for doc in docs:
         page_label = localized_page_label(doc)
@@ -812,8 +813,8 @@ def source_document_display_blocks(docs: list[SourceDocument]) -> list[dict[str,
             block_type = str(raw_block.get("type") or "")
             if block_type != "image":
                 continue
-            image_url = str(raw_block.get("url") or "")
-            if not image_url.startswith("data:image/"):
+            image_url = image_block_url(config=config, tenant_id=tenant_id or doc.tenant_id, block=raw_block)
+            if not image_url:
                 continue
             blocks.append(
                 {
@@ -824,6 +825,49 @@ def source_document_display_blocks(docs: list[SourceDocument]) -> list[dict[str,
                 }
             )
     return blocks
+
+
+def resolve_metadata_display_block_urls(*, config: RagConfig, tenant_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    blocks = metadata.get("display_blocks")
+    if not isinstance(blocks, list):
+        return metadata
+    resolved_blocks: list[dict[str, Any]] = []
+    changed = False
+    for raw_block in blocks:
+        if not isinstance(raw_block, dict):
+            resolved_blocks.append(raw_block)
+            continue
+        block = dict(raw_block)
+        if block.get("type") == "image":
+            image_url = image_block_url(config=config, tenant_id=tenant_id, block=block)
+            if image_url:
+                block["url"] = image_url
+                changed = True
+        resolved_blocks.append(block)
+    if not changed:
+        return metadata
+    return {**metadata, "display_blocks": resolved_blocks}
+
+
+def image_block_url(*, config: RagConfig | None, tenant_id: str, block: dict[str, Any]) -> str:
+    existing_url = str(block.get("url") or "")
+    if existing_url.startswith("data:image/") or existing_url.startswith("http://") or existing_url.startswith("https://"):
+        return existing_url
+    if config is None:
+        return ""
+    raw_path = str(block.get("path") or block.get("image_uri") or "").strip()
+    if not raw_path:
+        return ""
+    try:
+        image_path = Path(raw_path).expanduser().resolve()
+        object_store_dir = config.object_store_dir.expanduser().resolve()
+        relative_path = image_path.relative_to(object_store_dir)
+    except (OSError, ValueError):
+        return ""
+    if not image_path.is_file():
+        return ""
+    encoded_path = quote(relative_path.as_posix(), safe="/")
+    return f"/source-assets/{encoded_path}?tenant_id={quote(tenant_id)}"
 
 
 def localized_page_label(doc: SourceDocument) -> str:

@@ -81,8 +81,31 @@ def make_chunk(doc: SourceDocument, chunk_index: int, body: str) -> Chunk:
         text=chunk_text,
         language=doc.language,
         acl_groups=doc.acl_groups,
-        metadata=doc.metadata,
+        metadata=chunk_metadata(doc.metadata),
     )
+
+
+def chunk_metadata(metadata: dict) -> dict:
+    cleaned = {key: value for key, value in metadata.items() if key != "display_text"}
+    blocks = cleaned.get("display_blocks")
+    if isinstance(blocks, list):
+        compact_blocks = [compact_display_block(block) for block in blocks]
+        cleaned["display_blocks"] = [block for block in compact_blocks if block]
+    return cleaned
+
+
+def compact_display_block(block: object) -> dict:
+    if not isinstance(block, dict) or block.get("type") != "image":
+        return {}
+    compact = {
+        key: block[key]
+        for key in ("type", "title", "path", "image_uri", "media_type")
+        if isinstance(block.get(key), str) and str(block.get(key)).strip()
+    }
+    url = block.get("url")
+    if isinstance(url, str) and url.strip() and not url.startswith("data:image/"):
+        compact["url"] = url
+    return compact
 
 
 def split_structural_blocks(text: str) -> list[str]:

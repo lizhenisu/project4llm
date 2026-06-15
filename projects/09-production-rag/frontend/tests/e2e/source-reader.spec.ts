@@ -800,7 +800,7 @@ test("opens parsed source content from a document-level source row", async ({ pa
             type: "image",
             title: "Image 1",
             page: "Page 1",
-            url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+            url: "/source-assets/uploads/team_a/regression/paper.assets/page-1-image-1.png?tenant_id=team_a",
           },
         ],
       },
@@ -879,7 +879,7 @@ test("sends an attached chat image as a multimodal query", async ({ page }) => {
                 {
                   type: "image",
                   title: "Figure 1",
-                  url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+                  url: "/source-assets/uploads/team_a/regression/paper.assets/page-1-image-1.png?tenant_id=team_a",
                 },
               ],
             },

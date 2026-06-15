@@ -6,7 +6,12 @@ from pathlib import Path
 
 from rag_core.config import RagConfig, load_config
 from rag_core.object_store import archive_source_documents
-from rag_core.sources import dedupe_source_documents, next_source_doc_version, summarize_ingested_sources
+from rag_core.sources import (
+    dedupe_source_documents,
+    next_source_doc_version,
+    source_document_display_blocks,
+    summarize_ingested_sources,
+)
 from rag_core.text_utils import chunk_document
 from rag_core.types import SourceDocument
 
@@ -52,6 +57,26 @@ def main() -> None:
             for doc in docs
         ]
         assert next_source_doc_version(config, next_docs) == 2
+        image_path = config.object_store_dir / "uploads" / "team_a" / "upload-1" / "paper.assets" / "page-1-image-1.png"
+        image_path.parent.mkdir(parents=True)
+        image_path.write_bytes(b"fake-png")
+        image_doc = replace(
+            docs[0],
+            metadata={
+                **docs[0].metadata,
+                "display_blocks": [
+                    {
+                        "type": "image",
+                        "title": "Figure 1",
+                        "path": str(image_path),
+                        "media_type": "image/png",
+                    }
+                ],
+            },
+        )
+        blocks = source_document_display_blocks(config=config, tenant_id="team_a", docs=[image_doc])
+        assert blocks[-1]["url"].startswith("/source-assets/uploads/team_a/upload-1/paper.assets/page-1-image-1.png?")
+        assert "data:image/" not in str(blocks[-1])
 
     print("source document summary smoke passed")
 

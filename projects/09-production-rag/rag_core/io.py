@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import hashlib
 import json
 import os
 import re
@@ -512,13 +513,21 @@ def extract_pdf_pages_with_pymupdf(path: Path) -> list[PdfPage]:
             retrieval_parts = list(text_parts)
             display_blocks: list[dict[str, str]] = []
             for image_index, image in enumerate(page.get_images(full=True), start=1):
-                image_data_url = pdf_image_data_url(document=document, image=image)
-                if image_data_url:
+                image_asset = save_pdf_image_asset(
+                    document=document,
+                    image=image,
+                    pdf_path=path,
+                    page_no=page_index,
+                    image_index=image_index,
+                )
+                if image_asset:
                     display_blocks.append(
                         {
                             "type": "image",
                             "title": f"Image {image_index}",
-                            "url": image_data_url,
+                            "path": image_asset["path"],
+                            "image_uri": image_asset["path"],
+                            "media_type": image_asset["media_type"],
                         }
                     )
                 image_note = f"Image {image_index}: embedded image on PDF page {page_index}."
@@ -670,6 +679,31 @@ class PdfImageCaptioner:
         return _compact_whitespace(str(content))
 
 
+def save_pdf_image_asset(*, document, image, pdf_path: Path, page_no: int, image_index: int) -> dict[str, str]:
+    xref = image[0]
+    try:
+        payload = document.extract_image(xref)
+    except Exception:
+        return {}
+    image_bytes = payload.get("image")
+    extension = payload.get("ext") or "png"
+    if not image_bytes:
+        return {}
+    normalized_extension = "jpg" if extension.lower() == "jpeg" else extension.lower()
+    if not re.fullmatch(r"[a-z0-9]+", normalized_extension):
+        normalized_extension = "png"
+    digest = hashlib.sha256(image_bytes).hexdigest()[:16]
+    assets_dir = pdf_path.parent / f"{pdf_path.stem}.assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    image_path = assets_dir / f"page-{page_no}-image-{image_index}-{digest}.{normalized_extension}"
+    if not image_path.exists():
+        image_path.write_bytes(image_bytes)
+    return {
+        "path": str(image_path),
+        "media_type": image_media_type(normalized_extension),
+    }
+
+
 def pdf_image_data_url(*, document, image) -> str:
     xref = image[0]
     try:
@@ -684,9 +718,14 @@ def pdf_image_data_url(*, document, image) -> str:
 
 
 def image_data_url_from_parts(*, extension: str, image_bytes: bytes) -> str:
-    media_type = f"image/{'jpeg' if extension.lower() == 'jpg' else extension.lower()}"
+    media_type = image_media_type(extension)
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{media_type};base64,{encoded}"
+
+
+def image_media_type(extension: str) -> str:
+    clean_extension = extension.lower().lstrip(".")
+    return f"image/{'jpeg' if clean_extension in {'jpg', 'jpeg'} else clean_extension}"
 
 
 def detect_text_language(text: str) -> str:

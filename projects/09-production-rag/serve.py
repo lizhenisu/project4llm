@@ -3,10 +3,12 @@ from __future__ import annotations
 import time
 import uuid
 import base64
+import mimetypes
 from dataclasses import replace
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from answer import answer_query
@@ -46,6 +48,7 @@ from rag_core.sources import (
     ingest_uploaded_path,
     list_sources,
     rename_source,
+    resolve_metadata_display_block_urls,
     save_uploaded_file,
 )
 from rag_core.user_auth import (
@@ -606,6 +609,40 @@ def create_app():
             raise HTTPException(status_code=404, detail="Source not found")
         return SourceContentResponse(**content.__dict__)
 
+    @app.get("/source-assets/{asset_path:path}")
+    def source_asset(
+        asset_path: str,
+        tenant_id: str = "team_a",
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> FileResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=tenant_id,
+            acl_groups=[],
+        )
+        asset_parts = asset_path.split("/")
+        requested_tenant = asset_parts[1] if len(asset_parts) > 2 and asset_parts[0] == "uploads" else ""
+        if requested_tenant and requested_tenant != auth_context.tenant_id:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        try:
+            object_store_dir = config.object_store_dir.expanduser().resolve()
+            path = (object_store_dir / asset_path).expanduser().resolve()
+            path.relative_to(object_store_dir)
+        except (OSError, ValueError):
+            raise HTTPException(status_code=404, detail="Asset not found") from None
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Asset not found")
+        media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if not media_type.startswith("image/"):
+            raise HTTPException(status_code=404, detail="Asset not found")
+        return FileResponse(path, media_type=media_type)
+
     @app.get("/sources/{doc_id:path}", response_model=SourceResponse)
     def source_detail(
         doc_id: str,
@@ -709,7 +746,7 @@ def create_app():
         result = resolve_search_result(request, auth_context)
         response = SearchResponse(
             request_id=result.request_id,
-            hits=[hit_to_response(hit) for hit in result.hits],
+            hits=[hit_to_response(hit, config=config, tenant_id=auth_context.tenant_id) for hit in result.hits],
             trace=result.trace.__dict__,
         )
         append_event(
@@ -751,7 +788,7 @@ def create_app():
         response = QueryResponse(
             request_id=result.request_id,
             answer=result.answer,
-            citations=[hit_to_response(hit) for hit in result.hits],
+            citations=[hit_to_response(hit, config=config, tenant_id=auth_context.tenant_id) for hit in result.hits],
             trace=result.trace.__dict__,
         )
         append_event(
@@ -1318,7 +1355,10 @@ def resolve_answer_result(request: QueryRequest, auth_context):
     )
 
 
-def hit_to_response(hit) -> HitResponse:
+def hit_to_response(hit, *, config=None, tenant_id: str = "") -> HitResponse:
+    metadata = hit.metadata
+    if config is not None and tenant_id:
+        metadata = resolve_metadata_display_block_urls(config=config, tenant_id=tenant_id, metadata=metadata)
     return HitResponse(
         doc_id=hit.doc_id,
         title=hit.title,
@@ -1328,7 +1368,7 @@ def hit_to_response(hit) -> HitResponse:
         score=hit.score,
         rerank_score=hit.rerank_score,
         acl_groups=hit.acl_groups,
-        metadata=hit.metadata,
+        metadata=metadata,
         text=hit.text,
         text_preview=hit.text[:360],
     )
