@@ -447,6 +447,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       content: query,
       status: "done",
       created_at: Date.now(),
+      imageDataUrl: imageDataUrl || null,
     };
     const pending: ChatMessage = {
       id: crypto.randomUUID(),
@@ -537,6 +538,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
           .slice(0, userIndex)
           .map((message) => `${message.role}: ${message.content}`)
           .slice(-8),
+        imageDataUrl: userMessage.imageDataUrl,
       });
       if (!isCurrentSession()) return;
       const nextMessages: ChatMessage[] = conversation.messages.map((item, index) =>

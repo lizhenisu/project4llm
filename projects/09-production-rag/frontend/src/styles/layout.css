@@ -874,6 +874,24 @@ button:not(:disabled):active {
   color: white;
 }
 
+.user-message .message-image-thumb {
+  display: block;
+  width: min(220px, 100%);
+  margin: 0 0 10px auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 42%);
+  border-radius: var(--radius);
+  background: rgb(255 255 255 / 12%);
+}
+
+.user-message .message-image-thumb img {
+  display: block;
+  width: 100%;
+  max-height: 160px;
+  object-fit: cover;
+}
+
 .assistant-message {
   justify-self: start;
   width: min(100%, 920px);
@@ -947,14 +965,21 @@ button:not(:disabled):active {
   margin: 0;
 }
 
-.citation-images img {
+.citation-image-thumb {
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: white;
+}
+
+.citation-image-thumb img {
   display: block;
   width: 100%;
   max-height: 140px;
   object-fit: contain;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: white;
 }
 
 .citation-images figcaption {
@@ -999,6 +1024,31 @@ button:not(:disabled):active {
 .chat-image-attachment button {
   width: 26px;
   height: 26px;
+}
+
+.image-preview-backdrop {
+  z-index: 140;
+}
+
+.image-preview-dialog {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: min(1100px, 94vw);
+  max-height: 92vh;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 44px 16px 16px;
+}
+
+.image-preview-dialog img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(92vh - 70px);
+  object-fit: contain;
+  border-radius: var(--radius);
 }
 
 .chat-input:focus-within {

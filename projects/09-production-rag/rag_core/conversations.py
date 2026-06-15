@@ -22,6 +22,7 @@ class ConversationMessage:
     status: Literal["sending", "done", "failed"] = "done"
     request_id: str | None = None
     citations: list[dict[str, Any]] = field(default_factory=list)
+    image_data_url: str | None = None
     created_at: int | None = None
     feedback_rating: int | None = None
 
@@ -74,7 +75,7 @@ def load_conversation(
         else:
             message_rows = conn.execute(
                 """
-                SELECT id, role, content, status, request_id, citations, created_at, feedback_rating
+                SELECT id, role, content, status, request_id, citations, image_data_url, created_at, feedback_rating
                 FROM messages
                 WHERE conversation_id = ?
                 ORDER BY created_at ASC
@@ -98,6 +99,7 @@ def load_conversation(
                 status=message["status"] or "done",
                 request_id=message["request_id"],
                 citations=json.loads(message["citations"] or "[]"),
+                image_data_url=message["image_data_url"],
                 created_at=int(message["created_at"] or now_ms()),
                 feedback_rating=message["feedback_rating"],
             )
@@ -177,8 +179,8 @@ def save_conversation_row(config: RagConfig, conversation: Conversation) -> None
         for index, message in enumerate(conversation.messages):
             conn.execute(
                 """
-                INSERT INTO messages(id, conversation_id, role, content, status, request_id, citations, created_at, feedback_rating)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages(id, conversation_id, role, content, status, request_id, citations, image_data_url, created_at, feedback_rating)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message.id,
@@ -188,6 +190,7 @@ def save_conversation_row(config: RagConfig, conversation: Conversation) -> None
                     message.status,
                     message.request_id,
                     json.dumps(message.citations, ensure_ascii=False),
+                    message.image_data_url,
                     message.created_at or conversation.created_at + index,
                     message.feedback_rating,
                 ),
@@ -247,6 +250,7 @@ def conversation_from_row(row: dict[str, Any]) -> Conversation:
                 status=message.get("status") or "done",
                 request_id=message.get("request_id"),
                 citations=list(message.get("citations") or []),
+                image_data_url=message.get("image_data_url"),
                 created_at=message.get("created_at"),
                 feedback_rating=message.get("feedback_rating"),
             )

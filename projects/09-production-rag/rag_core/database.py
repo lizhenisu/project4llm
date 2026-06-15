@@ -103,6 +103,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL,
             request_id TEXT,
             citations TEXT NOT NULL DEFAULT '[]',
+            image_data_url TEXT,
             created_at INTEGER NOT NULL,
             FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         );
@@ -156,6 +157,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     )
     ensure_column(conn, table="messages", column="request_id", definition="TEXT")
     ensure_column(conn, table="messages", column="feedback_rating", definition="INTEGER")
+    ensure_column(conn, table="messages", column="image_data_url", definition="TEXT")
     ensure_column(conn, table="users", column="avatar_url", definition="TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, table="users", column="status", definition="TEXT NOT NULL DEFAULT 'active'")
 

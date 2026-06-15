@@ -1,6 +1,9 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
+const ONE_PIXEL_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem(
@@ -46,10 +49,7 @@ async function mockSourceAssetRoute(page: Page) {
   await page.route("**/api/source-assets/**", async (route) => {
     await route.fulfill({
       contentType: "image/png",
-      body: Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
-        "base64",
-      ),
+      body: Buffer.from(ONE_PIXEL_PNG_BASE64, "base64"),
     });
   });
 }
@@ -913,18 +913,31 @@ test("sends an attached chat image as a multimodal query", async ({ page }) => {
   await page.locator('.chat-input input[type="file"]').setInputFiles({
     name: "query.png",
     mimeType: "image/png",
-    buffer: Buffer.from("fake image"),
+    buffer: Buffer.from(ONE_PIXEL_PNG_BASE64, "base64"),
   });
   await expect(page.getByRole("img", { name: "待发送图片" })).toBeVisible();
   await page.getByPlaceholder("提问或创作内容").fill("这张图和论文中哪部分相关？");
   await page.getByRole("button", { name: "发送消息" }).click();
 
+  const sentImage = page.getByRole("img", { name: "发送的图片" });
+  await expect(sentImage).toBeVisible();
+  await expect.poll(async () => sentImage.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "查看发送的图片" }).click();
+  const sentImageDialog = page.getByRole("dialog", { name: "发送的图片" });
+  await expect(sentImageDialog).toBeVisible();
+  await expect(sentImageDialog.getByRole("img", { name: "发送的图片" })).toBeVisible();
+  await sentImageDialog.getByRole("button", { name: "关闭图片预览" }).click();
+
   await expect(page.getByText("已根据图片检索到相关论文图示。")).toBeVisible();
-  await page.locator(".citations details").click();
   const citationImage = page.getByRole("img", { name: "Figure 1" });
   await expect(citationImage).toBeVisible();
   await expect(citationImage).toHaveAttribute("src", /\/api\/source-assets\/uploads\/team_a\/regression\/paper\.assets\/page-1-image-1\.png/);
   await expect.poll(async () => citationImage.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "查看Figure 1" }).click();
+  const citationImageDialog = page.getByRole("dialog", { name: "Figure 1" });
+  await expect(citationImageDialog).toBeVisible();
+  await expect(citationImageDialog.getByRole("img", { name: "Figure 1" })).toBeVisible();
+  await citationImageDialog.getByRole("button", { name: "关闭图片预览" }).click();
   expect(queryPayload.query_mode).toBe("multimodal");
   expect(queryPayload.image_data_url).toMatch(/^data:image\/png;base64,/);
   expect(queryPayload.doc_ids).toEqual(["paper/page-1"]);

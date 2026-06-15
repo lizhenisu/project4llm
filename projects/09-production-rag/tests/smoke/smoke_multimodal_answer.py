@@ -4,7 +4,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from answer_multimodal import answer_multimodal_query
+from answer_multimodal import answer_multimodal_query, multimodal_answer_query
 from rag_core.config import load_config
 from rag_core.embeddings import build_embedding_model, build_image_embedding_model
 from rag_core.milvus_store import chunk_to_entity, connect, ensure_collection, upsert_entities
@@ -29,6 +29,10 @@ def main() -> None:
 
 
 def run_smoke() -> None:
+    prompt_query = multimodal_answer_query("找出相似的图片")
+    assert "找出相似的图片" in prompt_query
+    assert "不要说你无法查看图片" in prompt_query
+
     config = load_config()
     client = connect(config)
     ensure_collection(client, config, reset=True)

@@ -235,6 +235,7 @@ class ConversationMessageRequest(BaseModel):
     status: str = Field(default="done", pattern="^(sending|done|failed)$")
     request_id: str | None = None
     citations: list[HitResponse] = Field(default_factory=list)
+    image_data_url: str | None = None
     created_at: int | None = None
     feedback_rating: int | None = Field(default=None, ge=-1, le=1)
 
@@ -1331,6 +1332,7 @@ def resolve_answer_result(request: QueryRequest, auth_context):
             source_types=request.source_types or None,
             history=request.history,
             request_id=request.request_id,
+            answer_query=request.query,
         )
     return answer_query(
         request.query,
@@ -1407,6 +1409,7 @@ def message_request_to_domain(message: ConversationMessageRequest) -> Conversati
         status=message.status,  # type: ignore[arg-type]
         request_id=message.request_id,
         citations=[citation.model_dump() for citation in message.citations],
+        image_data_url=message.image_data_url,
         created_at=message.created_at,
         feedback_rating=message.feedback_rating,
     )
@@ -1425,6 +1428,7 @@ def conversation_to_response(conversation) -> ConversationResponse:
                 status=message.status,
                 request_id=message.request_id,
                 citations=[HitResponse(**citation) for citation in message.citations],
+                image_data_url=message.image_data_url,
                 created_at=message.created_at,
                 feedback_rating=message.feedback_rating,
             )

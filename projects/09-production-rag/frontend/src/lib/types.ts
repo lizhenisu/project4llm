@@ -57,6 +57,7 @@ export type ChatMessage = {
   content: string;
   requestId?: string;
   citations?: Citation[];
+  imageDataUrl?: string | null;
   status?: "sending" | "done" | "failed";
   created_at?: number | null;
   feedbackRating?: 1 | -1 | null;

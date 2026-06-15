@@ -35,7 +35,13 @@ type RequestOptions = RequestInit & {
 };
 
 type ApiConversation = Omit<Conversation, "messages"> & {
-  messages: Array<Omit<ChatMessage, "requestId" | "feedbackRating"> & { request_id?: string | null; feedback_rating?: 1 | -1 | null }>;
+  messages: Array<
+    Omit<ChatMessage, "requestId" | "feedbackRating" | "imageDataUrl"> & {
+      request_id?: string | null;
+      feedback_rating?: 1 | -1 | null;
+      image_data_url?: string | null;
+    }
+  >;
 };
 
 async function request<T>(path: string, options: RequestOptions): Promise<T> {
@@ -233,6 +239,7 @@ export function saveConversation(
         status: message.status || "done",
         request_id: message.requestId || null,
         citations: message.citations || [],
+        image_data_url: message.imageDataUrl || null,
         created_at: message.created_at || null,
         feedback_rating: message.feedbackRating ?? null,
       })),
@@ -255,6 +262,7 @@ function normalizeConversation(settings: Settings, conversation: ApiConversation
       ...message,
       requestId: message.request_id || undefined,
       citations: message.citations?.map((citation) => normalizeCitationAssets(settings, citation)),
+      imageDataUrl: message.image_data_url ?? null,
       feedbackRating: message.feedback_rating ?? null,
     })),
   };

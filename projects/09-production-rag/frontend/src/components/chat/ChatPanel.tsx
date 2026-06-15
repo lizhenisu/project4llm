@@ -34,6 +34,7 @@ export function ChatPanel({
 }: Props) {
   const [draft, setDraft] = useState("");
   const [attachedImage, setAttachedImage] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [inputHeight, setInputHeight] = useState(46);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -137,9 +138,7 @@ export function ChatPanel({
           <div className="message-list">
             {messages.map((message) =>
               message.role === "user" ? (
-                <div className="user-message" key={message.id}>
-                  {message.content}
-                </div>
+                <UserMessage key={message.id} message={message} onPreviewImage={setPreviewImage} />
               ) : (
                 <AssistantMessage
                   key={message.id}
@@ -147,6 +146,7 @@ export function ChatPanel({
                   typing={message.id === typingMessageId && message.status === "done"}
                   onTypingComplete={onTypingComplete}
                   onFeedback={onFeedback}
+                  onPreviewImage={setPreviewImage}
                 />
               ),
             )}
@@ -199,7 +199,32 @@ export function ChatPanel({
           <ArrowRight size={22} />
         </button>
       </div>
+      {previewImage ? <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} /> : null}
     </section>
+  );
+}
+
+function UserMessage({
+  message,
+  onPreviewImage,
+}: {
+  message: ChatMessage;
+  onPreviewImage: (image: { url: string; title: string }) => void;
+}) {
+  return (
+    <div className="user-message">
+      {message.imageDataUrl ? (
+        <button
+          className="message-image-thumb"
+          type="button"
+          aria-label="查看发送的图片"
+          onClick={() => onPreviewImage({ url: message.imageDataUrl!, title: "发送的图片" })}
+        >
+          <img src={message.imageDataUrl} alt="发送的图片" />
+        </button>
+      ) : null}
+      <div>{message.content}</div>
+    </div>
   );
 }
 
@@ -232,11 +257,13 @@ function AssistantMessage({
   typing,
   onTypingComplete,
   onFeedback,
+  onPreviewImage,
 }: {
   message: ChatMessage;
   typing: boolean;
   onTypingComplete: () => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
+  onPreviewImage: (image: { url: string; title: string }) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const feedbackRating = message.feedbackRating ?? null;
@@ -263,7 +290,7 @@ function AssistantMessage({
     <article className={className}>
       <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{text}</ReactMarkdown>
       {typing && !done ? <span className="type-caret" aria-hidden="true" /> : null}
-      {showControls && message.citations?.length ? <Citations message={message} /> : null}
+      {showControls && message.citations?.length ? <Citations message={message} onPreviewImage={onPreviewImage} /> : null}
       {showControls ? (
         <div className="message-actions">
           <button type="button" onClick={() => {
@@ -325,13 +352,19 @@ function useTypewriter(content: string, enabled: boolean) {
   };
 }
 
-function Citations({ message }: { message: ChatMessage }) {
+function Citations({
+  message,
+  onPreviewImage,
+}: {
+  message: ChatMessage;
+  onPreviewImage: (image: { url: string; title: string }) => void;
+}) {
   return (
     <div className="citations">
       {message.citations?.map((citation, index) => {
         const images = citationImages(citation);
         return (
-          <details key={`${citation.doc_id}-${citation.chunk_index}`}>
+          <details key={`${citation.doc_id}-${citation.chunk_index}`} open={images.length > 0}>
             <summary>
               {index + 1}. {formatCitationSummary(citation)}
             </summary>
@@ -340,7 +373,14 @@ function Citations({ message }: { message: ChatMessage }) {
               <div className="citation-images">
                 {images.map((image) => (
                   <figure key={image.url}>
-                    <img src={image.url} alt={image.title || "引用图片"} />
+                    <button
+                      className="citation-image-thumb"
+                      type="button"
+                      aria-label={`查看${image.title || "引用图片"}`}
+                      onClick={() => onPreviewImage({ url: image.url, title: image.title || "引用图片" })}
+                    >
+                      <img src={image.url} alt={image.title || "引用图片"} />
+                    </button>
                     {image.title ? <figcaption>{image.title}</figcaption> : null}
                   </figure>
                 ))}
@@ -349,6 +389,25 @@ function Citations({ message }: { message: ChatMessage }) {
           </details>
         );
       })}
+    </div>
+  );
+}
+
+function ImagePreview({ image, onClose }: { image: { url: string; title: string }; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop image-preview-backdrop" role="presentation" onMouseDown={onClose}>
+      <div
+        className="image-preview-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={image.title}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <button className="close-button" type="button" aria-label="关闭图片预览" onClick={onClose}>
+          <X size={18} />
+        </button>
+        <img src={image.url} alt={image.title} />
+      </div>
     </div>
   );
 }

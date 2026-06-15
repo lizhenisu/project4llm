@@ -32,6 +32,7 @@ def answer_multimodal_query(
     source_types: list[str] | None = None,
     history: list[str] | None = None,
     request_id: str | None = None,
+    answer_query: str | None = None,
 ) -> MultimodalAnswerResult:
     retrieval = retrieve_multimodal(
         query,
@@ -46,7 +47,11 @@ def answer_multimodal_query(
         request_id=request_id,
     )
     config = load_config()
-    generation = generate_answer(config, retrieval.trace.rewritten_query, retrieval.hits)
+    generation = generate_answer(
+        config,
+        multimodal_answer_query(answer_query or retrieval.trace.rewritten_query),
+        retrieval.hits,
+    )
     return MultimodalAnswerResult(
         request_id=retrieval.request_id,
         answer=generation.answer,
@@ -55,6 +60,15 @@ def answer_multimodal_query(
         reranked=retrieval.reranked,
         trace=retrieval.trace,
         generation=generation,
+    )
+
+
+def multimodal_answer_query(query: str) -> str:
+    return (
+        "这是一次图片/多模态检索问答。用户上传的图片已经被系统用于向量检索，"
+        "下面的证据是与该图片或问题最相关的相似图片/文档片段。"
+        "请基于证据回答用户，不要说你无法查看图片；如果证据不足，就说明相似图片证据不足。"
+        f"\n\n用户问题: {query}"
     )
 
 
