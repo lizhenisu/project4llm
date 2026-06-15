@@ -75,7 +75,7 @@ def main() -> None:
     assert rag_api_env["MILVUS_URI"] == "http://milvus:19530"
     assert rag_api_env["RAG_OBJECT_STORE_DIR"] == EXPECTED_OBJECT_STORE_PATH
     assert rag_api_env["RAG_RUNTIME_DIR"] == EXPECTED_RUNTIME_PATH
-    assert "../../.env" in rag_api.get("env_file", [])
+    assert "./.env" in rag_api.get("env_file", [])
     assert rag_api_env["RAG_QUERY_REWRITE_BACKEND"] == "${RAG_QUERY_REWRITE_BACKEND:-llm}"
     assert rag_api_env["RAG_QUERY_REWRITE_HISTORY_TURNS"] == "6"
     assert rag_api_env["RAG_QUERY_REWRITE_MAX_TOKENS"] == "256"
@@ -91,7 +91,7 @@ def main() -> None:
     rag_ingest_env = rag_ingest["environment"]
     assert rag_ingest_env["MILVUS_URI"] == "http://milvus:19530"
     assert rag_ingest_env["RAG_OBJECT_STORE_DIR"] == EXPECTED_OBJECT_STORE_PATH
-    assert "../../.env" in rag_ingest.get("env_file", [])
+    assert "./.env" in rag_ingest.get("env_file", [])
     assert "RAG_TEXT_INPUT" in rag_ingest_env
     assert "RAG_IMAGE_INPUT" in rag_ingest_env
     assert rag_ingest_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-none}"

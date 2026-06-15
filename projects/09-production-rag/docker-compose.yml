@@ -46,7 +46,7 @@ services:
       dockerfile: projects/09-production-rag/Dockerfile
     container_name: rag-api
     env_file:
-      - ../../.env
+      - ./.env
     environment:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
@@ -93,7 +93,7 @@ services:
     profiles: ["ingest"]
     command: ["./scripts/start_ingest.sh"]
     env_file:
-      - ../../.env
+      - ./.env
     environment:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1

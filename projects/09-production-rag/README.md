@@ -18,9 +18,9 @@
 ### 开发环境（热重载）
 
 ```bash
-# 1. 配置环境（在仓库根目录创建 .env）
-cp .env.example ../../.env
-# 编辑 ../../.env，填入 LLM API Key 等配置
+# 1. 配置环境
+cp .env.example .env
+# 编辑 .env，填入 LLM API Key 等配置
 # 见下方"LLM 配置"节了解必需变量。
 
 # 2. 启动基础设施（Milvus 向量数据库等）
@@ -46,11 +46,10 @@ cd frontend && npm install && npm run dev -- --host 0.0.0.0
 
 ```bash
 # 1. 配置环境变量
-# docker-compose.yml 通过 env_file: ../../.env 在容器运行时注入变量，
-# 因此 .env 文件必须放在仓库根目录（即 ../../.env），而不是本项目目录。
-# 注意: .env.example 在本项目目录下，所以源路径是 ./.env.example。
-cp .env.example ../../.env
-# 编辑 ../../.env 至少填入 SILICONFLOW_API_KEY 和 NEW_API_KEY。
+# docker-compose.yml 通过 env_file: ./.env 在容器运行时注入变量，
+# 因此 .env 文件必须和 docker-compose.yml 放在同一目录。
+cp .env.example .env
+# 编辑 .env 至少填入 SILICONFLOW_API_KEY 和 NEW_API_KEY。
 # 另外，务必清空 RAG_MILVUS_URI（置为 RAG_MILVUS_URI=），
 # 否则该变量会覆盖 docker-compose 中设置的 MILVUS_URI，
 # 导致容器试图打开本地 Milvus Lite 文件而非连接远程 Milvus 服务。
@@ -81,7 +80,7 @@ docker compose --profile ingest up rag-ingest
 > 在 **docker-compose 解析期**从 shell 或同目录 `.env` 进行替换，
 > 而 `env_file` 在**容器运行时**注入变量。
 > 因此，不要依赖 `environment` 段做跨文件的变量重命名——相关变量（`NEW_API_URL`，
-> `NEW_API_KEY`，`LLM_MODEL`）必须直接写在 `../../.env` 中，由 `env_file` 带入容器。
+> `NEW_API_KEY`，`LLM_MODEL`）必须直接写在 `.env` 中，由 `env_file` 带入容器。
 
 ## 项目结构
 
@@ -206,7 +205,7 @@ IMAGE_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-8B
 ```
 > 💡 `RAG_LLM_BASE_URL`、`RAG_LLM_API_KEY` 和 `SILICONFLOW_API_KEY` 是项目内部
 > 变量名，用于其他脚本和开发环境。Docker 部署时 `NEW_API_URL` 和 `NEW_API_KEY`
-> 为最终生效的变量名，必须显式设置在 `../../.env` 中。
+> 为最终生效的变量名，必须显式设置在 `.env` 中。
 
 也可切换为本地模型（需 GPU）：
 - `RAG_EMBEDDING_BACKEND=bge` → 本地加载 BGE-M3
