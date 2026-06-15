@@ -18,9 +18,10 @@
 ### 开发环境（热重载）
 
 ```bash
-# 1. 配置环境
-cp .env.example .env
-# 编辑 .env，填入 LLM API Key 等配置
+# 1. 配置环境（在仓库根目录创建 .env）
+cp .env.example ../../.env
+# 编辑 ../../.env，填入 LLM API Key 等配置
+# 见下方"LLM 配置"节了解必需变量。
 
 # 2. 启动基础设施（Milvus 向量数据库等）
 docker compose up -d milvus
@@ -44,10 +45,21 @@ cd frontend && npm install && npm run dev -- --host 0.0.0.0
 ### 生产环境（Docker Compose）
 
 ```bash
-# 1. 完整部署
+# 1. 配置环境变量
+# docker-compose.yml 通过 env_file: ../../.env 在容器运行时注入变量。
+# 因此 .env 文件必须放在仓库根目录（即 ../../.env），而不是本项目目录。
+cp ../../.env.example ../../.env
+# 编辑 ../../.env，至少填入 SILICONFLOW_API_KEY 和 NEW_API_KEY
+# 见下方"LLM 配置"节了解完整变量列表。
+
+# 2. 完整部署
 docker compose up -d
 
-# 2. 一键配置 HTTPS（自动获取 Let's Encrypt 证书）
+# 3. 验证部署
+curl http://localhost:8008/health
+# 应返回 {"status":"ok"}
+
+# 4. 一键配置 HTTPS（自动获取 Let's Encrypt 证书）
 sudo bash scripts/setup_caddy.sh your-domain.com
 
 # 访问 https://your-domain.com
@@ -55,11 +67,17 @@ sudo bash scripts/setup_caddy.sh your-domain.com
 # API:  http://localhost:8008
 # Milvus: localhost:19530
 
-# 可选：批量摄入
+# 5. （可选）批量摄入
 RAG_TEXT_INPUT="/data/docs" \
 RAG_IMAGE_INPUT="/data/images" \
 docker compose --profile ingest up rag-ingest
 ```
+
+> ⚠️ **关于环境变量注入**：`docker-compose.yml` 的 `environment` 段使用 `${}` 语法
+> 在 **docker-compose 解析期**从 shell 或同目录 `.env` 进行替换，
+> 而 `env_file` 在**容器运行时**注入变量。
+> 因此，不要依赖 `environment` 段做跨文件的变量重命名——相关变量（`NEW_API_URL`，
+> `NEW_API_KEY`，`LLM_MODEL`）必须直接写在 `../../.env` 中，由 `env_file` 带入容器。
 
 ## 项目结构
 
@@ -145,13 +163,30 @@ docker compose --profile ingest up rag-ingest
 
 ## LLM 配置
 
-本项目默认使用 SiliconFlow API 网关，所有 Embedding、Rerank、Chat 调用均通过其 OpenAI 兼容端点：
+本项目默认使用 SiliconFlow API 网关，所有 Embedding、Rerank、Chat 调用均通过其
+OpenAI 兼容端点。无论开发环境还是 Docker 部署，都必须配置以下变量。
+
+### 必需变量（直接影响 LLM 能否生成回答）
 
 ```bash
-# .env 关键配置
+# .env 关键配置 — 这些变量由 env_file 注入容器运行时
+NEW_API_URL=https://api.siliconflow.cn
+NEW_API_KEY=sk-your-key
+LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash
+```
+
+如果你通过 `SILICONFLOW_API_KEY` 配置密钥，也需要同时设置 `NEW_API_KEY`：
+```bash
+SILICONFLOW_API_KEY=sk-your-key
+NEW_API_KEY=sk-your-key
+```
+
+### 可选变量（使用默认值即可）
+
+```bash
+# API 基础地址（默认即为 SiliconFlow）
 RAG_LLM_BASE_URL=https://api.siliconflow.cn
 RAG_LLM_API_KEY=sk-your-key
-LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash
 
 # 嵌入模型
 RAG_EMBEDDING_BACKEND=siliconflow
@@ -162,9 +197,12 @@ RAG_RERANK_BACKEND=siliconflow
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
 
 # 图片嵌入（默认启用）
-RAG_IMAGE_EMBEDDING_BACKEND=siliconflow    # 改为 none 关闭多模态
+RAG_IMAGE_EMBEDDING_BACKEND=siliconflow   # 改为 none 关闭多模态
 IMAGE_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-8B
 ```
+> 💡 `RAG_LLM_BASE_URL`、`RAG_LLM_API_KEY` 和 `SILICONFLOW_API_KEY` 是项目内部
+> 变量名，用于其他脚本和开发环境。Docker 部署时 `NEW_API_URL` 和 `NEW_API_KEY`
+> 为最终生效的变量名，必须显式设置在 `../../.env` 中。
 
 也可切换为本地模型（需 GPU）：
 - `RAG_EMBEDDING_BACKEND=bge` → 本地加载 BGE-M3
