@@ -45,6 +45,14 @@ export function SettingsDialog({
     return () => document.removeEventListener("mousedown", handleOutsideMenuClick);
   }, [openMenuId]);
 
+  useEffect(() => {
+    if (open) return;
+    setRenamingId(null);
+    setRenameDraft("");
+    setOpenMenuId(null);
+    setMenuPosition(null);
+  }, [open]);
+
   if (!open) return null;
 
   return (
@@ -97,6 +105,8 @@ export function SettingsDialog({
                       <span className={`database-name${isRenaming ? " is-editing" : ""}`}>
                         {isRenaming ? (
                           <input
+                            id={`workspace-rename-${workspace.id}`}
+                            name="workspace-name"
                             className="inline-title-input"
                             value={renameDraft}
                             autoFocus

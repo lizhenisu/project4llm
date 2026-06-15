@@ -4,6 +4,7 @@ const KEY = "production-rag-settings";
 const WORKSPACE_NAME_KEY = "production-rag-workspace-name";
 const WORKSPACES_PREFIX = "production-rag-workspaces";
 const WORKSPACE_SOURCES_PREFIX = "production-rag-workspace-sources";
+const WORKSPACE_SOURCE_TITLES_PREFIX = "production-rag-workspace-source-titles";
 const WORKSPACE_CONVERSATIONS_PREFIX = "production-rag-workspace-conversations";
 const WORKSPACE_ARTIFACTS_PREFIX = "production-rag-workspace-artifacts";
 const ACTIVE_WORKSPACE_PREFIX = "production-rag-active-workspace-id";
@@ -146,6 +147,39 @@ export function removeSourcesFromWorkspace(workspaceId: string, removedIds: stri
   const removed = new Set(removedIds);
   const remaining = loadWorkspaceSources(workspaceId).filter((id) => !removed.has(id));
   saveWorkspaceSources(workspaceId, remaining);
+  const titles = loadWorkspaceSourceTitles(workspaceId);
+  let changed = false;
+  for (const id of removed) {
+    if (titles[id] !== undefined) {
+      delete titles[id];
+      changed = true;
+    }
+  }
+  if (changed) {
+    saveWorkspaceSourceTitles(workspaceId, titles);
+  }
+}
+
+export function loadWorkspaceSourceTitles(workspaceId: string): Record<string, string> {
+  const key = `${WORKSPACE_SOURCE_TITLES_PREFIX}:${workspaceId}`;
+  const raw = localStorage.getItem(key);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveWorkspaceSourceTitle(workspaceId: string, sourceId: string, title: string) {
+  const titles = loadWorkspaceSourceTitles(workspaceId);
+  titles[sourceId] = title;
+  saveWorkspaceSourceTitles(workspaceId, titles);
+}
+
+function saveWorkspaceSourceTitles(workspaceId: string, titles: Record<string, string>) {
+  localStorage.setItem(`${WORKSPACE_SOURCE_TITLES_PREFIX}:${workspaceId}`, JSON.stringify(titles));
 }
 
 export function loadWorkspaceConversations(workspaceId: string): string[] {
@@ -194,6 +228,7 @@ export function deleteWorkspace(workspaceId: string, userId: string | null) {
   const nextActive = loadActiveWorkspaceId(workspaces, userId);
   saveActiveWorkspaceId(nextActive, userId);
   localStorage.removeItem(`${WORKSPACE_SOURCES_PREFIX}:${workspaceId}`);
+  localStorage.removeItem(`${WORKSPACE_SOURCE_TITLES_PREFIX}:${workspaceId}`);
   localStorage.removeItem(`${WORKSPACE_CONVERSATIONS_PREFIX}:${workspaceId}`);
   localStorage.removeItem(`${WORKSPACE_ARTIFACTS_PREFIX}:${workspaceId}`);
   return { workspaces, nextActive };

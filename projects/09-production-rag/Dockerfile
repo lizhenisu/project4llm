@@ -10,9 +10,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml uv.lock README.md /app/
-RUN pip install --no-cache-dir uv \
-    && uv sync --frozen --no-dev
+COPY projects/09-production-rag/requirements-api.txt /app/projects/09-production-rag/requirements-api.txt
+RUN pip install --no-cache-dir -r /app/projects/09-production-rag/requirements-api.txt
 
 COPY projects/09-production-rag /app/projects/09-production-rag
 

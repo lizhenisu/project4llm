@@ -223,6 +223,170 @@ test("allows deleting the only database and creates a fresh default database", a
   await expect(page.getByText("历史回答")).toHaveCount(0);
 });
 
+test("removing a shared source only unlinks it from the current database", async ({ page }) => {
+  let sourceDeletes = 0;
+  await page.addInitScript(() => {
+    const now = Date.now();
+    localStorage.setItem(
+      "production-rag-workspaces:test-user",
+      JSON.stringify([
+        { id: "workspace-a", name: "资料库 A", user_id: "test-user", created_at: now, updated_at: now },
+        { id: "workspace-b", name: "资料库 B", user_id: "test-user", created_at: now, updated_at: now },
+      ]),
+    );
+    localStorage.setItem("production-rag-active-workspace-id:test-user", "workspace-a");
+    localStorage.setItem("production-rag-workspace-sources:workspace-a", JSON.stringify(["shared-source"]));
+    localStorage.setItem("production-rag-workspace-sources:workspace-b", JSON.stringify(["shared-source"]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-a", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-b", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-a", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-b", JSON.stringify([]));
+  });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({
+      json: {
+        sources: [
+          {
+            doc_id: "shared-source",
+            title: "12345.md",
+            source_type: "md",
+            source_uri: "/uploads/12345.md",
+            doc_version: 1,
+            chunk_count: 1,
+            acl_groups: ["engineering"],
+            status: "ready",
+            current: true,
+            child_doc_ids: [],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/sources/shared-source?**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      sourceDeletes += 1;
+      await route.fulfill({ json: { status: "deleted" } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/");
+  await expect(page.locator(".source-row", { hasText: "12345.md" })).toBeVisible();
+  await page.locator(".source-row", { hasText: "12345.md" }).locator(".row-icon-more").click();
+  await page.getByRole("button", { name: "移除" }).click();
+  await page.getByRole("button", { name: "确认移除" }).click();
+  await expect(page.locator(".source-row", { hasText: "12345.md" })).toHaveCount(0);
+  expect(sourceDeletes).toBe(0);
+
+  await page.getByRole("button", { name: "设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "知识库设置" });
+  await page.getByRole("button", { name: /资料库 B/ }).click();
+  await expect(dialog.locator(".database-list-item.active")).toContainText("资料库 B");
+  await expect(page.locator(".source-row", { hasText: "12345.md" })).toBeVisible();
+});
+
+test("renaming a shared source only changes the current database title", async ({ page }) => {
+  let sourceRenames = 0;
+  await page.addInitScript(() => {
+    const now = Date.now();
+    localStorage.setItem(
+      "production-rag-workspaces:test-user",
+      JSON.stringify([
+        { id: "workspace-a", name: "资料库 A", user_id: "test-user", created_at: now, updated_at: now },
+        { id: "workspace-b", name: "资料库 B", user_id: "test-user", created_at: now, updated_at: now },
+      ]),
+    );
+    localStorage.setItem("production-rag-active-workspace-id:test-user", "workspace-a");
+    localStorage.setItem("production-rag-workspace-sources:workspace-a", JSON.stringify(["shared-source"]));
+    localStorage.setItem("production-rag-workspace-sources:workspace-b", JSON.stringify(["shared-source"]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-a", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-b", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-a", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-b", JSON.stringify([]));
+  });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({
+      json: {
+        sources: [
+          {
+            doc_id: "shared-source",
+            title: "12345.md",
+            source_type: "md",
+            source_uri: "/uploads/12345.md",
+            doc_version: 1,
+            chunk_count: 1,
+            acl_groups: ["engineering"],
+            status: "ready",
+            current: true,
+            child_doc_ids: [],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/sources/shared-source?**", async (route) => {
+    if (route.request().method() === "PATCH") {
+      sourceRenames += 1;
+      await route.fulfill({ json: { status: "renamed", doc_id: "shared-source", title: "资料库 A 标题.md" } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/");
+  await page.locator(".source-row", { hasText: "12345.md" }).locator(".row-icon-more").click();
+  await page.getByRole("button", { name: "重命名" }).click();
+  await page.locator(".source-row .inline-title-input").fill("资料库 A 标题.md");
+  await page.locator(".source-row .inline-title-input").press("Enter");
+  await expect(page.locator(".source-row", { hasText: "资料库 A 标题.md" })).toBeVisible();
+  expect(sourceRenames).toBe(0);
+
+  await page.getByRole("button", { name: "设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "知识库设置" });
+  await page.getByRole("button", { name: /资料库 B/ }).click();
+  await expect(dialog.locator(".database-list-item.active")).toContainText("资料库 B");
+  await expect(page.locator(".source-row", { hasText: "12345.md" })).toBeVisible();
+  await expect(page.locator(".source-row", { hasText: "资料库 A 标题.md" })).toHaveCount(0);
+});
+
+test("clears database rename state after closing settings", async ({ page }) => {
+  await mockWorkspaceShell(page);
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "知识库设置" });
+  await dialog.locator(".database-list-item.active .icon-button").click();
+  await page.getByRole("menuitem", { name: /重命名知识\s*库/ }).click();
+  const input = dialog.locator(".database-list-item.active .inline-title-input");
+  await expect(input).toBeVisible();
+  await expect(input).toHaveAttribute("id", /workspace-rename-/);
+  await expect(input).toHaveAttribute("name", "workspace-name");
+
+  await page.mouse.click(12, 120);
+  await expect(dialog).toBeHidden();
+  await page.getByRole("button", { name: "设置" }).click();
+  await expect(page.getByRole("dialog", { name: "知识库设置" }).locator(".inline-title-input")).toHaveCount(0);
+});
+
 test("shows a masked personal login link on the profile page", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await mockWorkspaceShell(page);
@@ -237,6 +401,62 @@ test("shows a masked personal login link on the profile page", async ({ page, co
   await expect(secretInput).toHaveValue(/#token=test-session$/);
   await page.getByRole("button", { name: "复制专属登录链接" }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("#token=test-session");
+  await expect(page.getByRole("button", { name: "复制专属登录链接" }).locator("svg")).toHaveCSS("color", "rgb(52, 211, 153)");
+  await expect(page.getByText("通过专属登录链接可以实现无密码账户登录，请勿将该链接分享给别人。")).toBeVisible();
+  await expect(page.getByRole("link", { name: "打开 GitHub 仓库" })).toHaveAttribute("href", "https://github.com/lizhenisu/project4llm");
+});
+
+test("renders assistant math formulas with KaTeX", async ({ page }) => {
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({ json: { sources: [] } });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({
+      json: {
+        conversations: [
+          {
+            id: "math-conversation",
+            tenant_id: "team_a",
+            title: "公式回答",
+            message_count: 1,
+            source_doc_ids: [],
+            created_at: Date.now(),
+            updated_at: Date.now(),
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/conversations/math-conversation?**", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "math-conversation",
+        tenant_id: "team_a",
+        title: "公式回答",
+        source_doc_ids: [],
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        messages: [
+          {
+            id: "math-answer",
+            role: "assistant",
+            content: "行内公式 $E=mc^2$，块公式：\n\n$$\\int_0^1 x^2 dx=\\frac{1}{3}$$",
+            status: "done",
+            citations: [],
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.locator(".assistant-message .katex")).toHaveCount(2);
 });
 
 test("opens parsed source content from a document-level source row", async ({ page }) => {

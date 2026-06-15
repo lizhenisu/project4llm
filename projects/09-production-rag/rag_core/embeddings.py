@@ -293,6 +293,33 @@ class TransformersCLIPImageEmbeddingModel:
                 )
 
 
+class NoopImageEmbeddingModel:
+    def __init__(self, *, model_name: str, dim: int) -> None:
+        self._model_name = model_name
+        self._dim = dim
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] * self._dim for _ in texts]
+
+    def encode_images(self, image_paths: list[Path]) -> list[list[float]]:
+        return [[0.0] * self._dim for _ in image_paths]
+
+    def count_tokens(self, text: str) -> int:
+        return len(self.tokenize(text))
+
+    def tokenize(self, text: str) -> list[int]:
+        tokens = lexical_tokens(text)
+        return list(range(len(tokens)))
+
+
 def build_embedding_model(config: RagConfig) -> EmbeddingModel:
     if config.embedding_backend == "siliconflow":
         return SiliconFlowEmbeddingModel(
@@ -358,6 +385,11 @@ def pooled_clip_features(features):
 
 
 def build_image_embedding_model(config: RagConfig) -> ImageEmbeddingModel:
+    if config.image_embedding_backend == "none":
+        return NoopImageEmbeddingModel(
+            model_name=config.image_embedding_model,
+            dim=config.image_embedding_dim,
+        )
     if config.image_embedding_backend == "clip":
         return TransformersCLIPImageEmbeddingModel(
             model_name=config.image_embedding_model,
@@ -368,7 +400,7 @@ def build_image_embedding_model(config: RagConfig) -> ImageEmbeddingModel:
         )
     raise ValueError(
         "Unsupported RAG_IMAGE_EMBEDDING_BACKEND="
-        f"{config.image_embedding_backend!r}. Use 'clip'."
+        f"{config.image_embedding_backend!r}. Use 'none' or 'clip'."
     )
 
 

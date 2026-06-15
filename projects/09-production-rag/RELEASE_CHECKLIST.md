@@ -196,8 +196,8 @@ make model-smoke
 图片向量使用 CLIP 验收：
 
 ```bash
-export RAG_IMAGE_EMBEDDING_BACKEND=clip
-export IMAGE_EMBEDDING_MODEL=openai/clip-vit-base-patch32
+export RAG_IMAGE_EMBEDDING_BACKEND=none
+export IMAGE_EMBEDDING_MODEL=disabled-image-embedding
 export IMAGE_EMBEDDING_DIM=512
 export RAG_RUN_MODEL_SMOKE=1
 make model-smoke
@@ -207,14 +207,14 @@ make model-smoke
 
 - embedding 向量维度和 schema 一致
 - reranker 能输出分数
-- CLIP text/image embedding 维度和 `IMAGE_EMBEDDING_DIM` 一致
+- 默认纯 API 部署不会加载本地 CLIP/torch 权重；只有显式设置 `RAG_IMAGE_EMBEDDING_BACKEND=clip` 时才验证 CLIP 维度
 
 ## 4. LLM 网关验收
 
 ```bash
 export NEW_API_URL=http://<newapi-host>:<port>
 export NEW_API_KEY=...
-export LLM_MODEL=gemini-3-flash-preview
+export LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash
 make llm-smoke
 python answer.py "RAG 检索变慢时应该排查什么" --tenant-id team_a --acl-group ops
 ```

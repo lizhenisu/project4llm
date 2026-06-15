@@ -1,0 +1,12 @@
+services:
+  rag-api:
+    image: ghcr.io/lizhenisu/project4llm/rag-api:latest
+    build: null
+
+  rag-web:
+    image: ghcr.io/lizhenisu/project4llm/rag-web:latest
+    build: null
+
+  rag-ingest:
+    image: ghcr.io/lizhenisu/project4llm/rag-api:latest
+    build: null

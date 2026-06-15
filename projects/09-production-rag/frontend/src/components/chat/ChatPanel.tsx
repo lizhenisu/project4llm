@@ -1,6 +1,9 @@
 import { ArrowRight, Bot, Copy, MoreVertical, ThumbsDown, ThumbsUp, Check } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
+import remarkMath from "remark-math";
+import "katex/dist/katex.min.css";
 import type { ChatMessage, Citation, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
 
@@ -227,7 +230,7 @@ function AssistantMessage({
 
   return (
     <article className={className}>
-      <ReactMarkdown>{text}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{text}</ReactMarkdown>
       {typing && !done ? <span className="type-caret" aria-hidden="true" /> : null}
       {showControls && message.citations?.length ? <Citations message={message} /> : null}
       {showControls ? (

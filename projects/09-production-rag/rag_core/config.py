@@ -139,12 +139,12 @@ class RagConfig:
 def load_config() -> RagConfig:
     load_dotenv_if_present()
     embedding_backend = os.environ.get("RAG_EMBEDDING_BACKEND", "siliconflow").lower()
-    image_backend = os.environ.get("RAG_IMAGE_EMBEDDING_BACKEND", "clip").lower()
+    image_backend = os.environ.get("RAG_IMAGE_EMBEDDING_BACKEND", "none").lower()
     rerank_backend = os.environ.get("RAG_RERANK_BACKEND", "siliconflow").lower()
     answer_backend = os.environ.get("RAG_ANSWER_BACKEND", "llm").lower()
     query_rewrite_backend = os.environ.get("RAG_QUERY_REWRITE_BACKEND", "llm").lower()
     _validate_backend("RAG_EMBEDDING_BACKEND", embedding_backend, {"siliconflow", "bge"})
-    _validate_backend("RAG_IMAGE_EMBEDDING_BACKEND", image_backend, {"clip"})
+    _validate_backend("RAG_IMAGE_EMBEDDING_BACKEND", image_backend, {"clip", "none"})
     _validate_backend("RAG_RERANK_BACKEND", rerank_backend, {"siliconflow", "bge"})
     _validate_backend("RAG_ANSWER_BACKEND", answer_backend, {"llm"})
     _validate_backend("RAG_QUERY_REWRITE_BACKEND", query_rewrite_backend, {"llm"})
@@ -171,7 +171,7 @@ def load_config() -> RagConfig:
         image_embedding_backend=image_backend,
         image_embedding_model=os.environ.get(
             "IMAGE_EMBEDDING_MODEL",
-            "openai/clip-vit-base-patch32",
+            "disabled-image-embedding",
         ),
         image_embedding_dim=_env_int("IMAGE_EMBEDDING_DIM", embedding_dim),
         image_embedding_batch_size=_env_int("RAG_IMAGE_EMBED_BATCH_SIZE", 8),

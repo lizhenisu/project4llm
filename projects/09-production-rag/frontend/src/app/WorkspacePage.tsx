@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, Eye, EyeOff, LogIn, LogOut, Megaphone, MoreHorizontal, PencilLine, Settings as SettingsIcon, Shield, UserRound, X } from "lucide-react";
+import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PencilLine, Settings as SettingsIcon, Shield, UserRound, X } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -52,10 +52,12 @@ import {
   loadUserWorkspaces,
   loadWorkspaceArtifacts,
   loadWorkspaceConversations,
+  loadWorkspaceSourceTitles,
   loadWorkspaceSources,
   removeSourcesFromWorkspace,
   saveActiveWorkspaceId,
   saveSettings,
+  saveWorkspaceSourceTitle,
   saveWorkspaceName,
   saveWorkspaces,
 } from "../lib/storage";
@@ -228,7 +230,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     setAnnouncementOpen(sessionStorage.getItem(key) !== "1");
   }, [announcements, auth.user?.id]);
 
-  async function refresh(nextSettings = settings) {
+  async function refresh(nextSettings = settings, workspaceId = activeWorkspaceId) {
     const runId = ++refreshRunRef.current;
     const isCurrentRefresh = () => runId === refreshRunRef.current && nextSettings.token === authTokenRef.current;
     try {
@@ -250,18 +252,18 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         listAnnouncements(nextSettings),
       ]);
       if (!isCurrentRefresh()) return;
-      const wSources = loadWorkspaceSources(activeWorkspaceId);
-      const visibleRows = hasWorkspaceSources(activeWorkspaceId)
+      const wSources = loadWorkspaceSources(workspaceId);
+      const visibleRows = hasWorkspaceSources(workspaceId)
         ? filterWorkspaceSources(sourceRowsForList(sourceRows), wSources)
         : sourceRowsForList(sourceRows);
-      setSources((current) => mergeSelectedState(visibleRows, current));
-      const wArtifacts = loadWorkspaceArtifacts(activeWorkspaceId);
-      const visibleArtifacts = hasWorkspaceArtifacts(activeWorkspaceId)
+      setSources((current) => mergeSelectedState(applyWorkspaceSourceTitles(visibleRows, workspaceId), current));
+      const wArtifacts = loadWorkspaceArtifacts(workspaceId);
+      const visibleArtifacts = hasWorkspaceArtifacts(workspaceId)
         ? artifactRows.filter((a) => wArtifacts.includes(a.id))
         : artifactRows;
       setArtifacts(visibleArtifacts);
       setAnnouncements(announcementRows);
-      await loadLatestConversation(nextSettings, visibleRows, isCurrentRefresh);
+      await loadLatestConversation(nextSettings, visibleRows, isCurrentRefresh, workspaceId);
     } catch (error) {
       if (!isCurrentRefresh()) return;
       setStatus(error instanceof Error ? error.message : "连接失败");
@@ -272,14 +274,15 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     nextSettings: Settings,
     sourceRows: SourceItem[],
     isCurrentRefresh: () => boolean,
+    workspaceId = activeWorkspaceId,
   ) {
     if (suppressAutoConversationLoadRef.current) {
       return;
     }
     const rows = await listConversations(nextSettings);
     if (!isCurrentRefresh()) return;
-    const workspaceConversations = loadWorkspaceConversations(activeWorkspaceId);
-    const visibleConversations = hasWorkspaceConversations(activeWorkspaceId)
+    const workspaceConversations = loadWorkspaceConversations(workspaceId);
+    const visibleConversations = hasWorkspaceConversations(workspaceId)
       ? rows.filter((row) => workspaceConversations.includes(row.id))
       : rows;
     if (conversationId || visibleConversations.length === 0 || messages.length > 0) {
@@ -341,7 +344,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       }
       const wSources = loadWorkspaceSources(activeWorkspaceId);
       const filteredReady = filterWorkspaceSources(sourceRowsForList(readyRows), wSources);
-      setSources((items) => mergeSelectedState(filteredReady, items));
+      setSources((items) => mergeSelectedState(applyWorkspaceSourceTitles(filteredReady, activeWorkspaceId), items));
       // Auto-rename workspace if it's still the auto-generated default name
       const currentAutoNamed = activeWorkspace?.auto_named;
       if (currentAutoNamed && uploaded.length > 0) {
@@ -371,15 +374,18 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   async function handleDeleteSource(source: SourceItem) {
     const deletingKey = sourceStateKey(source);
+    const sourceIds = sourceIdsForWorkspace([source]);
     setSources((items) => items.filter((item) => sourceStateKey(item) !== deletingKey));
-    removeSourcesFromWorkspace(activeWorkspaceId, sourceIdsForWorkspace([source]));
+    removeSourcesFromWorkspace(activeWorkspaceId, sourceIds);
     if (activeSourceContent?.doc_id === source.doc_id && activeSourceContent.doc_version === source.doc_version) {
       setActiveSourceContent(null);
     }
     try {
-      await deleteSource(settings, source.doc_id);
+      if (!sourceReferencedByOtherWorkspace(activeWorkspaceId, sourceIds, workspaces)) {
+        await deleteSource(settings, source.doc_id);
+      }
     } catch (error) {
-      addSourcesToWorkspace(activeWorkspaceId, sourceIdsForWorkspace([source]));
+      addSourcesToWorkspace(activeWorkspaceId, sourceIds);
       setSources((items) => [
         { ...source, status: "failed", error: error instanceof Error ? error.message : "删除失败" },
         ...items,
@@ -718,6 +724,13 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       items.map((item) => (sourceStateKey(item) === renamingKey ? { ...item, title: newTitle } : item)),
     );
     try {
+      if (sourceReferencedByOtherWorkspace(activeWorkspaceId, sourceIdsForWorkspace([source]), workspaces)) {
+        saveWorkspaceSourceTitle(activeWorkspaceId, source.doc_id, newTitle);
+        if (activeSourceContent?.doc_id === source.doc_id && activeSourceContent.doc_version === source.doc_version) {
+          setActiveSourceContent({ ...activeSourceContent, title: newTitle });
+        }
+        return;
+      }
       const renamed = await renameSource(settings, source.doc_id, newTitle, source.doc_version);
       setSources((items) =>
         items.map((item) => (sourceStateKey(item) === renamingKey ? { ...item, title: renamed.title } : item)),
@@ -815,14 +828,14 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     setActiveArtifact(null);
     setActiveSourceContent(null);
     suppressAutoConversationLoadRef.current = false;
-    void refresh(settings);
+    void refresh(settings, id);
   }
 
   async function handleDeleteWorkspace(id: string) {
     setBusy(true);
     setStatus("正在删除知识库数据...");
     try {
-      await deleteWorkspaceRemoteData(id, settings);
+      await deleteWorkspaceRemoteData(id, settings, workspaces);
       const { workspaces: remaining, nextActive } = deleteWorkspace(id, auth.user?.id ?? null);
       setWorkspaces(remaining);
       setActiveWorkspaceId(nextActive);
@@ -860,6 +873,16 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
           <span>{displayWorkspaceName}</span>
         </div>
         <div className="topbar-actions">
+          <a
+            className="icon-button"
+            href="https://github.com/lizhenisu/project4llm"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="打开 GitHub 仓库"
+            title="GitHub"
+          >
+            <Github size={18} />
+          </a>
           <IconButton label="设置" onClick={() => setSettingsOpen(true)}>
             <SettingsIcon size={18} />
           </IconButton>
@@ -1209,7 +1232,7 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
         </form>
         <section className="account-section login-link-section">
           <h2>专属登录链接</h2>
-          <p className="muted-text">请勿分享给别人。</p>
+          <p className="muted-text">通过专属登录链接可以实现无密码账户登录，请勿将该链接分享给别人。</p>
           <label>
             专属登录链接
             <div className="secret-field">
@@ -1233,7 +1256,7 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
                 onClick={copyLoginLink}
                 disabled={!loginLink}
               >
-                {loginLinkCopied ? <Check size={16} /> : <Copy size={16} />}
+                {loginLinkCopied ? <Check size={16} style={{ color: "var(--green)" }} /> : <Copy size={16} />}
               </button>
             </div>
           </label>
@@ -1585,7 +1608,15 @@ function filterWorkspaceSources(rows: SourceItem[], workspaceSourceIds: string[]
   return rows.filter((source) => sourceMatchesWorkspace(source, workspaceIds));
 }
 
-async function deleteWorkspaceRemoteData(workspaceId: string, settings: Settings) {
+function applyWorkspaceSourceTitles(rows: SourceItem[], workspaceId: string) {
+  const titles = loadWorkspaceSourceTitles(workspaceId);
+  return rows.map((source) => {
+    const title = titles[source.doc_id];
+    return title ? { ...source, title } : source;
+  });
+}
+
+async function deleteWorkspaceRemoteData(workspaceId: string, settings: Settings, workspaces: WorkspaceRecord[]) {
   const [sourceRows, conversationRows, artifactRows] = await Promise.all([
     listSources(settings),
     listConversations(settings),
@@ -1595,7 +1626,11 @@ async function deleteWorkspaceRemoteData(workspaceId: string, settings: Settings
   const sourceRowsToDelete = hasWorkspaceSources(workspaceId)
     ? filterWorkspaceSources(sourceRowsForList(sourceRows), workspaceSourceIds)
     : sourceRowsForList(sourceRows);
-  const sourceDocIds = dedupeStrings(sourceRowsToDelete.map((source) => source.doc_id));
+  const sourceDocIds = dedupeStrings(
+    sourceRowsToDelete
+      .filter((source) => !sourceReferencedByOtherWorkspace(workspaceId, sourceIdsForWorkspace([source]), workspaces))
+      .map((source) => source.doc_id),
+  );
   const conversationIds = hasWorkspaceConversations(workspaceId)
     ? loadWorkspaceConversations(workspaceId)
     : conversationRows.map((conversation) => conversation.id);
@@ -1608,6 +1643,22 @@ async function deleteWorkspaceRemoteData(workspaceId: string, settings: Settings
     ...dedupeStrings(conversationIds).map((conversationId) => deleteConversation(settings, conversationId)),
     ...dedupeStrings(artifactIds).map((artifactId) => deleteArtifact(settings, artifactId)),
   ]);
+}
+
+function sourceReferencedByOtherWorkspace(
+  workspaceId: string,
+  sourceIds: string[],
+  workspaces: WorkspaceRecord[],
+) {
+  if (sourceIds.length === 0) return false;
+  const ids = new Set(sourceIds);
+  return workspaces.some((workspace) => {
+    if (workspace.id === workspaceId) return false;
+    if (!hasWorkspaceSources(workspace.id)) {
+      return true;
+    }
+    return loadWorkspaceSources(workspace.id).some((sourceId) => ids.has(sourceId));
+  });
 }
 
 function sourceMatchesWorkspace(source: SourceItem, workspaceIds: Set<string>) {

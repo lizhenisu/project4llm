@@ -6,7 +6,7 @@ from pathlib import Path
 import rag_core.embeddings as embeddings
 import rag_core.rerankers as rerankers
 from rag_core.config import RagConfig
-from rag_core.embeddings import build_embedding_model
+from rag_core.embeddings import build_embedding_model, build_image_embedding_model
 from rag_core.rerankers import build_reranker
 from rag_core.types import SearchHit
 
@@ -84,6 +84,17 @@ def main() -> None:
             assert "SILICONFLOW_API_KEY" in str(exc)
         else:
             raise AssertionError("missing SiliconFlow API key should fail")
+
+        image_model = build_image_embedding_model(
+            replace(
+                config,
+                image_embedding_backend="none",
+                image_embedding_model="disabled-image-embedding",
+                image_embedding_dim=3,
+            ),
+        )
+        assert image_model.encode(["image caption"]) == [[0.0, 0.0, 0.0]]
+        assert image_model.encode_images([Path("/tmp/nonexistent.png")]) == [[0.0, 0.0, 0.0]]
     finally:
         embeddings.post_json = old_embedding_post_json
         rerankers.post_json = old_reranker_post_json

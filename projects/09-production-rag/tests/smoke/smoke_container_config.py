@@ -46,6 +46,8 @@ def main() -> None:
         "RAG_ANSWER_BACKEND",
         "RAG_MAX_CONTEXT_CHARS",
         "RAG_MAX_CHUNKS_PER_DOC",
+        "RAG_LLM_BASE_URL",
+        "RAG_LLM_API_KEY",
         "NEW_API_URL",
         "NEW_API_KEY",
         "LLM_MODEL",
@@ -78,6 +80,10 @@ def main() -> None:
     assert rag_api_env["RAG_QUERY_REWRITE_HISTORY_TURNS"] == "6"
     assert rag_api_env["RAG_QUERY_REWRITE_MAX_TOKENS"] == "256"
     assert rag_api_env["RAG_ANSWER_BACKEND"] == "${RAG_ANSWER_BACKEND:-llm}"
+    assert rag_api_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-none}"
+    assert rag_api_env["NEW_API_URL"] == "${RAG_LLM_BASE_URL:-https://api.siliconflow.cn}"
+    assert rag_api_env["NEW_API_KEY"] == "${RAG_LLM_API_KEY:-${SILICONFLOW_API_KEY:-}}"
+    assert rag_api_env["LLM_MODEL"] == "${LLM_MODEL:-deepseek-ai/DeepSeek-V4-Flash}"
     assert has_volume(rag_api["volumes"], EXPECTED_OBJECT_STORE_PATH)
     assert has_volume(rag_api["volumes"], EXPECTED_RUNTIME_PATH)
 
@@ -88,12 +94,15 @@ def main() -> None:
     assert "../../.env" in rag_ingest.get("env_file", [])
     assert "RAG_TEXT_INPUT" in rag_ingest_env
     assert "RAG_IMAGE_INPUT" in rag_ingest_env
+    assert rag_ingest_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-none}"
     assert has_volume(rag_ingest["volumes"], EXPECTED_OBJECT_STORE_PATH)
     assert has_volume(rag_ingest["volumes"], "/data")
 
     dockerfile = (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8")
     assert 'CMD ["./scripts/start_api.sh"]' in dockerfile
     assert "COPY projects/09-production-rag /app/projects/09-production-rag" in dockerfile
+    assert "requirements-api.txt" in dockerfile
+    assert "uv sync" not in dockerfile
 
     start_api = (PROJECT_DIR / "scripts" / "start_api.sh").read_text(encoding="utf-8")
     assert "python check_config.py" in start_api

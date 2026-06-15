@@ -51,17 +51,17 @@ services:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
       RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
-      RAG_IMAGE_EMBEDDING_BACKEND: clip
+      RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-none}
       EMBEDDING_DIM: "1024"
-      IMAGE_EMBEDDING_DIM: "512"
+      IMAGE_EMBEDDING_DIM: "1024"
       RAG_RUNTIME_DIR: /app/projects/09-production-rag/runtime
       RAG_QUERY_REWRITE_BACKEND: ${RAG_QUERY_REWRITE_BACKEND:-llm}
       RAG_QUERY_REWRITE_HISTORY_TURNS: "6"
       RAG_QUERY_REWRITE_MAX_TOKENS: "256"
       RAG_ANSWER_BACKEND: ${RAG_ANSWER_BACKEND:-llm}
-      NEW_API_URL: ${NEW_API_URL:-}
-      NEW_API_KEY: ${NEW_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-gemini-3-flash-preview}
+      NEW_API_URL: ${RAG_LLM_BASE_URL:-https://api.siliconflow.cn}
+      NEW_API_KEY: ${RAG_LLM_API_KEY:-${SILICONFLOW_API_KEY:-}}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-ai/DeepSeek-V4-Flash}
     ports:
       - "8008:8008"
     volumes:
@@ -103,9 +103,9 @@ services:
       RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
       RAG_TEXT_INPUT: ${RAG_TEXT_INPUT:-}
       RAG_IMAGE_INPUT: ${RAG_IMAGE_INPUT:-}
-      RAG_IMAGE_EMBEDDING_BACKEND: clip
+      RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-none}
       EMBEDDING_DIM: "1024"
-      IMAGE_EMBEDDING_DIM: "512"
+      IMAGE_EMBEDDING_DIM: "1024"
     volumes:
       - ./object_store:/app/projects/09-production-rag/object_store
       - ./ingest:/data:ro

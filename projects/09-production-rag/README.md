@@ -95,24 +95,28 @@ RAG_IMAGE_INPUT=/data/image_docs.jsonl
 docker compose up -d milvus rag-api rag-web
 ```
 
-Compose 默认使用 SiliconFlow 托管的 embedding/rerank 模型，并要求配置兼容 OpenAI API 的 LLM，用于查询改写、生成式回答和 Studio 思维导图：
+Compose 默认使用 SiliconFlow 托管的 embedding/rerank/LLM API，并默认禁用本地图像 embedding，避免轻量服务器启动时加载 torch/transformers 本地权重：
 
 - `RAG_EMBEDDING_BACKEND=siliconflow`
 - `EMBEDDING_MODEL=BAAI/bge-m3`
 - `RAG_RERANK_BACKEND=siliconflow`
 - `RERANK_MODEL=BAAI/bge-reranker-v2-m3`
+- `RAG_IMAGE_EMBEDDING_BACKEND=none`
 - `RAG_QUERY_REWRITE_BACKEND=llm`
 - `RAG_ANSWER_BACKEND=llm`
-- `NEW_API_URL` / `NEW_API_KEY` / `LLM_MODEL`
+- `NEW_API_URL=https://api.siliconflow.cn`
+- `RAG_LLM_API_KEY` / `LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash`
 - `SILICONFLOW_API_KEY`
 
 LLM 配置示例：
 
 ```bash
-NEW_API_URL=http://your-newapi-server:3000
-NEW_API_KEY=your-api-key
-LLM_MODEL=your-model
+RAG_LLM_BASE_URL=https://api.siliconflow.cn
+RAG_LLM_API_KEY=your-siliconflow-api-key
+LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash
 ```
+
+如需启用本地 CLIP 图像检索，再显式设置 `RAG_IMAGE_EMBEDDING_BACKEND=clip` 和 `IMAGE_EMBEDDING_MODEL=openai/clip-vit-base-patch32`。
 
 访问：
 
@@ -124,6 +128,13 @@ http://localhost:8080
 
 ```bash
 docker compose --profile ingest run --rm rag-ingest
+```
+
+GitHub Actions 会在 `main`/`master` 变更 09 项目时构建 GHCR 镜像。服务器如需直接拉取镜像而不是本地构建，可使用：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull rag-api rag-web
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d milvus rag-api rag-web
 ```
 
 ## Web 功能
