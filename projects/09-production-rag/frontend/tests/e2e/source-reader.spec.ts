@@ -368,6 +368,289 @@ test("renaming a shared source only changes the current database title", async (
   await expect(page.locator(".source-row", { hasText: "资料库 A 标题.md" })).toHaveCount(0);
 });
 
+test("keeps an in-flight answer scoped to the database where it started", async ({ page }) => {
+  let queryResolve: (() => void) | null = null;
+  const queryReleased = new Promise<void>((resolve) => {
+    queryResolve = resolve;
+  });
+  let storedConversation: any = null;
+  await page.addInitScript(() => {
+    const now = Date.now();
+    localStorage.setItem(
+      "production-rag-workspaces:test-user",
+      JSON.stringify([
+        { id: "workspace-a", name: "Production RAG 知识库 06/15 11:36", user_id: "test-user", created_at: now, updated_at: now },
+        { id: "workspace-b", name: "Production RAG 知识库 06/14 23:54", user_id: "test-user", created_at: now, updated_at: now },
+      ]),
+    );
+    localStorage.setItem("production-rag-active-workspace-id:test-user", "workspace-a");
+    localStorage.setItem("production-rag-workspace-sources:workspace-a", JSON.stringify(["natural"]));
+    localStorage.setItem("production-rag-workspace-sources:workspace-b", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-a", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-b", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-a", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-b", JSON.stringify([]));
+  });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({
+      json: {
+        sources: [
+          {
+            doc_id: "natural",
+            title: "自然自然辩证法.pdf",
+            source_type: "pdf",
+            source_uri: "/uploads/natural.pdf",
+            doc_version: 1,
+            chunk_count: 6,
+            acl_groups: ["engineering"],
+            status: "ready",
+            current: true,
+            child_doc_ids: ["natural/page-1"],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations**", async (route) => {
+    if (route.request().method() === "GET") {
+      if (route.request().url().includes("/conversations/conv-workspace-race")) {
+        await route.fulfill({ json: storedConversation });
+        return;
+      }
+      await route.fulfill({
+        json: {
+          conversations: storedConversation
+            ? [{ id: storedConversation.id, tenant_id: "team_a", title: storedConversation.title, message_count: storedConversation.messages.length, source_doc_ids: storedConversation.source_doc_ids, created_at: storedConversation.created_at, updated_at: storedConversation.updated_at }]
+            : [],
+        },
+      });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    storedConversation = {
+      ...body,
+      id: body.id || "conv-workspace-race",
+      created_at: storedConversation?.created_at || Date.now(),
+      updated_at: Date.now(),
+    };
+    await route.fulfill({ json: storedConversation });
+  });
+  await page.route("**/query**", async (route) => {
+    await queryReleased;
+    await route.fulfill({
+      json: {
+        request_id: "workspace-race",
+        answer: "这段回答只属于 06/15 11:36。",
+        citations: [],
+        trace: {},
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByPlaceholder("提问或创作内容").fill("有哪些关键事实值得关注？");
+  await page.locator(".chat-input button").click();
+  await expect(page.getByText("正在检索资料并生成回答...")).toBeVisible();
+  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: /Production RAG 知识库 06\/14 23:54/ }).click();
+  await page.getByRole("button", { name: "关闭设置" }).click();
+  queryResolve?.();
+
+  await expect(page.getByText("这段回答只属于 06/15 11:36。")).toHaveCount(0);
+  await expect.poll(async () =>
+    page.evaluate(() => JSON.parse(localStorage.getItem("production-rag-workspace-conversations:workspace-a") || "[]")),
+  ).toEqual(["conv-workspace-race"]);
+  await expect.poll(async () =>
+    page.evaluate(() => JSON.parse(localStorage.getItem("production-rag-workspace-conversations:workspace-b") || "[]")),
+  ).toEqual([]);
+
+  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: /Production RAG 知识库 06\/15 11:36/ }).click();
+  await page.getByRole("button", { name: "关闭设置" }).click();
+  await expect(page.getByText("这段回答只属于 06/15 11:36。")).toBeVisible();
+});
+
+test("keeps an in-flight upload scoped to the database where it started", async ({ page }) => {
+  let uploadResolve: (() => void) | null = null;
+  const uploadReleased = new Promise<void>((resolve) => {
+    uploadResolve = resolve;
+  });
+  let sourceRows: any[] = [];
+  const uploadedSource = {
+    doc_id: "uploaded-natural",
+    title: "自然自然辩证法.pdf",
+    source_type: "pdf",
+    source_uri: "/uploads/natural.pdf",
+    doc_version: 1,
+    chunk_count: 6,
+    acl_groups: ["engineering"],
+    status: "ready",
+    current: true,
+    child_doc_ids: ["uploaded-natural/page-1"],
+  };
+  await page.addInitScript(() => {
+    const now = Date.now();
+    localStorage.setItem(
+      "production-rag-workspaces:test-user",
+      JSON.stringify([
+        { id: "workspace-a", name: "上传知识库 A", user_id: "test-user", created_at: now, updated_at: now },
+        { id: "workspace-b", name: "上传知识库 B", user_id: "test-user", created_at: now, updated_at: now },
+      ]),
+    );
+    localStorage.setItem("production-rag-active-workspace-id:test-user", "workspace-a");
+    localStorage.setItem("production-rag-workspace-sources:workspace-a", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-sources:workspace-b", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-a", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-b", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-a", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-b", JSON.stringify([]));
+  });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources/upload", async (route) => {
+    await uploadReleased;
+    sourceRows = [uploadedSource];
+    await route.fulfill({ json: { sources: [uploadedSource] } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({ json: { sources: sourceRows } });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "添加来源" }).click();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "自然自然辩证法.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("fake pdf"),
+  });
+  await expect(page.locator(".source-row", { hasText: "自然自然辩证法.pdf" })).toBeVisible();
+  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: /上传知识库 B/ }).click();
+  await page.getByRole("button", { name: "关闭设置" }).click();
+  uploadResolve?.();
+
+  await expect(page.locator(".source-row", { hasText: "自然自然辩证法.pdf" })).toHaveCount(0);
+  await expect.poll(async () =>
+    page.evaluate(() => JSON.parse(localStorage.getItem("production-rag-workspace-sources:workspace-a") || "[]")),
+  ).toContain("uploaded-natural");
+  await expect.poll(async () =>
+    page.evaluate(() => JSON.parse(localStorage.getItem("production-rag-workspace-sources:workspace-b") || "[]")),
+  ).toEqual([]);
+
+  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: /上传知识库 A/ }).click();
+  await page.getByRole("button", { name: "关闭设置" }).click();
+  await expect(page.locator(".source-row", { hasText: "自然自然辩证法.pdf" })).toBeVisible();
+});
+
+test("keeps an in-flight studio artifact scoped to the database where it started", async ({ page }) => {
+  let artifactResolve: (() => void) | null = null;
+  const artifactReleased = new Promise<void>((resolve) => {
+    artifactResolve = resolve;
+  });
+  let artifactRows: any[] = [];
+  const readyArtifact = {
+    id: "artifact-workspace-race",
+    title: "自然自然辩证法.pdf 思维导图",
+    status: "ready",
+    artifact_type: "mindmap",
+    tenant_id: "team_a",
+    source_doc_ids: ["natural/page-1"],
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    root: { id: "root", label: "自然辩证法重点", children: [] },
+  };
+  await page.addInitScript(() => {
+    const now = Date.now();
+    localStorage.setItem(
+      "production-rag-workspaces:test-user",
+      JSON.stringify([
+        { id: "workspace-a", name: "Studio 知识库 A", user_id: "test-user", created_at: now, updated_at: now },
+        { id: "workspace-b", name: "Studio 知识库 B", user_id: "test-user", created_at: now, updated_at: now },
+      ]),
+    );
+    localStorage.setItem("production-rag-active-workspace-id:test-user", "workspace-a");
+    localStorage.setItem("production-rag-workspace-sources:workspace-a", JSON.stringify(["natural"]));
+    localStorage.setItem("production-rag-workspace-sources:workspace-b", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-a", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-b", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-a", JSON.stringify([]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-b", JSON.stringify([]));
+  });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({
+      json: {
+        sources: [
+          {
+            doc_id: "natural",
+            title: "自然自然辩证法.pdf",
+            source_type: "pdf",
+            source_uri: "/uploads/natural.pdf",
+            doc_version: 1,
+            chunk_count: 6,
+            acl_groups: ["engineering"],
+            status: "ready",
+            current: true,
+            child_doc_ids: ["natural/page-1"],
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/artifacts/mindmap", async (route) => {
+    await artifactReleased;
+    artifactRows = [readyArtifact];
+    await route.fulfill({ json: readyArtifact });
+  });
+  await page.route("**/artifacts/artifact-workspace-race?**", async (route) => {
+    await route.fulfill({ json: readyArtifact });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: artifactRows } });
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /思维导图/ }).click();
+  await expect(page.getByText("正在生成思维导图...")).toBeVisible();
+  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: /Studio 知识库 B/ }).click();
+  await page.getByRole("button", { name: "关闭设置" }).click();
+  artifactResolve?.();
+
+  await expect(page.getByText("自然辩证法重点")).toHaveCount(0);
+  await expect(page.getByText("自然自然辩证法.pdf 思维导图")).toHaveCount(0);
+  await expect.poll(async () =>
+    page.evaluate(() => JSON.parse(localStorage.getItem("production-rag-workspace-artifacts:workspace-a") || "[]")),
+  ).toEqual(["artifact-workspace-race"]);
+  await expect.poll(async () =>
+    page.evaluate(() => JSON.parse(localStorage.getItem("production-rag-workspace-artifacts:workspace-b") || "[]")),
+  ).toEqual([]);
+
+  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: /Studio 知识库 A/ }).click();
+  await page.getByRole("button", { name: "关闭设置" }).click();
+  await expect(page.getByText("自然自然辩证法.pdf 思维导图")).toBeVisible();
+});
+
 test("clears database rename state after closing settings", async ({ page }) => {
   await mockWorkspaceShell(page);
 

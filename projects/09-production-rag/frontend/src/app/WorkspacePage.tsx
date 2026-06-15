@@ -114,6 +114,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   const artifactGenerationReadyAtRef = useRef(0);
   const suppressAutoConversationLoadRef = useRef(false);
   const authTokenRef = useRef<string | null>(auth.token);
+  const activeWorkspaceIdRef = useRef(activeWorkspaceId);
   const refreshRunRef = useRef(0);
 
   const isAuthenticated = Boolean(auth.user && auth.token);
@@ -157,6 +158,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }, [workspaces, auth.user?.id]);
 
   useEffect(() => {
+    activeWorkspaceIdRef.current = activeWorkspaceId;
     const userId = auth.user?.id ?? null;
     saveActiveWorkspaceId(activeWorkspaceId, userId);
     saveWorkspaceName(workspaceName);
@@ -305,7 +307,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       );
     }
     if (hasPendingAssistant(latestMessages)) {
-      void resumePendingAnswer({ ...latest, messages: latestMessages }, nextSettings);
+      void resumePendingAnswer({ ...latest, messages: latestMessages }, nextSettings, workspaceId);
     }
   }
 
@@ -314,6 +316,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       onNavigate("/login");
       return;
     }
+    const requestWorkspaceId = activeWorkspaceId;
+    const isCurrentWorkspace = () => activeWorkspaceIdRef.current === requestWorkspaceId;
     const sourceKeysBeforeUpload = new Set(sources.map(sourceStateKey));
     const temp: SourceItem = {
       doc_id: `upload-${Date.now()}`,
@@ -330,21 +334,25 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     setSources((items) => [temp, ...items]);
     try {
       const uploaded = await uploadSource(settings, file);
-      setSources((items) => [
-        ...uploaded.map(item => ({ ...item, selected: true })), // Auto-select newly uploaded items
-        ...items.filter((item) => item.doc_id !== temp.doc_id)
-      ]);
+      if (isCurrentWorkspace()) {
+        setSources((items) => [
+          ...uploaded.map(item => ({ ...item, selected: true })), // Auto-select newly uploaded items
+          ...items.filter((item) => item.doc_id !== temp.doc_id)
+        ]);
+      }
       // Track uploaded sources for the current workspace
       const uploadedIds = uploaded.map((s) => s.doc_id);
-      addSourcesToWorkspace(activeWorkspaceId, uploadedIds);
+      addSourcesToWorkspace(requestWorkspaceId, uploadedIds);
       const readyRows = await waitForSourcesReady(settings, uploaded, sourceKeysBeforeUpload);
       const resolvedUploads = resolveUploadedSources(readyRows, uploaded, sourceKeysBeforeUpload);
       if (resolvedUploads.length > 0) {
-        addSourcesToWorkspace(activeWorkspaceId, sourceIdsForWorkspace(resolvedUploads));
+        addSourcesToWorkspace(requestWorkspaceId, sourceIdsForWorkspace(resolvedUploads));
       }
-      const wSources = loadWorkspaceSources(activeWorkspaceId);
+      const wSources = loadWorkspaceSources(requestWorkspaceId);
       const filteredReady = filterWorkspaceSources(sourceRowsForList(readyRows), wSources);
-      setSources((items) => mergeSelectedState(applyWorkspaceSourceTitles(filteredReady, activeWorkspaceId), items));
+      if (isCurrentWorkspace()) {
+        setSources((items) => mergeSelectedState(applyWorkspaceSourceTitles(filteredReady, requestWorkspaceId), items));
+      }
       // Auto-rename workspace if it's still the auto-generated default name
       const currentAutoNamed = activeWorkspace?.auto_named;
       if (currentAutoNamed && uploaded.length > 0) {
@@ -353,7 +361,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
           if (content.suggested_title && content.suggested_title !== content.title) {
             setWorkspaces((prev) =>
               prev.map((w) =>
-                w.id === activeWorkspaceId ? { ...w, name: content.suggested_title!, auto_named: false, updated_at: Date.now() } : w,
+                w.id === requestWorkspaceId ? { ...w, name: content.suggested_title!, auto_named: false, updated_at: Date.now() } : w,
               ),
             );
           }
@@ -362,13 +370,15 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         }
       }
     } catch (error) {
-      setSources((items) =>
-        items.map((item) =>
-          item.doc_id === temp.doc_id
-            ? { ...item, status: "failed", error: error instanceof Error ? error.message : "上传失败" }
-            : item,
-        ),
-      );
+      if (isCurrentWorkspace()) {
+        setSources((items) =>
+          items.map((item) =>
+            item.doc_id === temp.doc_id
+              ? { ...item, status: "failed", error: error instanceof Error ? error.message : "上传失败" }
+              : item,
+          ),
+        );
+      }
     }
   }
 
@@ -424,8 +434,13 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       onNavigate("/login");
       return;
     }
+    const requestWorkspaceId = activeWorkspaceId;
+    const requestConversationId = conversationId;
+    const requestSelectedDocIds = [...selectedDocIds];
+    const requestHistory = messages.map((message) => `${message.role}: ${message.content}`).slice(-8);
     const requestToken = authTokenRef.current;
     const isCurrentSession = () => Boolean(requestToken) && authTokenRef.current === requestToken;
+    const isCurrentWorkspace = () => isCurrentSession() && activeWorkspaceIdRef.current === requestWorkspaceId;
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -444,15 +459,21 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     setMessages(baseMessages);
     setTypingMessageId(null);
     setBusy(true);
-    let targetConversationId = conversationId;
+    let targetConversationId = requestConversationId;
     try {
-      const savedPending = await persistConversation(baseMessages);
+      const savedPending = await persistConversation(
+        baseMessages,
+        requestConversationId,
+        requestSelectedDocIds,
+        settings,
+        requestWorkspaceId,
+      );
       if (!isCurrentSession()) return;
       targetConversationId = savedPending?.id ?? targetConversationId;
       const response = await queryRag(settings, {
         query,
-        docIds: selectedDocIds,
-        history: messages.map((message) => `${message.role}: ${message.content}`).slice(-8),
+        docIds: requestSelectedDocIds,
+        history: requestHistory,
       });
       if (!isCurrentSession()) return;
       const nextMessages: ChatMessage[] = baseMessages.map((item) =>
@@ -466,9 +487,11 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
               }
             : item,
       );
-      setMessages(nextMessages);
-      setTypingMessageId(pending.id);
-      await persistConversation(nextMessages, targetConversationId, selectedDocIds);
+      if (isCurrentWorkspace()) {
+        setMessages(nextMessages);
+        setTypingMessageId(pending.id);
+      }
+      await persistConversation(nextMessages, targetConversationId, requestSelectedDocIds, settings, requestWorkspaceId);
     } catch (error) {
       if (!isCurrentSession()) return;
       if (isFetchInterrupted(error)) {
@@ -477,11 +500,13 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       const failedMessages: ChatMessage[] = baseMessages.map((item) =>
           item.id === pending.id
             ? { ...item, content: error instanceof Error ? error.message : "回答失败", status: "failed" as const }
-            : item,
+              : item,
       );
-      setMessages(failedMessages);
-      setTypingMessageId(null);
-      await persistConversation(failedMessages, targetConversationId, selectedDocIds);
+      if (isCurrentWorkspace()) {
+        setMessages(failedMessages);
+        setTypingMessageId(null);
+      }
+      await persistConversation(failedMessages, targetConversationId, requestSelectedDocIds, settings, requestWorkspaceId);
     } finally {
       if (isCurrentSession()) {
         setBusy(false);
@@ -489,9 +514,10 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     }
   }
 
-  async function resumePendingAnswer(conversation: Conversation, nextSettings: Settings) {
+  async function resumePendingAnswer(conversation: Conversation, nextSettings: Settings, workspaceId = activeWorkspaceId) {
     const requestToken = nextSettings.token;
     const isCurrentSession = () => Boolean(requestToken) && authTokenRef.current === requestToken;
+    const isCurrentWorkspace = () => isCurrentSession() && activeWorkspaceIdRef.current === workspaceId;
     const pendingIndex = conversation.messages.findIndex(
       (message) => message.role === "assistant" && message.status === "sending",
     );
@@ -523,9 +549,11 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             }
           : item,
       );
-      setMessages(nextMessages);
-      setTypingMessageId(pending.id);
-      await persistConversation(nextMessages, conversation.id, conversation.source_doc_ids, nextSettings);
+      if (isCurrentWorkspace()) {
+        setMessages(nextMessages);
+        setTypingMessageId(pending.id);
+      }
+      await persistConversation(nextMessages, conversation.id, conversation.source_doc_ids, nextSettings, workspaceId);
     } catch (error) {
       if (!isCurrentSession()) return;
       if (isFetchInterrupted(error)) {
@@ -540,9 +568,11 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             }
           : item,
       );
-      setMessages(failedMessages);
-      setTypingMessageId(null);
-      await persistConversation(failedMessages, conversation.id, conversation.source_doc_ids, nextSettings);
+      if (isCurrentWorkspace()) {
+        setMessages(failedMessages);
+        setTypingMessageId(null);
+      }
+      await persistConversation(failedMessages, conversation.id, conversation.source_doc_ids, nextSettings, workspaceId);
     } finally {
       if (isCurrentSession()) {
         setBusy(false);
@@ -555,6 +585,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     targetConversationId = conversationId,
     sourceDocIds = selectedDocIds,
     targetSettings = settings,
+    workspaceId = activeWorkspaceId,
   ) {
     if (nextMessages.length === 0) return null;
     const title = inferConversationTitle(nextMessages);
@@ -564,9 +595,11 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       messages: nextMessages,
       sourceDocIds,
     });
-    setConversationId(saved.id);
-    setConversationTitle(saved.title);
-    addConversationToWorkspace(activeWorkspaceId, saved.id);
+    if (activeWorkspaceIdRef.current === workspaceId) {
+      setConversationId(saved.id);
+      setConversationTitle(saved.title);
+    }
+    addConversationToWorkspace(workspaceId, saved.id);
     return saved;
   }
 
@@ -628,6 +661,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   async function handleCreateMindMap() {
     if (selectedDocIds.length === 0 || !beginArtifactGeneration()) return;
+    const requestWorkspaceId = activeWorkspaceId;
+    const isCurrentWorkspace = () => activeWorkspaceIdRef.current === requestWorkspaceId;
     const sourceDocIds = [...selectedDocIds];
     const title = selectedSources.length === 1 ? `${selectedSources[0].title} 思维导图` : "选中来源思维导图";
     const pendingArtifact: MindMapArtifact = {
@@ -646,19 +681,25 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     try {
       const artifact = await createMindMap(settings, title, sourceDocIds);
       trackedArtifactId = artifact.id;
-      addArtifactToWorkspace(activeWorkspaceId, artifact.id);
-      setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
+      addArtifactToWorkspace(requestWorkspaceId, artifact.id);
+      if (isCurrentWorkspace()) {
+        setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
+      }
       const readyArtifact = await waitForArtifact(settings, artifact.id);
-      setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
-      openArtifact(readyArtifact);
+      if (isCurrentWorkspace()) {
+        setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
+        openArtifact(readyArtifact);
+      }
     } catch (error) {
-      setArtifacts((items) =>
-        items.map((item) =>
-          item.id === pendingArtifact.id || item.id === trackedArtifactId
-            ? { ...item, status: "failed", error: error instanceof Error ? error.message : "生成失败" }
-          : item,
-        ),
-      );
+      if (isCurrentWorkspace()) {
+        setArtifacts((items) =>
+          items.map((item) =>
+            item.id === pendingArtifact.id || item.id === trackedArtifactId
+              ? { ...item, status: "failed", error: error instanceof Error ? error.message : "生成失败" }
+            : item,
+          ),
+        );
+      }
     } finally {
       finishArtifactGeneration();
     }
@@ -666,6 +707,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   async function handleCreateDataTable() {
     if (selectedDocIds.length === 0 || !beginArtifactGeneration()) return;
+    const requestWorkspaceId = activeWorkspaceId;
+    const isCurrentWorkspace = () => activeWorkspaceIdRef.current === requestWorkspaceId;
     const sourceDocIds = [...selectedDocIds];
     const title = selectedSources.length === 1 ? `${selectedSources[0].title} 数据表格` : "选中来源数据表格";
     const pendingArtifact: MindMapArtifact = {
@@ -684,19 +727,25 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     try {
       const artifact = await createDataTable(settings, title, sourceDocIds);
       trackedArtifactId = artifact.id;
-      addArtifactToWorkspace(activeWorkspaceId, artifact.id);
-      setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
+      addArtifactToWorkspace(requestWorkspaceId, artifact.id);
+      if (isCurrentWorkspace()) {
+        setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
+      }
       const readyArtifact = await waitForArtifact(settings, artifact.id);
-      setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
-      openArtifact(readyArtifact);
+      if (isCurrentWorkspace()) {
+        setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
+        openArtifact(readyArtifact);
+      }
     } catch (error) {
-      setArtifacts((items) =>
-        items.map((item) =>
-          item.id === pendingArtifact.id || item.id === trackedArtifactId
-            ? { ...item, status: "failed", error: error instanceof Error ? error.message : "生成失败" }
-          : item,
-        ),
-      );
+      if (isCurrentWorkspace()) {
+        setArtifacts((items) =>
+          items.map((item) =>
+            item.id === pendingArtifact.id || item.id === trackedArtifactId
+              ? { ...item, status: "failed", error: error instanceof Error ? error.message : "生成失败" }
+            : item,
+          ),
+        );
+      }
     } finally {
       finishArtifactGeneration();
     }
@@ -765,9 +814,11 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   async function handleLogout() {
     setAccountMenuOpen(false);
     const anonWorkspaces = loadUserWorkspaces(null);
+    const nextActive = loadActiveWorkspaceId(anonWorkspaces, null);
     saveWorkspaces(anonWorkspaces, null);
+    activeWorkspaceIdRef.current = nextActive;
     setWorkspaces(anonWorkspaces);
-    setActiveWorkspaceId(loadActiveWorkspaceId(anonWorkspaces, null));
+    setActiveWorkspaceId(nextActive);
     try {
       await auth.logout();
     } catch {
@@ -786,6 +837,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       minute: "2-digit",
     })}`, auth.user.id);
     initializeEmptyWorkspaceData(nextWorkspace.id);
+    activeWorkspaceIdRef.current = nextWorkspace.id;
     setWorkspaces((items) => [nextWorkspace, ...items]);
     setActiveWorkspaceId(nextWorkspace.id);
     setSources([]);
@@ -819,6 +871,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   function handleSelectWorkspace(id: string) {
     if (id === activeWorkspaceId || !workspaces.some((workspace) => workspace.id === id)) return;
+    activeWorkspaceIdRef.current = id;
     setActiveWorkspaceId(id);
     setSources([]);
     setMessages([]);
@@ -837,6 +890,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     try {
       await deleteWorkspaceRemoteData(id, settings, workspaces);
       const { workspaces: remaining, nextActive } = deleteWorkspace(id, auth.user?.id ?? null);
+      activeWorkspaceIdRef.current = nextActive;
       setWorkspaces(remaining);
       setActiveWorkspaceId(nextActive);
       setSources([]);
