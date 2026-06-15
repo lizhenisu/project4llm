@@ -17,6 +17,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: lizhenisu/project4llm
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:

@@ -362,7 +362,7 @@ function SourceUploadDialog({ onClose, onUpload }: { onClose: () => void; onUplo
         >
           <Upload size={28} />
           <strong>或拖放文件</strong>
-          <span>PDF、Markdown、TXT、HTML、CSV、TSV</span>
+          <span>PDF、Markdown、TXT、HTML、CSV、TSV · 最大 100MB</span>
           <div className="upload-actions">
             <button type="button" onClick={() => inputRef.current?.click()}>
               上传文件
