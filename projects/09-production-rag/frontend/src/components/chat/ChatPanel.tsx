@@ -423,7 +423,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isImageUrl(value: string) {
-  return /^data:image\/[a-z0-9.+-]+;base64,/i.test(value) || /^https?:\/\//i.test(value) || value.startsWith("/source-assets/");
+  return (
+    /^data:image\/[a-z0-9.+-]+;base64,/i.test(value) ||
+    /^https?:\/\//i.test(value) ||
+    value.startsWith("/source-assets/") ||
+    value.startsWith("/api/source-assets/")
+  );
 }
 
 function filenameFromPath(path: string) {

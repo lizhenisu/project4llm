@@ -107,7 +107,7 @@ export function getSourceContent(settings: Settings, docId: string, docVersion?:
   return request<SourceContent>(
     `/sources/content/${encodeURIComponent(docId)}?tenant_id=${encodeURIComponent(settings.tenantId)}${versionParam}`,
     { settings },
-  );
+  ).then((content) => normalizeSourceContentAssets(settings, content));
 }
 
 export async function uploadSource(settings: Settings, file: File): Promise<SourceItem[]> {
@@ -156,7 +156,7 @@ export function queryRag(
     history: string[];
     imageDataUrl?: string | null;
   },
-) {
+): Promise<QueryResponse> {
   return request<QueryResponse>("/query", {
     method: "POST",
     settings,
@@ -171,7 +171,7 @@ export function queryRag(
       candidate_limit: 20,
       context_limit: RAG_CONTEXT_LIMIT,
     },
-  });
+  }).then((response) => normalizeQueryResponseAssets(settings, response));
 }
 
 export function sendFeedback(
@@ -207,7 +207,7 @@ export function getConversation(settings: Settings, conversationId: string): Pro
   return request<ApiConversation>(
     `/conversations/${encodeURIComponent(conversationId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
     { settings },
-  ).then(normalizeConversation);
+  ).then((conversation) => normalizeConversation(settings, conversation));
 }
 
 export function saveConversation(
@@ -238,7 +238,7 @@ export function saveConversation(
       })),
       source_doc_ids: params.sourceDocIds,
     },
-  }).then(normalizeConversation);
+  }).then((conversation) => normalizeConversation(settings, conversation));
 }
 
 export function deleteConversation(settings: Settings, conversationId: string) {
@@ -248,15 +248,69 @@ export function deleteConversation(settings: Settings, conversationId: string) {
   );
 }
 
-function normalizeConversation(conversation: ApiConversation): Conversation {
+function normalizeConversation(settings: Settings, conversation: ApiConversation): Conversation {
   return {
     ...conversation,
     messages: conversation.messages.map((message) => ({
       ...message,
       requestId: message.request_id || undefined,
+      citations: message.citations?.map((citation) => normalizeCitationAssets(settings, citation)),
       feedbackRating: message.feedback_rating ?? null,
     })),
   };
+}
+
+function normalizeSourceContentAssets(settings: Settings, content: SourceContent): SourceContent {
+  return {
+    ...content,
+    blocks: content.blocks?.map((block) => ({
+      ...block,
+      url: normalizeAssetUrl(settings, block.url),
+    })),
+  };
+}
+
+function normalizeQueryResponseAssets(settings: Settings, response: QueryResponse): QueryResponse {
+  return {
+    ...response,
+    citations: response.citations.map((citation) => normalizeCitationAssets(settings, citation)),
+  };
+}
+
+function normalizeCitationAssets<T extends { metadata: Record<string, unknown> }>(settings: Settings, citation: T): T {
+  return {
+    ...citation,
+    metadata: normalizeMetadataAssets(settings, citation.metadata),
+  };
+}
+
+function normalizeMetadataAssets(settings: Settings, metadata: Record<string, unknown>): Record<string, unknown> {
+  const blocks = metadata.display_blocks;
+  if (!Array.isArray(blocks)) {
+    return metadata;
+  }
+  return {
+    ...metadata,
+    display_blocks: blocks.map((block) => {
+      if (!isRecord(block)) return block;
+      return {
+        ...block,
+        url: normalizeAssetUrl(settings, typeof block.url === "string" ? block.url : undefined),
+      };
+    }),
+  };
+}
+
+function normalizeAssetUrl(settings: Settings, url: string | undefined): string | undefined {
+  if (!url?.startsWith("/source-assets/")) {
+    return url;
+  }
+  const apiBaseUrl = settings.apiBaseUrl.replace(/\/+$/, "");
+  return `${apiBaseUrl}${url}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export async function deleteArtifact(

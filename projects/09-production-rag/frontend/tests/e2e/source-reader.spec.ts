@@ -42,6 +42,18 @@ async function mockWorkspaceShell(page: Page) {
   });
 }
 
+async function mockSourceAssetRoute(page: Page) {
+  await page.route("**/api/source-assets/**", async (route) => {
+    await route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    });
+  });
+}
+
 test("hides database create/rename controls when not authenticated", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.removeItem("production-rag-auth-session");
@@ -743,6 +755,7 @@ test("renders assistant math formulas with KaTeX", async ({ page }) => {
 });
 
 test("opens parsed source content from a document-level source row", async ({ page }) => {
+  await mockSourceAssetRoute(page);
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok" } });
   });
@@ -817,11 +830,15 @@ test("opens parsed source content from a document-level source row", async ({ pa
   await expect(reader.getByText("这份资料介绍自然辩证法视角下的生态治理实践")).toBeVisible();
   await expect(reader.getByText("Page 1", { exact: true })).toBeVisible();
   await expect(reader.getByText("Attention Is All You Need")).toBeVisible();
-  await expect(reader.getByRole("img", { name: "Image 1" })).toBeVisible();
+  const sourceImage = reader.getByRole("img", { name: "Image 1" });
+  await expect(sourceImage).toBeVisible();
+  await expect(sourceImage).toHaveAttribute("src", /\/api\/source-assets\/uploads\/team_a\/regression\/paper\.assets\/page-1-image-1\.png/);
+  await expect.poll(async () => sourceImage.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
   await expect(reader.getByText("第 1 页")).toHaveCount(0);
 });
 
 test("sends an attached chat image as a multimodal query", async ({ page }) => {
+  await mockSourceAssetRoute(page);
   let queryPayload: any = null;
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok" } });
@@ -904,7 +921,10 @@ test("sends an attached chat image as a multimodal query", async ({ page }) => {
 
   await expect(page.getByText("已根据图片检索到相关论文图示。")).toBeVisible();
   await page.locator(".citations details").click();
-  await expect(page.getByRole("img", { name: "Figure 1" })).toBeVisible();
+  const citationImage = page.getByRole("img", { name: "Figure 1" });
+  await expect(citationImage).toBeVisible();
+  await expect(citationImage).toHaveAttribute("src", /\/api\/source-assets\/uploads\/team_a\/regression\/paper\.assets\/page-1-image-1\.png/);
+  await expect.poll(async () => citationImage.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
   expect(queryPayload.query_mode).toBe("multimodal");
   expect(queryPayload.image_data_url).toMatch(/^data:image\/png;base64,/);
   expect(queryPayload.doc_ids).toEqual(["paper/page-1"]);
