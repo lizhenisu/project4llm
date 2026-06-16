@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PencilLine, Save, Settings as SettingsIcon, Shield, Trash2, UserRound, X } from "lucide-react";
+import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PencilLine, Search, Settings as SettingsIcon, Shield, Trash2, UserRound, Users, X } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -73,10 +73,10 @@ type PanelLayout = {
 
 type ResizeHandle = "source-chat" | "chat-studio";
 type AppView = "workspace" | "profile" | "admin";
+type AdminSection = "settings" | "announcements" | "users";
 type AdminUserDraft = {
-  username: string;
-  displayName: string;
-  avatarUrl: string;
+  profileNameEditAllowed: boolean;
+  avatarEditAllowed: boolean;
 };
 
 const DEFAULT_LAYOUT: PanelLayout = { source: 24, chat: 46, studio: 30 };
@@ -1230,6 +1230,8 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
   const loginLink = useMemo(() => buildLoginLink(auth.token), [auth.token]);
+  const canEditProfileName = user.profile_name_edit_allowed !== false;
+  const canEditAvatar = user.avatar_edit_allowed !== false;
 
   useEffect(() => {
     setUsername(user.username);
@@ -1301,16 +1303,19 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
           </div>
           <label>
             用户名
-            <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+            <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" disabled={!canEditProfileName} />
           </label>
           <label>
             显示名称
-            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" />
+            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" disabled={!canEditProfileName} />
           </label>
           <label>
             头像地址
-            <input value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} placeholder="https://..." />
+            <input value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} placeholder="https://..." disabled={!canEditAvatar} />
           </label>
+          {!canEditProfileName || !canEditAvatar ? (
+            <p className="muted-text">部分资料修改权限已由管理员关闭。</p>
+          ) : null}
           <dl className="profile-list">
             <div>
               <dt>数据空间</dt>
@@ -1392,25 +1397,22 @@ function AdminPage({
   onBack: () => void;
   onAnnouncement: (announcement: Announcement) => void;
 }) {
-  const [users, setUsers] = useState<AuthUser[]>([]);
+  const [activeSection, setActiveSection] = useState<AdminSection>("settings");
+  const [navCollapsed, setNavCollapsed] = useState(false);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
   const [linkLabel, setLinkLabel] = useState("");
   const [error, setError] = useState("");
-  const [busyUserId, setBusyUserId] = useState<string | null>(null);
-  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
-  const [userDrafts, setUserDrafts] = useState<Record<string, AdminUserDraft>>({});
   const [adminSettings, setAdminSettings] = useState<AdminSettings | null>(null);
   const [settingsBusy, setSettingsBusy] = useState(false);
+  const [userTotal, setUserTotal] = useState<number | null>(null);
 
   useEffect(() => {
-    Promise.all([listAdminUsers(settings), getAdminSettings(settings)])
-      .then(([userRows, nextSettings]) => {
-        setUsers(userRows);
-        setUserDrafts(userRowsToDrafts(userRows));
-        setSelectedUserIds((ids) => ids.filter((id) => userRows.some((user) => user.id === id)));
+    Promise.all([getAdminSettings(settings), listAdminUsers(settings, { limit: 1 })])
+      .then(([nextSettings, userPage]) => {
         setAdminSettings(nextSettings);
+        setUserTotal(userPage.total);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "加载管理员控制台失败"));
   }, [settings]);
@@ -1435,21 +1437,6 @@ function AdminPage({
     }
   }
 
-  async function toggleUserStatus(user: AuthUser) {
-    setError("");
-    setBusyUserId(user.id);
-    try {
-      const nextStatus = user.status === "banned" ? "active" : "banned";
-      const updated = await updateAdminUserStatus(settings, user.id, nextStatus);
-      setUsers((items) => items.map((item) => (item.id === updated.id ? updated : item)));
-      setUserDrafts((drafts) => ({ ...drafts, [updated.id]: userToDraft(updated) }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "更新用户状态失败");
-    } finally {
-      setBusyUserId(null);
-    }
-  }
-
   async function toggleRegistrationEnabled() {
     if (!adminSettings) {
       return;
@@ -1466,6 +1453,228 @@ function AdminPage({
     }
   }
 
+  async function removeLatestAnnouncement() {
+    const announcement = adminSettings?.latest_announcement;
+    if (!announcement) return;
+    setError("");
+    setSettingsBusy(true);
+    try {
+      await deleteAnnouncement(settings, announcement.id);
+      setAdminSettings((current) => current ? { ...current, latest_announcement: null } : current);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除公告失败");
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
+  return (
+    <main className="account-page admin-page">
+      <div className="page-heading">
+        <button className="icon-button" type="button" aria-label="返回工作台" onClick={onBack}>
+          <ArrowLeft size={18} />
+        </button>
+        <div>
+          <h1>管理员控制台</h1>
+          <p>发布公告、调整系统开关，用户管理从独立入口进入。</p>
+        </div>
+      </div>
+      <section className={`admin-console-layout ${navCollapsed ? "is-nav-collapsed" : ""}`}>
+        <aside className="admin-console-nav" aria-label="管理员功能导航">
+          <button
+            type="button"
+            className="admin-nav-collapse"
+            aria-label={navCollapsed ? "展开功能区" : "收起功能区"}
+            title={navCollapsed ? "展开功能区" : "收起功能区"}
+            onClick={() => setNavCollapsed((collapsed) => !collapsed)}
+          >
+            {navCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+            <span>
+              <strong>功能区</strong>
+              <small>{navCollapsed ? "已收起" : "可收起"}</small>
+            </span>
+          </button>
+          <button
+            type="button"
+            className={activeSection === "settings" ? "is-active" : ""}
+            title="系统设置"
+            onClick={() => setActiveSection("settings")}
+          >
+            <SettingsIcon size={17} />
+            <span>
+              <strong>系统设置</strong>
+              <small>{adminSettings?.registration_enabled ? "注册开放" : "注册关闭"}</small>
+            </span>
+          </button>
+          <button
+            type="button"
+            className={activeSection === "announcements" ? "is-active" : ""}
+            title="公告管理"
+            onClick={() => setActiveSection("announcements")}
+          >
+            <Megaphone size={17} />
+            <span>
+              <strong>公告管理</strong>
+              <small>{adminSettings?.latest_announcement ? "有当前公告" : "暂无公告"}</small>
+            </span>
+          </button>
+          <button
+            type="button"
+            className={activeSection === "users" ? "is-active" : ""}
+            title="用户管理"
+            onClick={() => setActiveSection("users")}
+          >
+            <Users size={17} />
+            <span>
+              <strong>用户管理</strong>
+              <small>{userTotal === null ? "加载中" : `${userTotal} 个账号`}</small>
+            </span>
+          </button>
+        </aside>
+        <section className="admin-console-content">
+          {activeSection === "settings" ? (
+            <section className="admin-detail-panel">
+              <div className="admin-section-heading">
+                <div>
+                  <h2>系统设置</h2>
+                  <p>控制新账号注册和进入各项管理功能。</p>
+                </div>
+              </div>
+              <div className="admin-setting-row">
+                <div>
+                  <strong>新用户注册</strong>
+                  <p>{adminSettings?.registration_enabled ? "当前允许新用户自行注册。" : "当前已关闭新用户注册。"}</p>
+                </div>
+                <button
+                  type="button"
+                  className={`toggle-switch ${adminSettings?.registration_enabled ? "is-on" : ""}`}
+                  role="switch"
+                  aria-checked={Boolean(adminSettings?.registration_enabled)}
+                  disabled={!adminSettings || settingsBusy}
+                  onClick={toggleRegistrationEnabled}
+                >
+                  <span className="toggle-track">
+                    <span />
+                  </span>
+                  <span className="toggle-label">{adminSettings?.registration_enabled ? "允许注册" : "关闭注册"}</span>
+                </button>
+              </div>
+              {error ? <p className="error-text">{error}</p> : null}
+            </section>
+          ) : null}
+          {activeSection === "announcements" ? (
+            <section className="admin-detail-panel">
+              <div className="admin-section-heading">
+                <div>
+                  <h2>公告管理</h2>
+                  <p>发布公告、附加跳转链接，并删除当前公告。</p>
+                </div>
+              </div>
+              <form className="announcement-form admin-form-plain" onSubmit={submit}>
+                <label>
+                  公告标题
+                  <input value={title} onChange={(event) => setTitle(event.target.value)} />
+                </label>
+                <label>
+                  公告内容
+                  <textarea value={content} onChange={(event) => setContent(event.target.value)} rows={4} />
+                </label>
+                <label>
+                  跳转链接
+                  <input value={linkUrl} onChange={(event) => setLinkUrl(event.target.value)} placeholder="https://example.com 或 /docs" />
+                </label>
+                <label>
+                  按钮文案
+                  <input value={linkLabel} onChange={(event) => setLinkLabel(event.target.value)} placeholder="查看详情" />
+                </label>
+                <button type="submit" disabled={!title.trim() || !content.trim()}>发布公告</button>
+              </form>
+              <div className="latest-announcement">
+                <span>当前公告</span>
+                {adminSettings?.latest_announcement ? (
+                  <>
+                    <strong>{adminSettings.latest_announcement.title}</strong>
+                    <p>{adminSettings.latest_announcement.content}</p>
+                    {adminSettings.latest_announcement.link_url ? (
+                      <a href={adminSettings.latest_announcement.link_url} target="_blank" rel="noreferrer">
+                        <ExternalLink size={14} />
+                        {adminSettings.latest_announcement.link_label || "查看详情"}
+                      </a>
+                    ) : null}
+                    <small>
+                      {adminSettings.latest_announcement.author_name || "系统公告"} · {formatDateTime(adminSettings.latest_announcement.created_at)}
+                    </small>
+                    <button type="button" className="inline-action danger" disabled={settingsBusy} onClick={removeLatestAnnouncement}>
+                      <Trash2 size={15} />
+                      删除公告
+                    </button>
+                  </>
+                ) : (
+                  <p>暂无公告</p>
+                )}
+              </div>
+              {error ? <p className="error-text">{error}</p> : null}
+            </section>
+          ) : null}
+          {activeSection === "users" ? (
+            <AdminUsersPanel settings={settings} currentUser={currentUser} />
+          ) : null}
+        </section>
+      </section>
+    </main>
+  );
+}
+
+function AdminUsersPanel({
+  settings,
+  currentUser,
+}: {
+  settings: Settings;
+  currentUser: AuthUser;
+}) {
+  const pageSize = 50;
+  const [users, setUsers] = useState<AuthUser[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [query, setQuery] = useState("");
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [userDrafts, setUserDrafts] = useState<Record<string, AdminUserDraft>>({});
+  const [busyUserId, setBusyUserId] = useState<string | null>(null);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    listAdminUsers(settings, { query: appliedQuery, limit: pageSize, offset })
+      .then((page) => {
+        if (cancelled) return;
+        setUsers(page.users);
+        setTotal(page.total);
+        setUserDrafts(userRowsToDrafts(page.users));
+        setSelectedUserIds((ids) => ids.filter((id) => page.users.some((user) => user.id === id)));
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "加载用户失败");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings, appliedQuery, offset]);
+
+  function submitSearch(event: FormEvent) {
+    event.preventDefault();
+    setOffset(0);
+    setAppliedQuery(query.trim());
+    setSelectedUserIds([]);
+  }
+
   function updateUserDraft(userId: string, patch: Partial<AdminUserDraft>) {
     setUserDrafts((drafts) => ({
       ...drafts,
@@ -1473,7 +1682,7 @@ function AdminPage({
     }));
   }
 
-  async function saveUserDraft(user: AuthUser) {
+  async function saveUserPermissions(user: AuthUser) {
     const draft = userDrafts[user.id] || userToDraft(user);
     setError("");
     setBusyUserId(user.id);
@@ -1481,16 +1690,30 @@ function AdminPage({
       const response = await updateAdminUsers(settings, [
         {
           user_id: user.id,
-          username: draft.username,
-          display_name: draft.displayName,
-          avatar_url: draft.avatarUrl,
+          profile_name_edit_allowed: draft.profileNameEditAllowed,
+          avatar_edit_allowed: draft.avatarEditAllowed,
         },
       ]);
       const updated = response.users[0];
       setUsers((items) => items.map((item) => (item.id === updated.id ? updated : item)));
       setUserDrafts((drafts) => ({ ...drafts, [updated.id]: userToDraft(updated) }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "保存用户失败");
+      setError(err instanceof Error ? err.message : "保存用户权限失败");
+    } finally {
+      setBusyUserId(null);
+    }
+  }
+
+  async function toggleUserStatus(user: AuthUser) {
+    setError("");
+    setBusyUserId(user.id);
+    try {
+      const nextStatus = user.status === "banned" ? "active" : "banned";
+      const updated = await updateAdminUserStatus(settings, user.id, nextStatus);
+      setUsers((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+      setUserDrafts((drafts) => ({ ...drafts, [updated.id]: userToDraft(updated) }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新用户状态失败");
     } finally {
       setBusyUserId(null);
     }
@@ -1526,110 +1749,36 @@ function AdminPage({
     setSelectedUserIds((current) => (current.length === ids.length ? [] : ids));
   }
 
-  async function removeLatestAnnouncement() {
-    const announcement = adminSettings?.latest_announcement;
-    if (!announcement) return;
-    setError("");
-    setSettingsBusy(true);
-    try {
-      await deleteAnnouncement(settings, announcement.id);
-      setAdminSettings((current) => current ? { ...current, latest_announcement: null } : current);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "删除公告失败");
-    } finally {
-      setSettingsBusy(false);
-    }
-  }
-
   const selectableIds = selectableUserIds(users, currentUser);
   const allSelected = selectableIds.length > 0 && selectedUserIds.length === selectableIds.length;
+  const pageStart = total === 0 ? 0 : offset + 1;
+  const pageEnd = Math.min(offset + pageSize, total);
 
   return (
-    <main className="account-page admin-page">
-      <div className="page-heading">
-        <button className="icon-button" type="button" aria-label="返回工作台" onClick={onBack}>
-          <ArrowLeft size={18} />
-        </button>
+    <section className="admin-users-panel">
+      <div className="admin-section-heading">
         <div>
-          <h1>管理员控制台</h1>
-          <p>发布公告、查看用户并管理普通账号状态。</p>
+          <h2>用户管理</h2>
+          <p>按页搜索用户，批量封禁账号，并控制用户是否能自行修改名称和头像。</p>
         </div>
       </div>
-      <section className="account-page-grid admin-page-grid">
-        <section className="announcement-form admin-settings-card">
-          <h2>系统设置</h2>
-          <div className="admin-setting-row">
-            <div>
-              <strong>新用户注册</strong>
-              <p>{adminSettings?.registration_enabled ? "当前允许新用户自行注册。" : "当前已关闭新用户注册。"}</p>
-            </div>
-            <button
-              type="button"
-              className={`toggle-switch ${adminSettings?.registration_enabled ? "is-on" : ""}`}
-              role="switch"
-              aria-checked={Boolean(adminSettings?.registration_enabled)}
-              disabled={!adminSettings || settingsBusy}
-              onClick={toggleRegistrationEnabled}
-            >
-              <span className="toggle-track">
-                <span />
-              </span>
-              <span className="toggle-label">{adminSettings?.registration_enabled ? "允许注册" : "关闭注册"}</span>
-            </button>
+        <form className="admin-user-search" onSubmit={submitSearch}>
+          <div className="search-field">
+            <Search size={16} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索用户名、显示名称或 Tenant"
+            />
           </div>
-        </section>
-        <form className="announcement-form" onSubmit={submit}>
-          <h2>发布公告</h2>
-          <label>
-            公告标题
-            <input value={title} onChange={(event) => setTitle(event.target.value)} />
-          </label>
-          <label>
-            公告内容
-            <textarea value={content} onChange={(event) => setContent(event.target.value)} rows={4} />
-          </label>
-          <label>
-            跳转链接
-            <input value={linkUrl} onChange={(event) => setLinkUrl(event.target.value)} placeholder="https://example.com 或 /docs" />
-          </label>
-          <label>
-            按钮文案
-            <input value={linkLabel} onChange={(event) => setLinkLabel(event.target.value)} placeholder="查看详情" />
-          </label>
-          <button type="submit" disabled={!title.trim() || !content.trim()}>发布公告</button>
-          <div className="latest-announcement">
-            <span>上一次公告</span>
-            {adminSettings?.latest_announcement ? (
-              <>
-                <strong>{adminSettings.latest_announcement.title}</strong>
-                <p>{adminSettings.latest_announcement.content}</p>
-                {adminSettings.latest_announcement.link_url ? (
-                  <a href={adminSettings.latest_announcement.link_url} target="_blank" rel="noreferrer">
-                    <ExternalLink size={14} />
-                    {adminSettings.latest_announcement.link_label || "查看详情"}
-                  </a>
-                ) : null}
-                <small>
-                  {adminSettings.latest_announcement.author_name || "系统公告"} · {formatDateTime(adminSettings.latest_announcement.created_at)}
-                </small>
-                <button type="button" className="inline-action danger" disabled={settingsBusy} onClick={removeLatestAnnouncement}>
-                  <Trash2 size={15} />
-                  删除公告
-                </button>
-              </>
-            ) : (
-              <p>暂无公告</p>
-            )}
-          </div>
+          <button className="primary-pill" type="submit">搜索</button>
         </form>
-        {error ? <p className="error-text">{error}</p> : null}
-        <div className="admin-users">
-          <h3>用户列表</h3>
-          <div className="admin-bulk-actions">
-            <label>
-              <input type="checkbox" checked={allSelected} onChange={toggleAllSelectableUsers} disabled={selectableIds.length === 0} />
-              选择普通用户
-            </label>
+        <div className="admin-bulk-actions">
+          <label>
+            <input type="checkbox" checked={allSelected} onChange={toggleAllSelectableUsers} disabled={selectableIds.length === 0} />
+            选择当前页普通用户
+          </label>
+          <div>
             <button type="button" className="inline-action danger" disabled={selectedUserIds.length === 0 || settingsBusy} onClick={() => bulkUpdateSelectedUsers("banned")}>
               <Ban size={15} />
               批量封禁
@@ -1639,98 +1788,101 @@ function AdminPage({
               批量解封
             </button>
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th>选择</th>
-                <th>用户名</th>
-                <th>显示名</th>
-                <th>头像地址</th>
-                <th>角色</th>
-                <th>状态</th>
-                <th>注册日期</th>
-                <th>Tenant</th>
-                <th>最近登录</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((user) => {
-                const draft = userDrafts[user.id] || userToDraft(user);
-                const editable = user.role !== "admin" && user.id !== currentUser.id;
-                return (
-                <tr key={user.id}>
-                  <td>
+        </div>
+        <div className="admin-user-page-meta">
+          <span>{loading ? "加载中..." : `显示 ${pageStart}-${pageEnd} / ${total}`}</span>
+          {appliedQuery ? <span>搜索：{appliedQuery}</span> : null}
+        </div>
+        {error ? <p className="error-text">{error}</p> : null}
+        <div className="admin-user-list">
+          {users.map((user) => {
+            const draft = userDrafts[user.id] || userToDraft(user);
+            const editable = user.role !== "admin" && user.id !== currentUser.id;
+            return (
+              <article className="admin-user-row" key={user.id}>
+                <label className="admin-user-select">
+                  <input
+                    type="checkbox"
+                    checked={selectedUserIds.includes(user.id)}
+                    disabled={!editable}
+                    onChange={() => toggleSelectedUser(user.id)}
+                  />
+                </label>
+                <div className="admin-user-main">
+                  <div className="admin-user-avatar">
+                    {user.avatar_url ? <img src={user.avatar_url} alt="" /> : <span>{user.display_name.slice(0, 1).toUpperCase()}</span>}
+                  </div>
+                  <div>
+                    <strong>{user.display_name}</strong>
+                    <span>{user.username} · {user.tenant_id}</span>
+                    <small>
+                      {user.role === "admin" ? "管理员" : "普通用户"} · {user.status === "banned" ? "已封禁" : "正常"}
+                    </small>
+                  </div>
+                </div>
+                <div className="admin-user-dates">
+                  <span>注册 {formatDateTime(user.created_at)}</span>
+                  <span>最近登录 {user.last_login_at ? formatDateTime(user.last_login_at) : "未登录"}</span>
+                </div>
+                <div className="admin-user-permissions">
+                  <label>
                     <input
                       type="checkbox"
-                      checked={selectedUserIds.includes(user.id)}
-                      disabled={!editable}
-                      onChange={() => toggleSelectedUser(user.id)}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      className="admin-user-input"
-                      value={draft.username}
+                      checked={draft.profileNameEditAllowed}
                       disabled={!editable || busyUserId === user.id}
-                      onChange={(event) => updateUserDraft(user.id, { username: event.target.value })}
+                      onChange={(event) => updateUserDraft(user.id, { profileNameEditAllowed: event.target.checked })}
                     />
-                  </td>
-                  <td>
+                    允许改名称
+                  </label>
+                  <label>
                     <input
-                      className="admin-user-input"
-                      value={draft.displayName}
+                      type="checkbox"
+                      checked={draft.avatarEditAllowed}
                       disabled={!editable || busyUserId === user.id}
-                      onChange={(event) => updateUserDraft(user.id, { displayName: event.target.value })}
+                      onChange={(event) => updateUserDraft(user.id, { avatarEditAllowed: event.target.checked })}
                     />
-                  </td>
-                  <td>
-                    <input
-                      className="admin-user-input"
-                      value={draft.avatarUrl}
-                      disabled={!editable || busyUserId === user.id}
-                      onChange={(event) => updateUserDraft(user.id, { avatarUrl: event.target.value })}
-                      placeholder="https:// 或 data:image"
-                    />
-                  </td>
-                  <td>{user.role === "admin" ? "管理员" : "普通用户"}</td>
-                  <td>{user.status === "banned" ? "已封禁" : "正常"}</td>
-                  <td>{formatDateTime(user.created_at)}</td>
-                  <td>{user.tenant_id}</td>
-                  <td>{user.last_login_at ? formatDateTime(user.last_login_at) : "未登录"}</td>
-                  <td>
-                    {user.role === "admin" || user.id === currentUser.id ? (
-                      <span className="muted-text">不可操作</span>
-                    ) : (
-                      <div className="admin-row-actions">
-                        <button
-                          className="inline-action"
-                          type="button"
-                          disabled={busyUserId === user.id}
-                          onClick={() => saveUserDraft(user)}
-                        >
-                          <Save size={15} />
-                          保存
-                        </button>
-                        <button
-                          className={user.status === "banned" ? "inline-action" : "inline-action danger"}
-                          type="button"
-                          disabled={busyUserId === user.id}
-                          onClick={() => toggleUserStatus(user)}
-                        >
-                          {user.status === "banned" ? <CheckCircle2 size={15} /> : <Ban size={15} />}
-                          {user.status === "banned" ? "解封" : "封禁"}
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              )})}
-            </tbody>
-          </table>
+                    允许改头像
+                  </label>
+                </div>
+                <div className="admin-row-actions">
+                  {editable ? (
+                    <>
+                      <button
+                        className="inline-action"
+                        type="button"
+                        disabled={busyUserId === user.id}
+                        onClick={() => saveUserPermissions(user)}
+                      >
+                        保存权限
+                      </button>
+                      <button
+                        className={user.status === "banned" ? "inline-action" : "inline-action danger"}
+                        type="button"
+                        disabled={busyUserId === user.id}
+                        onClick={() => toggleUserStatus(user)}
+                      >
+                        {user.status === "banned" ? <CheckCircle2 size={15} /> : <Ban size={15} />}
+                        {user.status === "banned" ? "解封" : "封禁"}
+                      </button>
+                    </>
+                  ) : (
+                    <span className="muted-text">不可操作</span>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+          {!loading && users.length === 0 ? <p className="muted-text">没有找到用户。</p> : null}
         </div>
-      </section>
-    </main>
+        <div className="admin-pagination">
+          <button className="inline-action" type="button" disabled={offset === 0 || loading} onClick={() => setOffset(Math.max(0, offset - pageSize))}>
+            上一页
+          </button>
+          <button className="inline-action" type="button" disabled={offset + pageSize >= total || loading} onClick={() => setOffset(offset + pageSize)}>
+            下一页
+          </button>
+        </div>
+    </section>
   );
 }
 
@@ -1744,14 +1896,13 @@ function normalizeMessage(message: ChatMessage): ChatMessage {
 }
 
 function emptyUserDraft(): AdminUserDraft {
-  return { username: "", displayName: "", avatarUrl: "" };
+  return { profileNameEditAllowed: true, avatarEditAllowed: true };
 }
 
 function userToDraft(user: AuthUser): AdminUserDraft {
   return {
-    username: user.username,
-    displayName: user.display_name,
-    avatarUrl: user.avatar_url || "",
+    profileNameEditAllowed: user.profile_name_edit_allowed !== false,
+    avatarEditAllowed: user.avatar_edit_allowed !== false,
   };
 }
 

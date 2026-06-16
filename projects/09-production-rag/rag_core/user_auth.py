@@ -28,6 +28,8 @@ class User:
     created_at: int
     avatar_url: str = ""
     status: str = "active"
+    profile_name_edit_allowed: bool = True
+    avatar_edit_allowed: bool = True
     last_login_at: int | None = None
 
     def public_dict(self) -> dict[str, Any]:
@@ -40,6 +42,8 @@ class User:
             "created_at": self.created_at,
             "avatar_url": self.avatar_url,
             "status": self.status,
+            "profile_name_edit_allowed": self.profile_name_edit_allowed,
+            "avatar_edit_allowed": self.avatar_edit_allowed,
             "last_login_at": self.last_login_at,
         }
 
@@ -136,6 +140,8 @@ def register_user(
         created_at=timestamp,
         avatar_url="",
         status="active",
+        profile_name_edit_allowed=True,
+        avatar_edit_allowed=True,
     )
 
 
@@ -193,16 +199,46 @@ def authenticate_token(config: RagConfig, *, token: str | None) -> User | None:
         return user_from_row(row)
 
 
-def list_public_users(config: RagConfig) -> list[User]:
+def list_public_users(config: RagConfig, *, query: str = "", limit: int = 50, offset: int = 0) -> list[User]:
+    clean_query = query.strip().lower()
+    clean_limit = max(1, min(limit, 100))
+    clean_offset = max(0, offset)
     with connect_metadata_db(config) as conn:
+        params: list[Any] = []
+        where_sql = ""
+        if clean_query:
+            where_sql = "WHERE lower(username) LIKE ? OR lower(display_name) LIKE ? OR tenant_id LIKE ?"
+            like_query = f"%{clean_query}%"
+            params.extend([like_query, like_query, like_query])
         rows = conn.execute(
-            """
-            SELECT id, username, display_name, role, tenant_id, avatar_url, status, created_at, last_login_at
+            f"""
+            SELECT id, username, display_name, role, tenant_id, avatar_url, status,
+                   profile_name_edit_allowed, avatar_edit_allowed, created_at, last_login_at
             FROM users
+            {where_sql}
             ORDER BY created_at DESC
-            """
+            LIMIT ? OFFSET ?
+            """,
+            (*params, clean_limit, clean_offset),
         ).fetchall()
     return [user_from_row(row) for row in rows]
+
+
+def count_public_users(config: RagConfig, *, query: str = "") -> int:
+    clean_query = query.strip().lower()
+    with connect_metadata_db(config) as conn:
+        if clean_query:
+            like_query = f"%{clean_query}%"
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM users
+                WHERE lower(username) LIKE ? OR lower(display_name) LIKE ? OR tenant_id LIKE ?
+                """,
+                (like_query, like_query, like_query),
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) FROM users").fetchone()
+    return int(row[0])
 
 
 def update_user_profile(
@@ -217,6 +253,15 @@ def update_user_profile(
     display = normalize_display_name(display_name, username)
     avatar = validate_avatar_url(avatar_url)
     with connect_metadata_db(config) as conn:
+        current = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if current is None:
+            raise ValueError("用户不存在")
+        name_changed = username != str(current["username"]) or display != str(current["display_name"])
+        avatar_changed = avatar != str(current["avatar_url"] or "")
+        if name_changed and int(current["profile_name_edit_allowed"] or 0) != 1:
+            raise ValueError("管理员已关闭名称修改权限")
+        if avatar_changed and int(current["avatar_edit_allowed"] or 0) != 1:
+            raise ValueError("管理员已关闭头像修改权限")
         try:
             conn.execute(
                 """
@@ -295,17 +340,10 @@ def bulk_update_users(config: RagConfig, *, actor_id: str, updates: list[dict[st
             if str(row["role"]) == "admin" and user_id != actor_id:
                 raise ValueError("不能批量修改其他管理员账号")
 
-            username = str(row["username"])
-            display_name = str(row["display_name"])
-            avatar_url = str(row["avatar_url"] or "")
             status = str(row["status"] or "active")
+            profile_name_edit_allowed = bool(int(row["profile_name_edit_allowed"] or 0))
+            avatar_edit_allowed = bool(int(row["avatar_edit_allowed"] or 0))
 
-            if "username" in update and update["username"] is not None:
-                username = normalize_username(str(update["username"]))
-            if "display_name" in update and update["display_name"] is not None:
-                display_name = normalize_display_name(str(update["display_name"]), username)
-            if "avatar_url" in update and update["avatar_url"] is not None:
-                avatar_url = validate_avatar_url(str(update["avatar_url"]))
             if "status" in update and update["status"] is not None:
                 status = str(update["status"])
                 if status not in {"active", "banned"}:
@@ -314,20 +352,24 @@ def bulk_update_users(config: RagConfig, *, actor_id: str, updates: list[dict[st
                     raise ValueError("不能封禁当前管理员账号")
                 if str(row["role"]) == "admin" and status == "banned":
                     raise ValueError("不能封禁管理员账号")
+            if "profile_name_edit_allowed" in update and update["profile_name_edit_allowed"] is not None:
+                profile_name_edit_allowed = bool(update["profile_name_edit_allowed"])
+            if "avatar_edit_allowed" in update and update["avatar_edit_allowed"] is not None:
+                avatar_edit_allowed = bool(update["avatar_edit_allowed"])
 
-            try:
-                conn.execute(
-                    """
-                    UPDATE users
-                    SET username = ?, display_name = ?, avatar_url = ?, status = ?
-                    WHERE id = ?
-                    """,
-                    (username, display_name, avatar_url, status, user_id),
-                )
-            except Exception as exc:
-                if "UNIQUE" in str(exc).upper():
-                    raise ValueError("用户名已存在") from exc
-                raise
+            conn.execute(
+                """
+                UPDATE users
+                SET status = ?, profile_name_edit_allowed = ?, avatar_edit_allowed = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    1 if profile_name_edit_allowed else 0,
+                    1 if avatar_edit_allowed else 0,
+                    user_id,
+                ),
+            )
             if status == "banned":
                 conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             updated = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -463,5 +505,7 @@ def user_from_row(row, *, last_login_at: int | None = None) -> User:
         created_at=int(row["created_at"]),
         avatar_url=str(row["avatar_url"] or ""),
         status=str(row["status"] or "active"),
+        profile_name_edit_allowed=bool(int(row["profile_name_edit_allowed"] or 0)),
+        avatar_edit_allowed=bool(int(row["avatar_edit_allowed"] or 0)),
         last_login_at=last_login_at if last_login_at is not None else row["last_login_at"],
     )

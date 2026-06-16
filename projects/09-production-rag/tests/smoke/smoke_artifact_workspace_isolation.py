@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -19,10 +20,34 @@ def main() -> None:
         os.environ["RAG_RUNTIME_DIR"] = str(Path(temp_dir) / "runtime")
         os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(temp_dir) / "object_store")
         try:
+            seed_legacy_artifacts_table(Path(temp_dir) / "runtime" / "db" / "metadata.db")
             run_smoke()
         finally:
             restore_env("RAG_RUNTIME_DIR", old_runtime)
             restore_env("RAG_OBJECT_STORE_DIR", old_object_store)
+
+
+def seed_legacy_artifacts_table(db_path: Path) -> None:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE artifacts (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                artifact_type TEXT NOT NULL DEFAULT 'mindmap',
+                source_doc_ids TEXT NOT NULL DEFAULT '[]',
+                root TEXT,
+                table_json TEXT,
+                error TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX idx_artifacts_tenant_updated ON artifacts(tenant_id, updated_at DESC);
+            """
+        )
 
 
 def run_smoke() -> None:

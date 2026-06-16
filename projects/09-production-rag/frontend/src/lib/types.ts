@@ -144,7 +144,17 @@ export type AuthUser = {
   created_at: number;
   avatar_url?: string;
   status?: "active" | "banned";
+  profile_name_edit_allowed?: boolean;
+  avatar_edit_allowed?: boolean;
   last_login_at?: number | null;
+};
+
+export type AdminUserList = {
+  users: AuthUser[];
+  total: number;
+  limit: number;
+  offset: number;
+  query: string;
 };
 
 export type AuthResponse = {

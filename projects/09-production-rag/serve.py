@@ -7,7 +7,7 @@ import mimetypes
 from dataclasses import replace
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -56,6 +56,7 @@ from rag_core.user_auth import (
     bearer_token,
     bulk_update_users,
     change_user_password,
+    count_public_users,
     create_announcement,
     delete_announcement,
     is_registration_enabled,
@@ -290,6 +291,8 @@ class UserResponse(BaseModel):
     created_at: int
     avatar_url: str = ""
     status: str = "active"
+    profile_name_edit_allowed: bool = True
+    avatar_edit_allowed: bool = True
     last_login_at: int | None = None
 
 
@@ -322,10 +325,9 @@ class UserStatusRequest(BaseModel):
 
 class AdminUserUpdateItem(BaseModel):
     user_id: str
-    username: str | None = None
-    display_name: str | None = None
-    avatar_url: str | None = None
     status: str | None = Field(default=None, pattern="^(active|banned)$")
+    profile_name_edit_allowed: bool | None = None
+    avatar_edit_allowed: bool | None = None
 
 
 class AdminUserBulkUpdateRequest(BaseModel):
@@ -365,6 +367,10 @@ class RegistrationSettingsRequest(BaseModel):
 
 class UserListResponse(BaseModel):
     users: list[UserResponse]
+    total: int
+    limit: int
+    offset: int
+    query: str = ""
 
 
 def create_app():
@@ -465,10 +471,23 @@ def create_app():
         return {"status": "ok"}
 
     @app.get("/admin/users", response_model=UserListResponse)
-    def admin_users(authorization: str | None = Header(default=None)) -> UserListResponse:
+    def admin_users(
+        authorization: str | None = Header(default=None),
+        q: str = Query(default="", max_length=80),
+        limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ) -> UserListResponse:
         config = load_config()
         require_admin(config=config, authorization=authorization)
-        return UserListResponse(users=[user_to_response(user) for user in list_public_users(config)])
+        users = list_public_users(config, query=q, limit=limit, offset=offset)
+        total = count_public_users(config, query=q)
+        return UserListResponse(
+            users=[user_to_response(user) for user in users],
+            total=total,
+            limit=limit,
+            offset=offset,
+            query=q,
+        )
 
     @app.patch("/admin/users/{user_id}/status", response_model=UserResponse)
     def admin_update_user_status(
@@ -499,7 +518,13 @@ def create_app():
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return UserListResponse(users=[user_to_response(user) for user in users])
+        return UserListResponse(
+            users=[user_to_response(user) for user in users],
+            total=len(users),
+            limit=len(users),
+            offset=0,
+            query="",
+        )
 
     @app.get("/admin/settings", response_model=AdminSettingsResponse)
     def admin_settings(authorization: str | None = Header(default=None)) -> AdminSettingsResponse:

@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  AdminUserList,
   AdminSettings,
   Announcement,
   AuthResponse,
@@ -476,11 +477,18 @@ export async function listAnnouncements(settings: Settings): Promise<Announcemen
   return payload.announcements;
 }
 
-export async function listAdminUsers(settings: Settings): Promise<AuthUser[]> {
-  const payload = await request<{ users: AuthUser[] }>("/admin/users", {
+export function listAdminUsers(
+  settings: Settings,
+  params: { query?: string; limit?: number; offset?: number } = {},
+): Promise<AdminUserList> {
+  const query = new URLSearchParams();
+  if (params.query) query.set("q", params.query);
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.offset) query.set("offset", String(params.offset));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<AdminUserList>(`/admin/users${suffix}`, {
     settings,
   });
-  return payload.users;
 }
 
 export function getAdminSettings(settings: Settings): Promise<AdminSettings> {
@@ -513,13 +521,12 @@ export function updateAdminUsers(
   settings: Settings,
   users: Array<{
     user_id: string;
-    username?: string;
-    display_name?: string;
-    avatar_url?: string;
     status?: "active" | "banned";
+    profile_name_edit_allowed?: boolean;
+    avatar_edit_allowed?: boolean;
   }>,
-): Promise<{ users: AuthUser[] }> {
-  return request<{ users: AuthUser[] }>("/admin/users/bulk", {
+): Promise<AdminUserList> {
+  return request<AdminUserList>("/admin/users/bulk", {
     method: "PATCH",
     settings,
     json: { users },

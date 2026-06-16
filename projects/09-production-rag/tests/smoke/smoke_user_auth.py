@@ -127,6 +127,8 @@ def run_smoke() -> None:
     users = api.get("/admin/users", headers=admin_headers)
     assert users.status_code == 200, users.text
     assert [row["username"] for row in users.json()["users"]] == ["renamed_user", "admin_user"]
+    assert users.json()["total"] == 2
+    assert users.json()["limit"] == 50
 
     banned = api.patch(
         f"/admin/users/{second_body['user']['id']}/status",
@@ -153,25 +155,56 @@ def run_smoke() -> None:
     assert active.status_code == 200, active.text
     assert active.json()["status"] == "active"
 
-    bulk_profile = api.patch(
+    bulk_permissions = api.patch(
         "/admin/users/bulk",
         headers=admin_headers,
         json={
             "users": [
                 {
                     "user_id": second_body["user"]["id"],
-                    "username": "bulk_user",
-                    "display_name": "批量用户",
-                    "avatar_url": "https://example.com/bulk-avatar.png",
+                    "profile_name_edit_allowed": False,
+                    "avatar_edit_allowed": False,
                 }
             ]
         },
     )
-    assert bulk_profile.status_code == 200, bulk_profile.text
-    bulk_user = bulk_profile.json()["users"][0]
-    assert bulk_user["username"] == "bulk_user"
-    assert bulk_user["display_name"] == "批量用户"
-    assert bulk_user["avatar_url"] == "https://example.com/bulk-avatar.png"
+    assert bulk_permissions.status_code == 200, bulk_permissions.text
+    permission_user = bulk_permissions.json()["users"][0]
+    assert permission_user["profile_name_edit_allowed"] is False
+    assert permission_user["avatar_edit_allowed"] is False
+
+    permission_relogin = api.post(
+        "/auth/login",
+        json={"username": "renamed_user", "password": "stronger-password"},
+    )
+    assert permission_relogin.status_code == 200, permission_relogin.text
+    user_headers = {"Authorization": f"Bearer {permission_relogin.json()['token']}"}
+    blocked_profile = api.patch(
+        "/auth/me",
+        headers=user_headers,
+        json={
+            "username": "blocked_rename",
+            "display_name": "禁止改名",
+            "avatar_url": "https://example.com/blocked.png",
+        },
+    )
+    assert blocked_profile.status_code == 400, blocked_profile.text
+    assert "名称修改权限" in blocked_profile.json()["detail"]
+
+    restored_permissions = api.patch(
+        "/admin/users/bulk",
+        headers=admin_headers,
+        json={
+            "users": [
+                {
+                    "user_id": second_body["user"]["id"],
+                    "profile_name_edit_allowed": True,
+                    "avatar_edit_allowed": True,
+                }
+            ]
+        },
+    )
+    assert restored_permissions.status_code == 200, restored_permissions.text
 
     bulk_ban = api.patch(
         "/admin/users/bulk",
@@ -191,7 +224,7 @@ def run_smoke() -> None:
 
     relogin = api.post(
         "/auth/login",
-        json={"username": "bulk_user", "password": "stronger-password"},
+        json={"username": "renamed_user", "password": "stronger-password"},
     )
     assert relogin.status_code == 200, relogin.text
     user_headers = {"Authorization": f"Bearer {relogin.json()['token']}"}
