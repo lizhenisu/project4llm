@@ -59,6 +59,7 @@ from rag_core.user_auth import (
     count_public_users,
     create_announcement,
     delete_announcement,
+    ensure_default_test_account,
     is_registration_enabled,
     list_announcements,
     list_public_users,
@@ -375,6 +376,7 @@ class UserListResponse(BaseModel):
 
 def create_app():
     app = FastAPI(title="Production RAG", version="0.2.0")
+    ensure_default_test_account(load_config())
 
     @app.get("/health")
     def health() -> dict[str, str]:

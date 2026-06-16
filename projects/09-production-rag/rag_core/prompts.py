@@ -72,8 +72,8 @@ def build_answer_prompt(
 """
 
 
-def build_query_rewrite_prompt(*, history_text: str, query: str) -> str:
-    return f"对话历史:\n{history_text}\n\n当前问题:\n{query}"
+def build_query_rewrite_prompt(*, source_summary_text: str = "", history_text: str, query: str) -> str:
+    return f"资料摘要:\n{source_summary_text or '无'}\n\n对话历史:\n{history_text or '无'}\n\n当前问题:\n{query}"
 
 
 def build_source_guide_prompt(*, title: str, source_text: str) -> str:

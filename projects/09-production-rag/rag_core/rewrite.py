@@ -10,13 +10,14 @@ def rewrite_query(
     query: str,
     *,
     history: list[str] | None,
+    source_summaries: list[str] | None = None,
     config: RagConfig,
 ) -> RewriteResult:
     backend = config.query_rewrite_backend
     original = normalize_text(query)
     if backend == "llm":
         try:
-            rewritten = llm_rewrite(original, history or [], config)
+            rewritten = llm_rewrite(original, history or [], source_summaries or [], config)
         except RuntimeError:
             rewritten = original
         return RewriteResult(original, rewritten, backend)
@@ -25,7 +26,7 @@ def rewrite_query(
     )
 
 
-def llm_rewrite(query: str, history: list[str], config: RagConfig) -> str:
+def llm_rewrite(query: str, history: list[str], source_summaries: list[str], config: RagConfig) -> str:
     if not config.llm_base_url or not config.llm_api_key:
         raise RuntimeError("NEW_API_URL/NEW_API_KEY must be configured for llm query rewrite.")
 
@@ -34,6 +35,7 @@ def llm_rewrite(query: str, history: list[str], config: RagConfig) -> str:
     history_window = max(0, config.query_rewrite_history_turns)
     selected_history = history[-history_window:] if history_window else []
     history_text = "\n".join(selected_history)
+    source_summary_text = "\n".join(source_summaries[:20])
     client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
     response = client.chat.completions.create(
         model=config.llm_model,
@@ -44,7 +46,11 @@ def llm_rewrite(query: str, history: list[str], config: RagConfig) -> str:
             },
             {
                 "role": "user",
-                "content": build_query_rewrite_prompt(history_text=history_text, query=query),
+                "content": build_query_rewrite_prompt(
+                    source_summary_text=source_summary_text,
+                    history_text=history_text,
+                    query=query,
+                ),
             },
         ],
         max_tokens=max(1, config.query_rewrite_max_tokens),

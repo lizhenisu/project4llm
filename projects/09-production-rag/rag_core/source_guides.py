@@ -165,6 +165,72 @@ def load_source_guide(
     return None
 
 
+def load_source_guides_for_rewrite(
+    object_store_dir: Path,
+    *,
+    tenant_id: str,
+    doc_ids: list[str] | None = None,
+    doc_version: int | None = None,
+    current_doc_versions: dict[str, int] | None = None,
+    limit: int = 20,
+) -> list[str]:
+    path = object_store_dir / SOURCE_GUIDES_PATH
+    if not path.exists():
+        return []
+    allowed_doc_ids = set(doc_ids or [])
+    rows = read_jsonl(path)
+    matched = source_guide_rows_for_rewrite(
+        rows,
+        tenant_id=tenant_id,
+        allowed_doc_ids=allowed_doc_ids,
+        doc_version=doc_version,
+        current_doc_versions=current_doc_versions,
+        limit=limit,
+    )
+    if not matched and allowed_doc_ids:
+        matched = source_guide_rows_for_rewrite(
+            rows,
+            tenant_id=tenant_id,
+            allowed_doc_ids=set(),
+            doc_version=doc_version,
+            current_doc_versions=current_doc_versions,
+            limit=limit,
+        )
+    return matched
+
+
+def source_guide_rows_for_rewrite(
+    source_rows: list[dict],
+    *,
+    tenant_id: str,
+    allowed_doc_ids: set[str],
+    doc_version: int | None,
+    current_doc_versions: dict[str, int] | None,
+    limit: int,
+) -> list[str]:
+    rows: list[str] = []
+    for row in source_rows:
+        source_doc_id = str(row.get("source_doc_id") or "")
+        if str(row.get("tenant_id")) != tenant_id:
+            continue
+        if allowed_doc_ids and source_doc_id not in allowed_doc_ids:
+            continue
+        row_version = int(row.get("doc_version", 0))
+        if doc_version is not None:
+            if row_version != int(doc_version):
+                continue
+        elif current_doc_versions is not None and current_doc_versions.get(source_doc_id) != row_version:
+            continue
+        title = str(row.get("title") or "").strip()
+        guide = str(row.get("guide") or "").strip()
+        if not guide:
+            continue
+        rows.append(f"标题: {title}\n摘要: {guide}" if title else f"摘要: {guide}")
+        if len(rows) >= limit:
+            break
+    return rows
+
+
 def save_source_guide(
     object_store_dir: Path,
     *,

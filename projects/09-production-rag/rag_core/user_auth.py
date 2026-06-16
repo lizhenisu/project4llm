@@ -16,6 +16,15 @@ PBKDF2_ITERATIONS = 240_000
 SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 REGISTRATION_ENABLED_KEY = "registration_enabled"
 SESSION_TOKEN_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
+TEST_ACCOUNT_ID = "user-fixed-test"
+TEST_ACCOUNT_USERNAME = "test_user"
+TEST_ACCOUNT_PASSWORD = "12345678"
+TEST_ACCOUNT_DISPLAY_NAME = "测试账号"
+TEST_ACCOUNT_TENANT_ID = "tenant-fixed-test"
+TEST_ACCOUNT_SALT = "0123456789abcdeffedcba9876543210"
+TEST_ACCOUNT_TOKEN = "production-rag-fixed-test-login-token"
+TEST_ACCOUNT_CREATED_AT = 1704067200000
+TEST_ACCOUNT_TOKEN_EXPIRES_AT = 4102444800000
 
 
 @dataclass(frozen=True)
@@ -113,9 +122,10 @@ def register_user(
     display = normalize_display_name(display_name, username)
     with connect_metadata_db(config) as conn:
         user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        if user_count > 0 and not registration_enabled_from_conn(conn):
+        admin_count = conn.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'").fetchone()[0]
+        if admin_count > 0 and user_count > 0 and not registration_enabled_from_conn(conn):
             raise ValueError("新用户注册已被管理员关闭")
-        role = "admin" if user_count == 0 else "user"
+        role = "admin" if admin_count == 0 else "user"
         try:
             conn.execute(
                 """
@@ -158,10 +168,14 @@ def login_user(config: RagConfig, *, username: str, password: str) -> tuple[User
             raise ValueError("用户名或密码错误")
         if str(row["status"] or "active") != "active":
             raise ValueError("账号已被封禁")
-        token = generate_session_token()
-        expires_at = timestamp + SESSION_TTL_SECONDS * 1000
+        token = TEST_ACCOUNT_TOKEN if str(row["username"]) == TEST_ACCOUNT_USERNAME else generate_session_token()
+        expires_at = (
+            TEST_ACCOUNT_TOKEN_EXPIRES_AT
+            if str(row["username"]) == TEST_ACCOUNT_USERNAME
+            else timestamp + SESSION_TTL_SECONDS * 1000
+        )
         conn.execute(
-            "INSERT INTO sessions(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO sessions(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
             (token, row["id"], expires_at, timestamp),
         )
         conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (timestamp, row["id"]))
@@ -173,8 +187,44 @@ def generate_session_token(length: int = 24) -> str:
 
 
 def logout_user(config: RagConfig, *, token: str) -> None:
+    if token == TEST_ACCOUNT_TOKEN:
+        return
     with connect_metadata_db(config) as conn:
         conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+
+
+def ensure_default_test_account(config: RagConfig) -> User:
+    password_hash = hash_password(TEST_ACCOUNT_PASSWORD, TEST_ACCOUNT_SALT)
+    with connect_metadata_db(config) as conn:
+        row = conn.execute("SELECT * FROM users WHERE username = ?", (TEST_ACCOUNT_USERNAME,)).fetchone()
+        if row is None:
+            conn.execute(
+                """
+                INSERT INTO users(
+                    id, username, display_name, password_hash, salt,
+                    role, tenant_id, avatar_url, status,
+                    profile_name_edit_allowed, avatar_edit_allowed,
+                    created_at, last_login_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'user', ?, '', 'active', 1, 1, ?, NULL)
+                """,
+                (
+                    TEST_ACCOUNT_ID,
+                    TEST_ACCOUNT_USERNAME,
+                    TEST_ACCOUNT_DISPLAY_NAME,
+                    password_hash,
+                    TEST_ACCOUNT_SALT,
+                    TEST_ACCOUNT_TENANT_ID,
+                    TEST_ACCOUNT_CREATED_AT,
+                ),
+            )
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (TEST_ACCOUNT_ID,)).fetchone()
+        if str(row["status"] or "active") == "active":
+            conn.execute(
+                "INSERT OR REPLACE INTO sessions(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+                (TEST_ACCOUNT_TOKEN, row["id"], TEST_ACCOUNT_TOKEN_EXPIRES_AT, TEST_ACCOUNT_CREATED_AT),
+            )
+        return user_from_row(row)
 
 
 def authenticate_token(config: RagConfig, *, token: str | None) -> User | None:

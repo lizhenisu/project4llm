@@ -25,6 +25,21 @@ def main() -> None:
 def run_smoke() -> None:
     api = TestClient(create_app())
 
+    fixed_test = api.get(
+        "/auth/me",
+        headers={"Authorization": "Bearer production-rag-fixed-test-login-token"},
+    )
+    assert fixed_test.status_code == 200, fixed_test.text
+    assert fixed_test.json()["username"] == "test_user"
+    assert fixed_test.json()["role"] == "user"
+
+    fixed_login = api.post(
+        "/auth/login",
+        json={"username": "test_user", "password": "12345678"},
+    )
+    assert fixed_login.status_code == 200, fixed_login.text
+    assert fixed_login.json()["token"] == "production-rag-fixed-test-login-token"
+
     first = api.post(
         "/auth/register",
         json={"username": "admin_user", "password": "strong-password", "display_name": "管理员"},
@@ -126,8 +141,8 @@ def run_smoke() -> None:
 
     users = api.get("/admin/users", headers=admin_headers)
     assert users.status_code == 200, users.text
-    assert [row["username"] for row in users.json()["users"]] == ["renamed_user", "admin_user"]
-    assert users.json()["total"] == 2
+    assert [row["username"] for row in users.json()["users"]] == ["renamed_user", "admin_user", "test_user"]
+    assert users.json()["total"] == 3
     assert users.json()["limit"] == 50
 
     banned = api.patch(

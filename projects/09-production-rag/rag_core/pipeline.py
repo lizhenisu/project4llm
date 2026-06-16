@@ -12,6 +12,7 @@ from rag_core.milvus_store import build_filter_expr, connect, ensure_collection,
 from rag_core.versioning import load_current_versions
 from rag_core.rerankers import build_reranker
 from rag_core.rewrite import rewrite_query
+from rag_core.source_guides import load_source_guides_for_rewrite
 from rag_core.types import SearchHit, TraceInfo
 
 
@@ -42,8 +43,20 @@ def retrieve_and_rerank(
     client = connect(config)
     ensure_collection(client, config, reset=False)
     embedding_model = build_embedding_model(config)
+    current_versions = (
+        {}
+        if doc_version is not None
+        else load_current_versions(config.object_store_dir, tenant_id=tenant_id)
+    )
+    source_summaries = load_source_guides_for_rewrite(
+        config.object_store_dir,
+        tenant_id=tenant_id,
+        doc_ids=doc_ids,
+        doc_version=doc_version,
+        current_doc_versions=current_versions,
+    )
     rewrite_start = perf_counter()
-    rewrite = rewrite_query(query, history=history, config=config)
+    rewrite = rewrite_query(query, history=history, source_summaries=source_summaries, config=config)
     rewrite_ms = elapsed_ms(rewrite_start)
     if mentions_other_tenant(rewrite.rewritten_query, tenant_id):
         trace = TraceInfo(
@@ -78,11 +91,6 @@ def retrieve_and_rerank(
     embedding_start = perf_counter()
     query_vector = embedding_model.encode([rewrite.rewritten_query])[0]
     embedding_ms = elapsed_ms(embedding_start)
-    current_versions = (
-        {}
-        if doc_version is not None
-        else load_current_versions(config.object_store_dir, tenant_id=tenant_id)
-    )
     filter_expr = build_filter_expr(
         tenant_id=tenant_id,
         allowed_acl_groups=acl_groups,
