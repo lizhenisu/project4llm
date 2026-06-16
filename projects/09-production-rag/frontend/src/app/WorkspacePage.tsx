@@ -1107,7 +1107,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       )}
       <footer className="statusbar">
         <span>{status}</span>
-        <span className="version-badge" onClick={() => onNavigate("/architecture")} title="查看系统架构">v0.1.0</span>
+        <span className="version-badge" onClick={() => onNavigate("/architecture")} title="查看系统架构">v0.3.0</span>
       </footer>
       <SettingsDialog
         open={settingsOpen}
