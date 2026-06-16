@@ -83,6 +83,8 @@ const DEFAULT_LAYOUT: PanelLayout = { source: 24, chat: 46, studio: 30 };
 const MINDMAP_LAYOUT: PanelLayout = { source: 20, chat: 38, studio: 42 };
 const MIN_LAYOUT: PanelLayout = { source: 17, chat: 31, studio: 22 };
 const ARTIFACT_GENERATION_COOLDOWN_MS = 4_000;
+const ARTIFACT_STATUS_POLL_MS = 1_200;
+type ArtifactKind = "mindmap" | "table";
 
 export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => void }) {
   const auth = useAuth();
@@ -138,6 +140,10 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       ),
     [selectedSources],
   );
+  const hasServerGeneratingArtifact = useMemo(
+    () => artifacts.some((artifact) => artifact.status === "generating" && !isLocalPendingArtifact(artifact.id)),
+    [artifacts],
+  );
   const artifactCooldownRemainingMs = Math.max(0, artifactGenerationReadyAt - Date.now());
   const artifactGenerationLocked = artifactGenerationBusy || artifactCooldownRemainingMs > 0;
   const artifactGenerationLockReason = artifactGenerationBusy
@@ -181,6 +187,34 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     document.addEventListener("mousedown", handleOutsideClick);
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [accountMenuOpen]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !settings.token || !hasServerGeneratingArtifact) return;
+    let cancelled = false;
+    const workspaceId = activeWorkspaceId;
+    const token = settings.token;
+
+    async function pollArtifacts() {
+      try {
+        const rows = await listArtifacts(settings, workspaceId);
+        if (cancelled || token !== authTokenRef.current || workspaceId !== activeWorkspaceIdRef.current) return;
+        setArtifacts((current) => mergePolledArtifacts(current, rows));
+        setActiveArtifact((current) => {
+          if (!current) return current;
+          return rows.find((artifact) => artifact.id === current.id) ?? current;
+        });
+      } catch (error) {
+        console.error("Artifact status polling failed:", error);
+      }
+    }
+
+    void pollArtifacts();
+    const timer = window.setInterval(pollArtifacts, ARTIFACT_STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeWorkspaceId, hasServerGeneratingArtifact, isAuthenticated, settings]);
 
   useEffect(() => {
     authTokenRef.current = auth.token;
@@ -707,46 +741,63 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     setArtifactGenerationBusy(false);
   }
 
-  async function handleCreateMindMap() {
+  async function handleCreateArtifact(kind: ArtifactKind) {
     if (selectedDocIds.length === 0 || !beginArtifactGeneration()) return;
     const requestWorkspaceId = activeWorkspaceId;
     const isCurrentWorkspace = () => activeWorkspaceIdRef.current === requestWorkspaceId;
     const sourceDocIds = [...selectedDocIds];
-    const title = selectedSources.length === 1 ? `${selectedSources[0].title} 思维导图` : "选中来源思维导图";
+    const titleSuffix = kind === "table" ? "数据表格" : "思维导图";
+    const title = selectedSources.length === 1 ? `${selectedSources[0].title} ${titleSuffix}` : `选中来源${titleSuffix}`;
+    const pendingIdPrefix = kind === "table" ? "pending-table" : "pending-mindmap";
     const pendingArtifact: MindMapArtifact = {
-      id: `pending-${Date.now()}`,
+      id: `${pendingIdPrefix}-${Date.now()}`,
       title,
       status: "generating",
       tenant_id: settings.tenantId,
       source_doc_ids: sourceDocIds,
       created_at: Date.now(),
       updated_at: Date.now(),
-      artifact_type: "mindmap",
+      artifact_type: kind,
       workspace_id: requestWorkspaceId,
-      root: null,
+      root: kind === "mindmap" ? null : undefined,
+      table: kind === "table" ? null : undefined,
     };
     setArtifacts((items) => [pendingArtifact, ...items]);
     let trackedArtifactId = pendingArtifact.id;
     try {
-      const artifact = await createMindMap(settings, title, sourceDocIds, requestWorkspaceId);
+      const artifact =
+        kind === "table"
+          ? await createDataTable(settings, title, sourceDocIds, requestWorkspaceId)
+          : await createMindMap(settings, title, sourceDocIds, requestWorkspaceId);
       trackedArtifactId = artifact.id;
       addArtifactToWorkspace(requestWorkspaceId, artifact.id);
       if (isCurrentWorkspace()) {
-        setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
+        setArtifacts((items) => upsertArtifact(items, artifact, pendingArtifact.id));
       }
-      const readyArtifact = await waitForArtifact(settings, artifact.id, requestWorkspaceId);
+      const readyArtifact = await waitForArtifact(settings, artifact.id, requestWorkspaceId, (updatedArtifact) => {
+        if (!isCurrentWorkspace()) return;
+        setArtifacts((items) => upsertArtifact(items, updatedArtifact));
+        setActiveArtifact((current) => (current?.id === updatedArtifact.id ? updatedArtifact : current));
+      });
       if (isCurrentWorkspace()) {
-        setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
+        setArtifacts((items) => upsertArtifact(items, readyArtifact));
         openArtifact(readyArtifact);
       }
     } catch (error) {
       if (isCurrentWorkspace()) {
+        if (error instanceof ArtifactPendingError) {
+          return;
+        }
+        const failedMessage = error instanceof Error ? error.message : "生成失败";
         setArtifacts((items) =>
           items.map((item) =>
             item.id === pendingArtifact.id || item.id === trackedArtifactId
-              ? { ...item, status: "failed", error: error instanceof Error ? error.message : "生成失败" }
+              ? { ...item, status: "failed", error: failedMessage }
             : item,
           ),
+        );
+        setActiveArtifact((current) =>
+          current?.id === trackedArtifactId ? { ...current, status: "failed", error: failedMessage } : current,
         );
       }
     } finally {
@@ -754,51 +805,12 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     }
   }
 
+  async function handleCreateMindMap() {
+    await handleCreateArtifact("mindmap");
+  }
+
   async function handleCreateDataTable() {
-    if (selectedDocIds.length === 0 || !beginArtifactGeneration()) return;
-    const requestWorkspaceId = activeWorkspaceId;
-    const isCurrentWorkspace = () => activeWorkspaceIdRef.current === requestWorkspaceId;
-    const sourceDocIds = [...selectedDocIds];
-    const title = selectedSources.length === 1 ? `${selectedSources[0].title} 数据表格` : "选中来源数据表格";
-    const pendingArtifact: MindMapArtifact = {
-      id: `pending-table-${Date.now()}`,
-      title,
-      status: "generating",
-      tenant_id: settings.tenantId,
-      source_doc_ids: sourceDocIds,
-      created_at: Date.now(),
-      updated_at: Date.now(),
-      artifact_type: "table",
-      workspace_id: requestWorkspaceId,
-      table: null,
-    };
-    setArtifacts((items) => [pendingArtifact, ...items]);
-    let trackedArtifactId = pendingArtifact.id;
-    try {
-      const artifact = await createDataTable(settings, title, sourceDocIds, requestWorkspaceId);
-      trackedArtifactId = artifact.id;
-      addArtifactToWorkspace(requestWorkspaceId, artifact.id);
-      if (isCurrentWorkspace()) {
-        setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
-      }
-      const readyArtifact = await waitForArtifact(settings, artifact.id, requestWorkspaceId);
-      if (isCurrentWorkspace()) {
-        setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
-        openArtifact(readyArtifact);
-      }
-    } catch (error) {
-      if (isCurrentWorkspace()) {
-        setArtifacts((items) =>
-          items.map((item) =>
-            item.id === pendingArtifact.id || item.id === trackedArtifactId
-              ? { ...item, status: "failed", error: error instanceof Error ? error.message : "生成失败" }
-            : item,
-          ),
-        );
-      }
-    } finally {
-      finishArtifactGeneration();
-    }
+    await handleCreateArtifact("table");
   }
 
   async function handleRenameArtifact(artifact: MindMapArtifact, newTitle: string) {
@@ -1967,11 +1979,17 @@ function announcementDismissKey(audience: string, announcementId: string) {
   return `announcement-dismissed:${audience}:${announcementId}`;
 }
 
-async function waitForArtifact(settings: Settings, artifactId: string, workspaceId: string): Promise<MindMapArtifact> {
+async function waitForArtifact(
+  settings: Settings,
+  artifactId: string,
+  workspaceId: string,
+  onUpdate?: (artifact: MindMapArtifact) => void,
+): Promise<MindMapArtifact> {
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
     await new Promise((resolve) => window.setTimeout(resolve, 1200));
     const artifact = await getArtifact(settings, artifactId, workspaceId);
+    onUpdate?.(artifact);
     if (artifact.status === "ready") {
       return artifact;
     }
@@ -1979,7 +1997,29 @@ async function waitForArtifact(settings: Settings, artifactId: string, workspace
       throw new Error(artifact.error || "生成失败");
     }
   }
-  throw new Error("生成超时，请稍后在 Studio 列表中查看结果");
+  throw new ArtifactPendingError();
+}
+
+class ArtifactPendingError extends Error {
+  constructor() {
+    super("生成仍在后台进行");
+  }
+}
+
+function upsertArtifact(items: MindMapArtifact[], artifact: MindMapArtifact, removeId?: string): MindMapArtifact[] {
+  return [artifact, ...items.filter((item) => item.id !== artifact.id && item.id !== removeId)];
+}
+
+function mergePolledArtifacts(current: MindMapArtifact[], polled: MindMapArtifact[]): MindMapArtifact[] {
+  const polledIds = new Set(polled.map((artifact) => artifact.id));
+  const localPending = current.filter(
+    (artifact) => isLocalPendingArtifact(artifact.id) && !polledIds.has(artifact.id),
+  );
+  return [...localPending, ...polled];
+}
+
+function isLocalPendingArtifact(artifactId: string) {
+  return artifactId.startsWith("pending-");
 }
 
 async function waitForSourcesReady(
