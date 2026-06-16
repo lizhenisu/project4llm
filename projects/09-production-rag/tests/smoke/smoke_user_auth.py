@@ -153,9 +153,45 @@ def run_smoke() -> None:
     assert active.status_code == 200, active.text
     assert active.json()["status"] == "active"
 
+    bulk_profile = api.patch(
+        "/admin/users/bulk",
+        headers=admin_headers,
+        json={
+            "users": [
+                {
+                    "user_id": second_body["user"]["id"],
+                    "username": "bulk_user",
+                    "display_name": "批量用户",
+                    "avatar_url": "https://example.com/bulk-avatar.png",
+                }
+            ]
+        },
+    )
+    assert bulk_profile.status_code == 200, bulk_profile.text
+    bulk_user = bulk_profile.json()["users"][0]
+    assert bulk_user["username"] == "bulk_user"
+    assert bulk_user["display_name"] == "批量用户"
+    assert bulk_user["avatar_url"] == "https://example.com/bulk-avatar.png"
+
+    bulk_ban = api.patch(
+        "/admin/users/bulk",
+        headers=admin_headers,
+        json={"users": [{"user_id": second_body["user"]["id"], "status": "banned"}]},
+    )
+    assert bulk_ban.status_code == 200, bulk_ban.text
+    assert bulk_ban.json()["users"][0]["status"] == "banned"
+
+    bulk_active = api.patch(
+        "/admin/users/bulk",
+        headers=admin_headers,
+        json={"users": [{"user_id": second_body["user"]["id"], "status": "active"}]},
+    )
+    assert bulk_active.status_code == 200, bulk_active.text
+    assert bulk_active.json()["users"][0]["status"] == "active"
+
     relogin = api.post(
         "/auth/login",
-        json={"username": "renamed_user", "password": "stronger-password"},
+        json={"username": "bulk_user", "password": "stronger-password"},
     )
     assert relogin.status_code == 200, relogin.text
     user_headers = {"Authorization": f"Bearer {relogin.json()['token']}"}
@@ -163,19 +199,38 @@ def run_smoke() -> None:
     announcement = api.post(
         "/admin/announcements",
         headers=admin_headers,
-        json={"title": "系统维护", "content": "今晚 23:00 进行例行维护。"},
+        json={
+            "title": "系统维护",
+            "content": "今晚 23:00 进行例行维护。",
+            "link_url": "/status",
+            "link_label": "查看状态页",
+        },
     )
     assert announcement.status_code == 200, announcement.text
     assert announcement.json()["author_name"] == "管理员"
+    assert announcement.json()["link_url"] == "/status"
+    assert announcement.json()["link_label"] == "查看状态页"
 
     announcements = api.get("/announcements")
     assert announcements.status_code == 200, announcements.text
     assert announcements.json()["announcements"][0]["title"] == "系统维护"
+    assert announcements.json()["announcements"][0]["link_url"] == "/status"
 
     settings = api.get("/admin/settings", headers=admin_headers)
     assert settings.status_code == 200, settings.text
     assert settings.json()["latest_announcement"]["title"] == "系统维护"
     assert settings.json()["latest_announcement"]["content"] == "今晚 23:00 进行例行维护。"
+    assert settings.json()["latest_announcement"]["link_label"] == "查看状态页"
+
+    deleted_announcement = api.delete(
+        f"/admin/announcements/{announcement.json()['id']}",
+        headers=admin_headers,
+    )
+    assert deleted_announcement.status_code == 200, deleted_announcement.text
+    assert deleted_announcement.json()["status"] == "deleted"
+    settings = api.get("/admin/settings", headers=admin_headers)
+    assert settings.status_code == 200, settings.text
+    assert settings.json()["latest_announcement"] is None
 
     logout = api.post("/auth/logout", headers=user_headers)
     assert logout.status_code == 200, logout.text

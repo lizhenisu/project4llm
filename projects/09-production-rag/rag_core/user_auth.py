@@ -278,15 +278,78 @@ def set_user_status(config: RagConfig, *, actor_id: str, user_id: str, status: s
     return user_from_row(updated)
 
 
+def bulk_update_users(config: RagConfig, *, actor_id: str, updates: list[dict[str, Any]]) -> list[User]:
+    if not updates:
+        raise ValueError("请选择要更新的用户")
+    if len(updates) > 50:
+        raise ValueError("一次最多更新 50 个用户")
+    updated_users: list[User] = []
+    with connect_metadata_db(config) as conn:
+        for update in updates:
+            user_id = str(update.get("user_id") or "").strip()
+            if not user_id:
+                raise ValueError("用户 ID 不能为空")
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if row is None:
+                raise ValueError("用户不存在")
+            if str(row["role"]) == "admin" and user_id != actor_id:
+                raise ValueError("不能批量修改其他管理员账号")
+
+            username = str(row["username"])
+            display_name = str(row["display_name"])
+            avatar_url = str(row["avatar_url"] or "")
+            status = str(row["status"] or "active")
+
+            if "username" in update and update["username"] is not None:
+                username = normalize_username(str(update["username"]))
+            if "display_name" in update and update["display_name"] is not None:
+                display_name = normalize_display_name(str(update["display_name"]), username)
+            if "avatar_url" in update and update["avatar_url"] is not None:
+                avatar_url = validate_avatar_url(str(update["avatar_url"]))
+            if "status" in update and update["status"] is not None:
+                status = str(update["status"])
+                if status not in {"active", "banned"}:
+                    raise ValueError("用户状态无效")
+                if user_id == actor_id and status == "banned":
+                    raise ValueError("不能封禁当前管理员账号")
+                if str(row["role"]) == "admin" and status == "banned":
+                    raise ValueError("不能封禁管理员账号")
+
+            try:
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET username = ?, display_name = ?, avatar_url = ?, status = ?
+                    WHERE id = ?
+                    """,
+                    (username, display_name, avatar_url, status, user_id),
+                )
+            except Exception as exc:
+                if "UNIQUE" in str(exc).upper():
+                    raise ValueError("用户名已存在") from exc
+                raise
+            if status == "banned":
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            updated = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            updated_users.append(user_from_row(updated))
+    return updated_users
+
+
 def create_announcement(
     config: RagConfig,
     *,
     title: str,
     content: str,
     author_id: str,
+    link_url: str | None = None,
+    link_label: str | None = None,
 ) -> dict[str, Any]:
     clean_title = " ".join(title.split()).strip()
     clean_content = content.strip()
+    clean_link_url = validate_announcement_link_url(link_url)
+    clean_link_label = " ".join((link_label or "").split()).strip()[:80]
+    if clean_link_url and not clean_link_label:
+        clean_link_label = "查看详情"
     if not clean_title:
         raise ValueError("公告标题不能为空")
     if not clean_content:
@@ -299,18 +362,37 @@ def create_announcement(
         "id": f"announcement-{uuid.uuid4().hex[:12]}",
         "title": clean_title,
         "content": clean_content,
+        "link_url": clean_link_url,
+        "link_label": clean_link_label,
         "author_id": author_id,
         "created_at": now_ms(),
     }
     with connect_metadata_db(config) as conn:
         conn.execute(
             """
-            INSERT INTO announcements(id, title, content, author_id, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO announcements(id, title, content, link_url, link_label, author_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (row["id"], row["title"], row["content"], row["author_id"], row["created_at"]),
+            (
+                row["id"],
+                row["title"],
+                row["content"],
+                row["link_url"],
+                row["link_label"],
+                row["author_id"],
+                row["created_at"],
+            ),
         )
     return row
+
+
+def validate_announcement_link_url(link_url: str | None) -> str:
+    value = (link_url or "").strip()
+    if len(value) > 500:
+        raise ValueError("公告链接不能超过 500 个字符")
+    if value and not (value.startswith("http://") or value.startswith("https://") or value.startswith("/")):
+        raise ValueError("公告链接需要是 http(s) URL 或站内路径")
+    return value
 
 
 def list_announcements(config: RagConfig, *, limit: int = 5) -> list[dict[str, Any]]:
@@ -318,6 +400,7 @@ def list_announcements(config: RagConfig, *, limit: int = 5) -> list[dict[str, A
         rows = conn.execute(
             """
             SELECT announcements.id, announcements.title, announcements.content,
+                   announcements.link_url, announcements.link_label,
                    announcements.author_id, announcements.created_at,
                    users.display_name AS author_name
             FROM announcements
@@ -328,6 +411,12 @@ def list_announcements(config: RagConfig, *, limit: int = 5) -> list[dict[str, A
             (max(1, min(limit, 20)),),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def delete_announcement(config: RagConfig, *, announcement_id: str) -> bool:
+    with connect_metadata_db(config) as conn:
+        cursor = conn.execute("DELETE FROM announcements WHERE id = ?", (announcement_id,))
+        return cursor.rowcount > 0
 
 
 def is_registration_enabled(config: RagConfig) -> bool:

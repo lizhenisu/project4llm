@@ -509,13 +509,48 @@ export function updateAdminUserStatus(
   });
 }
 
+export function updateAdminUsers(
+  settings: Settings,
+  users: Array<{
+    user_id: string;
+    username?: string;
+    display_name?: string;
+    avatar_url?: string;
+    status?: "active" | "banned";
+  }>,
+): Promise<{ users: AuthUser[] }> {
+  return request<{ users: AuthUser[] }>("/admin/users/bulk", {
+    method: "PATCH",
+    settings,
+    json: { users },
+  });
+}
+
 export function publishAnnouncement(
   settings: Settings,
-  params: { title: string; content: string },
+  params: { title: string; content: string; linkUrl?: string; linkLabel?: string },
 ): Promise<Announcement> {
   return request<Announcement>("/admin/announcements", {
     method: "POST",
     settings,
-    json: params,
+    json: {
+      title: params.title,
+      content: params.content,
+      link_url: params.linkUrl || "",
+      link_label: params.linkLabel || "",
+    },
   });
+}
+
+export function deleteAnnouncement(
+  settings: Settings,
+  announcementId: string,
+): Promise<{ status: string; announcement_id: string }> {
+  return request<{ status: string; announcement_id: string }>(
+    `/admin/announcements/${encodeURIComponent(announcementId)}`,
+    {
+      method: "DELETE",
+      settings,
+    },
+  );
 }

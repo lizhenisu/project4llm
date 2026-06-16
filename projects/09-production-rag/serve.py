@@ -54,8 +54,10 @@ from rag_core.sources import (
 from rag_core.user_auth import (
     authenticate_token,
     bearer_token,
+    bulk_update_users,
     change_user_password,
     create_announcement,
+    delete_announcement,
     is_registration_enabled,
     list_announcements,
     list_public_users,
@@ -318,15 +320,31 @@ class UserStatusRequest(BaseModel):
     status: str = Field(pattern="^(active|banned)$")
 
 
+class AdminUserUpdateItem(BaseModel):
+    user_id: str
+    username: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None
+    status: str | None = Field(default=None, pattern="^(active|banned)$")
+
+
+class AdminUserBulkUpdateRequest(BaseModel):
+    users: list[AdminUserUpdateItem] = Field(default_factory=list, min_length=1, max_length=50)
+
+
 class AnnouncementRequest(BaseModel):
     title: str
     content: str
+    link_url: str = ""
+    link_label: str = ""
 
 
 class AnnouncementResponse(BaseModel):
     id: str
     title: str
     content: str
+    link_url: str = ""
+    link_label: str = ""
     author_id: str
     author_name: str | None = None
     created_at: int
@@ -466,6 +484,23 @@ def create_app():
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return user_to_response(user)
 
+    @app.patch("/admin/users/bulk", response_model=UserListResponse)
+    def admin_bulk_update_users(
+        request: AdminUserBulkUpdateRequest,
+        authorization: str | None = Header(default=None),
+    ) -> UserListResponse:
+        config = load_config()
+        actor = require_admin(config=config, authorization=authorization)
+        try:
+            users = bulk_update_users(
+                config,
+                actor_id=actor.id,
+                updates=[item.model_dump(exclude_unset=True) for item in request.users],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return UserListResponse(users=[user_to_response(user) for user in users])
+
     @app.get("/admin/settings", response_model=AdminSettingsResponse)
     def admin_settings(authorization: str | None = Header(default=None)) -> AdminSettingsResponse:
         config = load_config()
@@ -495,10 +530,22 @@ def create_app():
                 title=request.title,
                 content=request.content,
                 author_id=user.id,
+                link_url=request.link_url,
+                link_label=request.link_label,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return AnnouncementResponse(**row, author_name=user.display_name)
+
+    @app.delete("/admin/announcements/{announcement_id}")
+    def admin_delete_announcement(
+        announcement_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        config = load_config()
+        require_admin(config=config, authorization=authorization)
+        removed = delete_announcement(config, announcement_id=announcement_id)
+        return {"status": "deleted" if removed else "not_found", "announcement_id": announcement_id}
 
     @app.get("/announcements", response_model=AnnouncementListResponse)
     def public_announcements(limit: int = 5) -> AnnouncementListResponse:

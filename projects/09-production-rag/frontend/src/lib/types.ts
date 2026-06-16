@@ -157,6 +157,8 @@ export type Announcement = {
   id: string;
   title: string;
   content: string;
+  link_url?: string;
+  link_label?: string;
   author_id: string;
   author_name?: string | null;
   created_at: number;

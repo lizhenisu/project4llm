@@ -79,6 +79,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
             content TEXT NOT NULL,
+            link_url TEXT NOT NULL DEFAULT '',
+            link_label TEXT NOT NULL DEFAULT '',
             author_id TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             FOREIGN KEY(author_id) REFERENCES users(id)
@@ -162,6 +164,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, table="messages", column="image_data_url", definition="TEXT")
     ensure_column(conn, table="users", column="avatar_url", definition="TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, table="users", column="status", definition="TEXT NOT NULL DEFAULT 'active'")
+    ensure_column(conn, table="announcements", column="link_url", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, table="announcements", column="link_label", definition="TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, table="artifacts", column="workspace_id", definition="TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
