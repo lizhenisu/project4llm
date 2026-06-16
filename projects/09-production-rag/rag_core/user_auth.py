@@ -22,7 +22,6 @@ TEST_ACCOUNT_PASSWORD = "12345678"
 TEST_ACCOUNT_DISPLAY_NAME = "测试账号"
 TEST_ACCOUNT_TENANT_ID = "tenant-fixed-test"
 TEST_ACCOUNT_SALT = "0123456789abcdeffedcba9876543210"
-TEST_ACCOUNT_TOKEN = "production-rag-fixed-test-login-token"
 TEST_ACCOUNT_CREATED_AT = 1704067200000
 TEST_ACCOUNT_TOKEN_EXPIRES_AT = 4102444800000
 
@@ -168,7 +167,7 @@ def login_user(config: RagConfig, *, username: str, password: str) -> tuple[User
             raise ValueError("用户名或密码错误")
         if str(row["status"] or "active") != "active":
             raise ValueError("账号已被封禁")
-        token = TEST_ACCOUNT_TOKEN if str(row["username"]) == TEST_ACCOUNT_USERNAME else generate_session_token()
+        token = config.fixed_test_login_token if str(row["username"]) == TEST_ACCOUNT_USERNAME else generate_session_token()
         expires_at = (
             TEST_ACCOUNT_TOKEN_EXPIRES_AT
             if str(row["username"]) == TEST_ACCOUNT_USERNAME
@@ -187,7 +186,7 @@ def generate_session_token(length: int = 24) -> str:
 
 
 def logout_user(config: RagConfig, *, token: str) -> None:
-    if token == TEST_ACCOUNT_TOKEN:
+    if token == config.fixed_test_login_token:
         return
     with connect_metadata_db(config) as conn:
         conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
@@ -222,7 +221,7 @@ def ensure_default_test_account(config: RagConfig) -> User:
         if str(row["status"] or "active") == "active":
             conn.execute(
                 "INSERT OR REPLACE INTO sessions(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
-                (TEST_ACCOUNT_TOKEN, row["id"], TEST_ACCOUNT_TOKEN_EXPIRES_AT, TEST_ACCOUNT_CREATED_AT),
+                (config.fixed_test_login_token, row["id"], TEST_ACCOUNT_TOKEN_EXPIRES_AT, TEST_ACCOUNT_CREATED_AT),
             )
         return user_from_row(row)
 

@@ -12,14 +12,17 @@ from serve import create_app
 def main() -> None:
     old_runtime = os.environ.get("RAG_RUNTIME_DIR")
     old_object_store = os.environ.get("RAG_OBJECT_STORE_DIR")
+    old_fixed_token = os.environ.get("RAG_FIXED_TEST_LOGIN_TOKEN")
     with tempfile.TemporaryDirectory() as temp_dir:
         os.environ["RAG_RUNTIME_DIR"] = str(Path(temp_dir) / "runtime")
         os.environ["RAG_OBJECT_STORE_DIR"] = str(Path(temp_dir) / "object_store")
+        os.environ["RAG_FIXED_TEST_LOGIN_TOKEN"] = "production-rag-fixed-test-login-token"
         try:
             run_smoke()
         finally:
             restore_env("RAG_RUNTIME_DIR", old_runtime)
             restore_env("RAG_OBJECT_STORE_DIR", old_object_store)
+            restore_env("RAG_FIXED_TEST_LOGIN_TOKEN", old_fixed_token)
 
 
 def run_smoke() -> None:

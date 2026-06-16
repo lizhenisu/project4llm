@@ -12,6 +12,7 @@ RUNTIME_DIR = PROJECT_DIR / "runtime"
 OBJECT_STORE_DIR = PROJECT_DIR / "object_store"
 DEFAULT_MILVUS_DB = PROJECT_DIR / "production_rag.db"
 MODELSCOPE_CACHE = Path.home() / ".cache" / "modelscope" / "hub" / "models" / "BAAI"
+DEFAULT_FIXED_TEST_LOGIN_TOKEN = "production-rag-fixed-test-login-token"
 _ENV_LOADED = False
 
 
@@ -126,6 +127,7 @@ class RagConfig:
     query_rewrite_max_tokens: int
     require_auth_context: bool
     api_token: str | None
+    fixed_test_login_token: str
     dense_hnsw_m: int
     dense_hnsw_ef_construction: int
     dense_search_ef: int
@@ -202,6 +204,11 @@ def load_config() -> RagConfig:
         query_rewrite_max_tokens=_env_int("RAG_QUERY_REWRITE_MAX_TOKENS", 256),
         require_auth_context=_env_bool("RAG_REQUIRE_AUTH_CONTEXT", False),
         api_token=os.environ.get("RAG_API_TOKEN") or None,
+        fixed_test_login_token=os.environ.get(
+            "RAG_FIXED_TEST_LOGIN_TOKEN",
+            DEFAULT_FIXED_TEST_LOGIN_TOKEN,
+        )
+        or DEFAULT_FIXED_TEST_LOGIN_TOKEN,
         dense_hnsw_m=_env_int("RAG_DENSE_HNSW_M", 16),
         dense_hnsw_ef_construction=_env_int("RAG_DENSE_HNSW_EF_CONSTRUCTION", 100),
         dense_search_ef=_env_int("RAG_DENSE_SEARCH_EF", 128),
