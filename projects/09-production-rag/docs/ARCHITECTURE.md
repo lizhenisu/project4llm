@@ -2,6 +2,8 @@
 
 > **基于 Milvus 的企业级多模态 RAG 知识库系统**
 
+> 文档维护约定：`docs/ARCHITECTURE.md` 是权威源文档；`frontend/public/ARCHITECTURE.md` 是前端 `/architecture` 页面通过 `fetch("/ARCHITECTURE.md")` 读取的静态镜像。修改架构文档后需要同步两个文件，保持内容完全一致。
+
 ---
 
 ## 目录
@@ -36,6 +38,8 @@
 - **智能重排序**：BGE-Reranker 跨编码器精排
 - **查询改写**：LLM 驱动的多轮对话查询优化
 - **多租户 ACL**：租户隔离 + 访问控制列表
+- **用户系统**：首个用户自动成为 admin，固定测试账号可通过环境变量配置专属登录 token
+- **异步任务**：上传解析、思维导图、数据表格生成均可返回处理中状态并由后台线程完成
 - **思维导图/数据表格**：基于 LLM 的知识结构化生成
 - **完整评估框架**：Recall@K、MRR@K、nDCG@K、答案忠实度
 
@@ -178,7 +182,7 @@
           ▼
    ┌─────────────┐
    │ 版本发布     │  current_versions.json
-   │ + 源指南生成 │  LLM 生成文档摘要
+   │ + 源指南生成 │  LLM 生成文档摘要，供来源解读和查询改写使用
    └─────────────┘
 
 
@@ -188,7 +192,7 @@
           │
           ▼
    ┌──────────────┐
-   │ 1. 查询改写   │  LLM: 多轮对话上下文 → 检索优化查询
+   │ 1. 查询改写   │  LLM: 文档摘要 + 多轮对话上下文 → 检索优化查询
    │   Rewrite     │  "Transformer 注意力机制 自注意力 多头注意力 原理"
    └──────┬───────┘
           │
@@ -312,6 +316,22 @@ SHA256 摘要基于:
   → 自动版本管理: next_source_doc_version()
 ```
 
+### 5.6 异步上传任务
+
+前端上传文件后，`/sources/upload` 先把任务写入 SQLite `source_tasks` 表并返回 `status="processing"`。后台线程继续执行解析、PII 检测、分块、向量化、Milvus 写入、对象存储归档和源指南生成。
+
+```
+POST /sources/upload
+  ├── 保存原始文件到 object_store/uploads/<tenant>/<uuid>/
+  ├── create_source_task(status="processing")
+  ├── BackgroundThread: ingest_upload_background()
+  │   ├── ingest_uploaded_file()
+  │   ├── publish_current_versions()
+  │   ├── get_or_create_source_guide()
+  │   └── update_source_task(status="ready" | "failed")
+  └── 前端轮询 /sources，展示 processing / failed / ready 状态
+```
+
 ---
 
 ## 6. 多模态处理
@@ -391,6 +411,7 @@ rag_core/pipeline.py
 
 ┌─────────────────────────────────────────────────────────┐
 │ 1. Query Rewrite (LLM)                                  │
+│    • 源指南摘要 source_guides.jsonl (最多 20 条)          │
 │    • 多轮对话历史 (6 轮)                                 │
 │    • 输出: 检索优化后的短查询                              │
 │    • 租户越界检测: 改写结果涉及其他租户 → 空结果           │
@@ -447,6 +468,24 @@ filter = " and ".join([
     f'embedding_model == "{model}"',        # 模型一致性
 ])
 ```
+
+### 7.4 查询改写上下文来源
+
+查询改写的用户 prompt 由三段组成：
+
+```
+资料摘要:
+  来自 object_store/canonical/source_guides.jsonl
+  按 tenant_id、doc_id、doc_version/current_versions 过滤
+
+对话历史:
+  最近 RAG_QUERY_REWRITE_HISTORY_TURNS 轮历史
+
+当前问题:
+  用户本轮输入
+```
+
+当用户指定的 `doc_ids` 是 PDF 页、图片等子文档 id，系统会先精确匹配源指南；若没有命中，则回退到当前租户当前版本的源指南摘要，避免 PDF 父文档摘要无法参与改写。
 
 ---
 
@@ -601,11 +640,13 @@ text_bm25_function:
 
 ```bash
 # .env 配置
-RAG_LLM_BASE_URL="https://api.siliconflow.cn"
-RAG_LLM_API_KEY="sk-..."
+NEW_API_URL="https://api.siliconflow.cn"
+NEW_API_KEY="sk-..."
 LLM_MODEL="deepseek-ai/DeepSeek-V4-Flash"   # Docker 默认
 # LLM_MODEL="gemini-3-flash-preview"         # 本地默认
 ```
+
+`NEW_API_URL` 会在 `rag_core/config.py` 中自动补齐 `/v1` 后缀，用于查询改写、答案生成、源指南、Studio 思维导图和表格生成。
 
 ### 11.3 非 LLM 的模型 API 调用
 
@@ -672,6 +713,28 @@ load_current_versions(object_store_dir, tenant_id)
 - **Milvus**: `is_active = false` (不物理删除向量)
 - **重建支持**: `rebuild_from_object_store.py --reset` 从归档重建
 
+### 12.4 源指南摘要
+
+`canonical/source_guides.jsonl` 保存每个来源文档当前版本的 LLM 摘要：
+
+```
+{
+  "tenant_id": "tenant-xxx",
+  "source_doc_id": "自然辩证法.pdf@sha256-...",
+  "doc_version": 3,
+  "title": "自然辩证法",
+  "guide": "这份资料讨论...",
+  "model": "deepseek-ai/DeepSeek-V4-Flash"
+}
+```
+
+用途：
+
+- 来源面板展示文档解读
+- 查询改写阶段提供“资料摘要”
+- 对 PDF 页、图片等子文档查询提供父文档语义背景
+- 重建对象存储时恢复摘要缓存，避免重复 LLM 调用
+
 ---
 
 ## 13. 认证与授权
@@ -706,7 +769,45 @@ Layer 3: 用户认证 (Session)
 
 - 首个注册用户自动成为 admin
 - Admin 可通过 API 关闭新用户注册
-- 禁用注册后仅 admin 可创建新用户
+- 禁用注册后普通注册会被拒绝；已存在用户仍可登录
+
+### 13.4 固定测试账号
+
+首次启动 FastAPI 应用时，`create_app()` 会调用 `ensure_default_test_account()` 自动创建一个普通测试账号：
+
+| 字段 | 值 |
+|------|----|
+| username | `test_user` |
+| password | `12345678` |
+| role | `user` |
+| tenant_id | `tenant-fixed-test` |
+| 默认专属 token | `production-rag-fixed-test-login-token` |
+
+专属 token 可通过 `RAG_FIXED_TEST_LOGIN_TOKEN` 覆盖。真实部署中可把它设置为短而稳定的分享 token，例如：
+
+```bash
+RAG_FIXED_TEST_LOGIN_TOKEN=production-rag-fixed-test-login-token
+```
+
+该账号的专属 session 采用固定 token 和远期过期时间；调用 `/auth/logout` 时不会删除这个固定 token，因此可用于稳定的体验链接：
+
+```
+http://localhost:5173/#token=<RAG_FIXED_TEST_LOGIN_TOKEN>
+```
+
+如果管理员把 `test_user` 封禁，`authenticate_token()` 仍会拒绝该 token。
+
+### 13.5 管理员控制台能力
+
+管理员接口覆盖：
+
+- 用户列表、搜索、分页
+- 单用户封禁/解封
+- 批量更新用户状态、昵称修改权限、头像修改权限
+- 注册开关
+- 公告发布和删除
+
+这些数据都存储在 SQLite metadata DB 中；用户、sessions、公告、对话、消息、artifact 和 source task 共享同一套 WAL 模式数据库。
 
 ---
 
@@ -787,6 +888,7 @@ Stage 2: 归一化
 - **文件**: `object_store/artifacts/<tenant>/<artifact_id>.json`
 - **SQLite**: `artifacts` 表 (镜像)
 - **状态**: `ready` | `failed` | `generating`
+- **生成方式**: `/artifacts/mindmap` 和 `/artifacts/table` 先创建 pending artifact，再由后台线程调用 LLM；前端通过 `/artifacts/{artifact_id}` 或列表轮询状态
 
 ---
 
@@ -851,11 +953,11 @@ release_gate.py
 
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
-| `RAG_LLM_BASE_URL` | `https://api.siliconflow.cn` | LLM API 地址 |
-| `RAG_LLM_API_KEY` | — | LLM API Key |
 | `LLM_MODEL` | `gemini-3-flash-preview` | 对话模型 |
 | `NEW_API_URL` | — | OpenAI 兼容端点 |
 | `NEW_API_KEY` | — | OpenAI 兼容 Key |
+| `SILICONFLOW_URL` | `https://api.siliconflow.cn` | SiliconFlow 嵌入/重排/视觉描述端点 |
+| `SILICONFLOW_API_KEY` | — | SiliconFlow 嵌入、重排、PDF 图片描述 Key |
 
 #### 嵌入配置
 
@@ -906,6 +1008,7 @@ release_gate.py
 |---------|--------|------|
 | `RAG_API_TOKEN` | (未设置) | API Bearer Token |
 | `RAG_REQUIRE_AUTH_CONTEXT` | `false` | 强制要求 ACL 头 |
+| `RAG_FIXED_TEST_LOGIN_TOKEN` | `production-rag-fixed-test-login-token` | 固定测试账号 `test_user` 的专属登录 token |
 
 #### PDF 处理
 
@@ -969,27 +1072,56 @@ docker compose --profile ingest up rag-ingest
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 健康检查 |
+| GET | `/ready` | 依赖就绪检查 |
 | POST | `/query` | RAG 查询 (核心接口) |
 | POST | `/search` | 仅检索 (不生成回答) |
 | GET | `/sources` | 列出来源文档 |
 | POST | `/sources/upload` | 上传文档 |
 | GET | `/sources/{doc_id}` | 文档详情 |
 | GET | `/sources/content/{doc_id}` | 文档内容 (含图片) |
+| GET | `/source-assets/{asset_path}` | 来源文档图片资源 |
+| PATCH | `/sources/{doc_id}` | 重命名来源文档 |
 | DELETE | `/sources/{doc_id}` | 删除文档 |
 | GET | `/conversations` | 列出对话 |
 | POST | `/conversations` | 创建/更新对话 |
+| GET | `/conversations/{id}` | 获取单个对话 |
 | DELETE | `/conversations/{id}` | 删除对话 |
 | GET | `/artifacts` | 列出 Studio 产物 |
 | POST | `/artifacts/mindmap` | 创建思维导图 |
 | POST | `/artifacts/table` | 创建数据表格 |
+| GET | `/artifacts/{artifact_id}` | 获取 Studio 产物详情 |
+| PATCH | `/artifacts/{artifact_id}` | 重命名 Studio 产物 |
+| DELETE | `/artifacts/{artifact_id}` | 删除 Studio 产物 |
 | POST | `/feedback` | 提交反馈 |
 | GET | `/announcements` | 获取公告 |
 | POST | `/auth/register` | 用户注册 |
 | POST | `/auth/login` | 用户登录 |
 | POST | `/auth/logout` | 用户登出 |
-| GET/PUT | `/auth/me` | 个人信息管理 |
+| GET/PATCH | `/auth/me` | 个人信息管理 |
+| PATCH | `/auth/password` | 修改密码 |
 | GET | `/admin/users` | 管理员: 用户列表 |
+| PATCH | `/admin/users/{user_id}/status` | 管理员: 封禁/解封用户 |
+| PATCH | `/admin/users/bulk` | 管理员: 批量更新用户权限/状态 |
+| GET | `/admin/settings` | 管理员: 系统设置 |
+| PATCH | `/admin/settings/registration` | 管理员: 注册开关 |
 | POST | `/admin/announcements` | 管理员: 发布公告 |
+| DELETE | `/admin/announcements/{id}` | 管理员: 删除公告 |
+
+### 18.4 架构文档同步
+
+仓库保留两个 `ARCHITECTURE.md`：
+
+| 路径 | 角色 |
+|------|------|
+| `docs/ARCHITECTURE.md` | README 引用的权威源文档 |
+| `frontend/public/ARCHITECTURE.md` | Vite/Nginx 静态资源，供前端 `/architecture` 页面运行时读取 |
+
+保留双文件的原因是前端静态资源必须位于 `frontend/public/` 才能被 `fetch("/ARCHITECTURE.md")` 稳定访问，而文档源文件应保留在 `docs/` 目录供 README、代码审查和文档站引用。修改后用以下命令同步并检查：
+
+```bash
+cp docs/ARCHITECTURE.md frontend/public/ARCHITECTURE.md
+cmp docs/ARCHITECTURE.md frontend/public/ARCHITECTURE.md
+```
 
 ---
 

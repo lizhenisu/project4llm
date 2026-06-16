@@ -131,6 +131,9 @@ docker compose --profile ingest up rag-ingest
 │   └── readiness.py          # 健康检查报告
 │
 ├── frontend/                 # React + TypeScript 前端
+│   ├── public/
+│   │   ├── ARCHITECTURE.md   # /architecture 页面读取的架构文档镜像
+│   │   └── favicon.ico
 │   └── src/
 │       ├── App.tsx           # 路由（/、/login、/register、/architecture）
 │       ├── app/
@@ -150,9 +153,8 @@ docker compose --profile ingest up rag-ingest
 │           └── types.ts
 │
 ├── docs/                     # 项目文档
-│   ├── ARCHITECTURE.md       # 系统架构详解（18 章）
+│   ├── ARCHITECTURE.md       # 系统架构详解（权威源文档）
 │   ├── RELEASE_CHECKLIST.md  # 发布检查清单
-│   ├── EXECUTION_PLAN.md     # 开发执行计划
 │   ├── PREPARE_ENV.md        # 环境准备指南
 │   ├── frontend-design/      # 前端 UI 设计参考
 │   └── archive/              # 历史版本文档
@@ -187,10 +189,6 @@ NEW_API_KEY=sk-your-key
 ### 可选变量（使用默认值即可）
 
 ```bash
-# API 基础地址（默认即为 SiliconFlow）
-RAG_LLM_BASE_URL=https://api.siliconflow.cn
-RAG_LLM_API_KEY=sk-your-key
-
 # 嵌入模型
 RAG_EMBEDDING_BACKEND=siliconflow
 EMBEDDING_MODEL=BAAI/bge-m3
@@ -203,9 +201,10 @@ RERANK_MODEL=BAAI/bge-reranker-v2-m3
 RAG_IMAGE_EMBEDDING_BACKEND=siliconflow   # 改为 none 关闭多模态
 IMAGE_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-8B
 ```
-> 💡 `RAG_LLM_BASE_URL`、`RAG_LLM_API_KEY` 和 `SILICONFLOW_API_KEY` 是项目内部
-> 变量名，用于其他脚本和开发环境。Docker 部署时 `NEW_API_URL` 和 `NEW_API_KEY`
-> 为最终生效的变量名，必须显式设置在 `.env` 中。
+> 💡 `NEW_API_URL` 和 `NEW_API_KEY` 是查询改写、答案生成、源指南和 Studio LLM
+> 生成的最终生效变量名，必须显式设置在 `.env` 中。`SILICONFLOW_API_KEY` 用于
+> embedding、rerank、PDF 图片描述等 SiliconFlow 模型 API；通常和 `NEW_API_KEY`
+> 填同一个 Key。
 
 也可切换为本地模型（需 GPU）：
 - `RAG_EMBEDDING_BACKEND=bge` → 本地加载 BGE-M3
@@ -236,9 +235,11 @@ IMAGE_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-8B
 |------|------|
 | [系统架构](docs/ARCHITECTURE.md) | 完整 RAG 系统架构详解（LLM、检索管道、多模态、Milvus Schema 等） |
 | [发布检查清单](docs/RELEASE_CHECKLIST.md) | 生产发布验收步骤 |
-| [执行计划](docs/EXECUTION_PLAN.md) | 开发执行与重构计划 |
+| [历史执行计划](docs/archive/EXECUTION_PLAN.md) | 已归档的开发执行与重构计划 |
 | [环境准备](docs/PREPARE_ENV.md) | 开发环境搭建指南 |
 | [前端设计](docs/frontend-design/readme.md) | UI 设计规格与组件规划 |
+
+> `docs/ARCHITECTURE.md` 是权威源文档；`frontend/public/ARCHITECTURE.md` 是前端 `/architecture` 页面运行时读取的静态镜像。修改架构文档后需要同步两个文件并保持 `cmp docs/ARCHITECTURE.md frontend/public/ARCHITECTURE.md` 通过。
 
 ## 技术栈
 
