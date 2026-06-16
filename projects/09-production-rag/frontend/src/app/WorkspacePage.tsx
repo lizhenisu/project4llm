@@ -282,7 +282,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       setStatus("API 已连接");
       const [sourceRows, artifactRows, announcementRows] = await Promise.all([
         listSources(nextSettings),
-        listArtifacts(nextSettings),
+        listArtifacts(nextSettings, workspaceId),
         listAnnouncements(nextSettings),
       ]);
       if (!isCurrentRefresh()) return;
@@ -715,18 +715,19 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       created_at: Date.now(),
       updated_at: Date.now(),
       artifact_type: "mindmap",
+      workspace_id: requestWorkspaceId,
       root: null,
     };
     setArtifacts((items) => [pendingArtifact, ...items]);
     let trackedArtifactId = pendingArtifact.id;
     try {
-      const artifact = await createMindMap(settings, title, sourceDocIds);
+      const artifact = await createMindMap(settings, title, sourceDocIds, requestWorkspaceId);
       trackedArtifactId = artifact.id;
       addArtifactToWorkspace(requestWorkspaceId, artifact.id);
       if (isCurrentWorkspace()) {
         setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
       }
-      const readyArtifact = await waitForArtifact(settings, artifact.id);
+      const readyArtifact = await waitForArtifact(settings, artifact.id, requestWorkspaceId);
       if (isCurrentWorkspace()) {
         setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
         openArtifact(readyArtifact);
@@ -761,18 +762,19 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       created_at: Date.now(),
       updated_at: Date.now(),
       artifact_type: "table",
+      workspace_id: requestWorkspaceId,
       table: null,
     };
     setArtifacts((items) => [pendingArtifact, ...items]);
     let trackedArtifactId = pendingArtifact.id;
     try {
-      const artifact = await createDataTable(settings, title, sourceDocIds);
+      const artifact = await createDataTable(settings, title, sourceDocIds, requestWorkspaceId);
       trackedArtifactId = artifact.id;
       addArtifactToWorkspace(requestWorkspaceId, artifact.id);
       if (isCurrentWorkspace()) {
         setArtifacts((items) => [artifact, ...items.filter((item) => item.id !== pendingArtifact.id)]);
       }
-      const readyArtifact = await waitForArtifact(settings, artifact.id);
+      const readyArtifact = await waitForArtifact(settings, artifact.id, requestWorkspaceId);
       if (isCurrentWorkspace()) {
         setArtifacts((items) => [readyArtifact, ...items.filter((item) => item.id !== artifact.id)]);
         openArtifact(readyArtifact);
@@ -795,7 +797,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   async function handleRenameArtifact(artifact: MindMapArtifact, newTitle: string) {
     if (!newTitle.trim() || newTitle === artifact.title) return;
     try {
-      await renameArtifact(settings, artifact.id, newTitle);
+      await renameArtifact(settings, artifact.id, newTitle, activeWorkspaceId);
       setArtifacts((items) => items.map((item) => (item.id === artifact.id ? { ...item, title: newTitle } : item)));
       if (activeArtifact?.id === artifact.id) {
         setActiveArtifact({ ...activeArtifact, title: newTitle });
@@ -842,7 +844,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   async function handleDeleteArtifact(artifact: MindMapArtifact) {
     try {
-      await deleteArtifact(settings, artifact.id);
+      await deleteArtifact(settings, artifact.id, activeWorkspaceId);
       setArtifacts((items) => items.filter((item) => item.id !== artifact.id));
       if (activeArtifact?.id === artifact.id) {
         setActiveArtifact(null);
@@ -1611,11 +1613,11 @@ function announcementDismissKey(audience: string, announcementId: string) {
   return `announcement-dismissed:${audience}:${announcementId}`;
 }
 
-async function waitForArtifact(settings: Settings, artifactId: string): Promise<MindMapArtifact> {
+async function waitForArtifact(settings: Settings, artifactId: string, workspaceId: string): Promise<MindMapArtifact> {
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
     await new Promise((resolve) => window.setTimeout(resolve, 1200));
-    const artifact = await getArtifact(settings, artifactId);
+    const artifact = await getArtifact(settings, artifactId, workspaceId);
     if (artifact.status === "ready") {
       return artifact;
     }
@@ -1720,7 +1722,7 @@ async function deleteWorkspaceRemoteData(workspaceId: string, settings: Settings
   const [sourceRows, conversationRows, artifactRows] = await Promise.all([
     listSources(settings),
     listConversations(settings),
-    listArtifacts(settings),
+    listArtifacts(settings, workspaceId),
   ]);
   const workspaceSourceIds = loadWorkspaceSources(workspaceId);
   const sourceRowsToDelete = hasWorkspaceSources(workspaceId)
@@ -1741,7 +1743,7 @@ async function deleteWorkspaceRemoteData(workspaceId: string, settings: Settings
   await Promise.all([
     ...sourceDocIds.map((docId) => deleteSource(settings, docId)),
     ...dedupeStrings(conversationIds).map((conversationId) => deleteConversation(settings, conversationId)),
-    ...dedupeStrings(artifactIds).map((artifactId) => deleteArtifact(settings, artifactId)),
+    ...dedupeStrings(artifactIds).map((artifactId) => deleteArtifact(settings, artifactId, workspaceId)),
   ]);
 }
 

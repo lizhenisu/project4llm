@@ -112,6 +112,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS artifacts (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL DEFAULT '',
             title TEXT NOT NULL,
             status TEXT NOT NULL,
             artifact_type TEXT NOT NULL DEFAULT 'mindmap',
@@ -123,6 +124,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             updated_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_updated ON artifacts(tenant_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated ON artifacts(tenant_id, workspace_id, updated_at DESC);
 
         CREATE TABLE IF NOT EXISTS source_tasks (
             id TEXT PRIMARY KEY,
@@ -160,6 +162,11 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, table="messages", column="image_data_url", definition="TEXT")
     ensure_column(conn, table="users", column="avatar_url", definition="TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, table="users", column="status", definition="TEXT NOT NULL DEFAULT 'active'")
+    ensure_column(conn, table="artifacts", column="workspace_id", definition="TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
+        "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
+    )
 
 
 def ensure_column(conn: sqlite3.Connection, *, table: str, column: str, definition: str) -> None:

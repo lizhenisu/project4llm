@@ -29,3 +29,4 @@ projects/09-production-rag/frontend/test-results/
 
 # Personal files
 *.typ
+*.log

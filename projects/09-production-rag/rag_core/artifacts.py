@@ -36,6 +36,7 @@ class MindMapArtifact:
     title: str
     status: str
     tenant_id: str
+    workspace_id: str
     source_doc_ids: list[str]
     created_at: int
     updated_at: int
@@ -76,8 +77,23 @@ def delete_artifact(config: RagConfig, *, tenant_id: str, artifact_id: str) -> b
     return True
 
 
-def list_metadata_artifacts(config: RagConfig, *, tenant_id: str) -> list[MindMapArtifact]:
+def list_metadata_artifacts(
+    config: RagConfig,
+    *,
+    tenant_id: str,
+    workspace_id: str | None = None,
+) -> list[MindMapArtifact]:
     with connect_metadata_db(config) as conn:
+        if workspace_id is not None:
+            rows = conn.execute(
+                """
+                SELECT * FROM artifacts
+                WHERE tenant_id = ? AND workspace_id = ?
+                ORDER BY updated_at DESC
+                """,
+                (tenant_id, workspace_id),
+            ).fetchall()
+            return [artifact_from_metadata_row(row) for row in rows]
         rows = conn.execute(
             """
             SELECT * FROM artifacts
@@ -89,8 +105,20 @@ def list_metadata_artifacts(config: RagConfig, *, tenant_id: str) -> list[MindMa
     return [artifact_from_metadata_row(row) for row in rows]
 
 
-def load_metadata_artifact(config: RagConfig, *, tenant_id: str, artifact_id: str) -> MindMapArtifact | None:
+def load_metadata_artifact(
+    config: RagConfig,
+    *,
+    tenant_id: str,
+    artifact_id: str,
+    workspace_id: str | None = None,
+) -> MindMapArtifact | None:
     with connect_metadata_db(config) as conn:
+        if workspace_id is not None:
+            row = conn.execute(
+                "SELECT * FROM artifacts WHERE tenant_id = ? AND workspace_id = ? AND id = ?",
+                (tenant_id, workspace_id, artifact_id),
+            ).fetchone()
+            return artifact_from_metadata_row(row) if row is not None else None
         row = conn.execute(
             "SELECT * FROM artifacts WHERE tenant_id = ? AND id = ?",
             (tenant_id, artifact_id),
@@ -103,12 +131,13 @@ def save_metadata_artifact(config: RagConfig, artifact: MindMapArtifact) -> None
         conn.execute(
             """
             INSERT INTO artifacts(
-                id, tenant_id, title, status, artifact_type, source_doc_ids,
+                id, tenant_id, workspace_id, title, status, artifact_type, source_doc_ids,
                 root, table_json, error, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 tenant_id = excluded.tenant_id,
+                workspace_id = excluded.workspace_id,
                 title = excluded.title,
                 status = excluded.status,
                 artifact_type = excluded.artifact_type,
@@ -121,6 +150,7 @@ def save_metadata_artifact(config: RagConfig, artifact: MindMapArtifact) -> None
             (
                 artifact.id,
                 artifact.tenant_id,
+                artifact.workspace_id,
                 artifact.title,
                 artifact.status,
                 artifact.artifact_type,
@@ -134,8 +164,20 @@ def save_metadata_artifact(config: RagConfig, artifact: MindMapArtifact) -> None
         )
 
 
-def delete_metadata_artifact(config: RagConfig, *, tenant_id: str, artifact_id: str) -> bool:
+def delete_metadata_artifact(
+    config: RagConfig,
+    *,
+    tenant_id: str,
+    artifact_id: str,
+    workspace_id: str | None = None,
+) -> bool:
     with connect_metadata_db(config) as conn:
+        if workspace_id is not None:
+            cursor = conn.execute(
+                "DELETE FROM artifacts WHERE tenant_id = ? AND workspace_id = ? AND id = ?",
+                (tenant_id, workspace_id, artifact_id),
+            )
+            return cursor.rowcount > 0
         cursor = conn.execute(
             "DELETE FROM artifacts WHERE tenant_id = ? AND id = ?",
             (tenant_id, artifact_id),
@@ -179,6 +221,7 @@ def create_mindmap_artifact(
         title=title or root["label"],
         status="ready",
         tenant_id=tenant_id,
+        workspace_id="",
         source_doc_ids=source_doc_ids,
         created_at=timestamp,
         updated_at=timestamp,
@@ -211,6 +254,7 @@ def create_table_artifact(
         title=title or table.get("title") or infer_table_title(source_doc_ids),
         status="ready",
         tenant_id=tenant_id,
+        workspace_id="",
         source_doc_ids=source_doc_ids,
         created_at=timestamp,
         updated_at=timestamp,
@@ -520,6 +564,7 @@ def artifact_from_row(row: dict[str, Any]) -> MindMapArtifact:
         title=str(row["title"]),
         status=str(row.get("status", "ready")),
         tenant_id=str(row["tenant_id"]),
+        workspace_id=str(row.get("workspace_id") or ""),
         source_doc_ids=list(row.get("source_doc_ids") or []),
         created_at=int(row.get("created_at") or 0),
         updated_at=int(row.get("updated_at") or 0),
@@ -536,6 +581,7 @@ def artifact_from_metadata_row(row) -> MindMapArtifact:
         title=str(row["title"]),
         status=str(row["status"]),
         tenant_id=str(row["tenant_id"]),
+        workspace_id=str(row["workspace_id"] or ""),
         source_doc_ids=json.loads(row["source_doc_ids"] or "[]"),
         created_at=int(row["created_at"] or 0),
         updated_at=int(row["updated_at"] or 0),

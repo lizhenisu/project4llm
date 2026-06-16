@@ -324,8 +324,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export async function deleteArtifact(
   settings: Settings,
   artifactId: string,
+  workspaceId: string,
 ): Promise<{ status: string; artifact_id: string }> {
-  return request(`/artifacts/${artifactId}?tenant_id=${encodeURIComponent(settings.tenantId)}`, {
+  return request(`/artifacts/${artifactId}?tenant_id=${encodeURIComponent(settings.tenantId)}&workspace_id=${encodeURIComponent(workspaceId)}`, {
     method: "DELETE",
     settings,
   });
@@ -335,25 +336,26 @@ export async function renameArtifact(
   settings: Settings,
   artifactId: string,
   title: string,
+  workspaceId: string,
 ): Promise<{ status: string; artifact_id: string; title: string }> {
-  return request(`/artifacts/${artifactId}?tenant_id=${encodeURIComponent(settings.tenantId)}`, {
+  return request(`/artifacts/${artifactId}?tenant_id=${encodeURIComponent(settings.tenantId)}&workspace_id=${encodeURIComponent(workspaceId)}`, {
     method: "PATCH",
     settings,
     json: { title },
   });
 }
 
-export async function listArtifacts(settings: Settings): Promise<MindMapArtifact[]> {
+export async function listArtifacts(settings: Settings, workspaceId: string): Promise<MindMapArtifact[]> {
   const payload = await request<{ artifacts: MindMapArtifact[] }>(
-    `/artifacts?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    `/artifacts?tenant_id=${encodeURIComponent(settings.tenantId)}&workspace_id=${encodeURIComponent(workspaceId)}`,
     { settings },
   );
   return payload.artifacts;
 }
 
-export function getArtifact(settings: Settings, artifactId: string): Promise<MindMapArtifact> {
+export function getArtifact(settings: Settings, artifactId: string, workspaceId: string): Promise<MindMapArtifact> {
   return request<MindMapArtifact>(
-    `/artifacts/${encodeURIComponent(artifactId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    `/artifacts/${encodeURIComponent(artifactId)}?tenant_id=${encodeURIComponent(settings.tenantId)}&workspace_id=${encodeURIComponent(workspaceId)}`,
     { settings },
   );
 }
@@ -362,6 +364,7 @@ export function createMindMap(
   settings: Settings,
   title: string,
   sourceDocIds: string[],
+  workspaceId: string,
 ): Promise<MindMapArtifact> {
   return request<MindMapArtifact>("/artifacts/mindmap", {
     method: "POST",
@@ -369,6 +372,7 @@ export function createMindMap(
     json: {
       title,
       tenant_id: settings.tenantId,
+      workspace_id: workspaceId,
       acl_groups: settings.aclGroups,
       source_doc_ids: sourceDocIds,
       context_limit: RAG_CONTEXT_LIMIT,
@@ -380,6 +384,7 @@ export function createDataTable(
   settings: Settings,
   title: string,
   sourceDocIds: string[],
+  workspaceId: string,
 ): Promise<MindMapArtifact> {
   return request<MindMapArtifact>("/artifacts/table", {
     method: "POST",
@@ -387,6 +392,7 @@ export function createDataTable(
     json: {
       title,
       tenant_id: settings.tenantId,
+      workspace_id: workspaceId,
       acl_groups: settings.aclGroups,
       source_doc_ids: sourceDocIds,
       context_limit: RAG_CONTEXT_LIMIT,

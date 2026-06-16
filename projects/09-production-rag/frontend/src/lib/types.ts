@@ -89,6 +89,7 @@ export type MindMapArtifact = {
   title: string;
   status: "generating" | "ready" | "failed";
   tenant_id: string;
+  workspace_id?: string;
   source_doc_ids: string[];
   created_at: number;
   updated_at: number;

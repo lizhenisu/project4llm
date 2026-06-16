@@ -189,6 +189,7 @@ class RenameSourceResponse(BaseModel):
 class MindMapRequest(BaseModel):
     title: str = "思维导图"
     tenant_id: str = "team_a"
+    workspace_id: str = ""
     acl_groups: list[str] = Field(default_factory=list)
     source_doc_ids: list[str] = Field(default_factory=list)
     doc_version: int | None = None
@@ -200,6 +201,7 @@ class MindMapArtifactResponse(BaseModel):
     title: str
     status: str
     tenant_id: str
+    workspace_id: str = ""
     source_doc_ids: list[str]
     created_at: int
     updated_at: int
@@ -940,6 +942,7 @@ def create_app():
     @app.get("/artifacts", response_model=ArtifactListResponse)
     def artifacts(
         tenant_id: str = "team_a",
+        workspace_id: str = "",
         authorization: str | None = Header(default=None),
         x_rag_tenant_id: str | None = Header(default=None),
         x_rag_acl_groups: str | None = Header(default=None),
@@ -957,7 +960,11 @@ def create_app():
         return ArtifactListResponse(
             artifacts=[
                 artifact_to_response(artifact)
-                for artifact in list_metadata_artifacts(config, tenant_id=auth_context.tenant_id)
+                for artifact in list_metadata_artifacts(
+                    config,
+                    tenant_id=auth_context.tenant_id,
+                    workspace_id=workspace_id,
+                )
             ]
         )
 
@@ -981,6 +988,7 @@ def create_app():
         artifact = pending_artifact(
             title=request.title,
             tenant_id=auth_context.tenant_id,
+            workspace_id=request.workspace_id,
             source_doc_ids=request.source_doc_ids,
             artifact_type="mindmap",
         )
@@ -1012,6 +1020,7 @@ def create_app():
         artifact = pending_artifact(
             title=request.title,
             tenant_id=auth_context.tenant_id,
+            workspace_id=request.workspace_id,
             source_doc_ids=request.source_doc_ids,
             artifact_type="table",
         )
@@ -1023,6 +1032,7 @@ def create_app():
     def get_artifact(
         artifact_id: str,
         tenant_id: str = "team_a",
+        workspace_id: str = "",
         authorization: str | None = Header(default=None),
         x_rag_tenant_id: str | None = Header(default=None),
         x_rag_acl_groups: str | None = Header(default=None),
@@ -1036,9 +1046,14 @@ def create_app():
             tenant_id=tenant_id,
             acl_groups=[],
         )
-        artifact = load_metadata_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
+        artifact = load_metadata_artifact(
+            config,
+            tenant_id=auth_context.tenant_id,
+            artifact_id=artifact_id,
+            workspace_id=workspace_id,
+        )
         if artifact is None:
-            artifact = load_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
+            artifact = None if workspace_id else load_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
             if artifact is not None:
                 save_metadata_artifact(config, artifact)
         if artifact is None:
@@ -1049,6 +1064,7 @@ def create_app():
     def remove_artifact(
         artifact_id: str,
         tenant_id: str = "team_a",
+        workspace_id: str = "",
         authorization: str | None = Header(default=None),
         x_rag_tenant_id: str | None = Header(default=None),
         x_rag_acl_groups: str | None = Header(default=None),
@@ -1062,8 +1078,13 @@ def create_app():
             tenant_id=tenant_id,
             acl_groups=[],
         )
-        removed = delete_metadata_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
-        legacy_removed = delete_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
+        removed = delete_metadata_artifact(
+            config,
+            tenant_id=auth_context.tenant_id,
+            artifact_id=artifact_id,
+            workspace_id=workspace_id,
+        )
+        legacy_removed = False if workspace_id else delete_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
         return DeleteArtifactResponse(
             status="deleted" if removed or legacy_removed else "not_found",
             artifact_id=artifact_id,
@@ -1074,6 +1095,7 @@ def create_app():
         artifact_id: str,
         request: RenameArtifactRequest,
         tenant_id: str = "team_a",
+        workspace_id: str = "",
         authorization: str | None = Header(default=None),
         x_rag_tenant_id: str | None = Header(default=None),
         x_rag_acl_groups: str | None = Header(default=None),
@@ -1087,7 +1109,12 @@ def create_app():
             tenant_id=tenant_id,
             acl_groups=[],
         )
-        artifact = load_metadata_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
+        artifact = load_metadata_artifact(
+            config,
+            tenant_id=auth_context.tenant_id,
+            artifact_id=artifact_id,
+            workspace_id=workspace_id,
+        )
         if artifact is None:
             raise HTTPException(status_code=404, detail="Artifact not found")
 
@@ -1145,6 +1172,7 @@ def pending_artifact(
     *,
     title: str,
     tenant_id: str,
+    workspace_id: str,
     source_doc_ids: list[str],
     artifact_type: str,
 ) -> MindMapArtifact:
@@ -1155,6 +1183,7 @@ def pending_artifact(
         title=title,
         status="generating",
         tenant_id=tenant_id,
+        workspace_id=workspace_id,
         source_doc_ids=source_doc_ids,
         created_at=timestamp,
         updated_at=timestamp,
@@ -1391,6 +1420,7 @@ def artifact_to_response(artifact) -> MindMapArtifactResponse:
         title=artifact.title,
         status=artifact.status,
         tenant_id=artifact.tenant_id,
+        workspace_id=artifact.workspace_id,
         source_doc_ids=artifact.source_doc_ids,
         created_at=artifact.created_at,
         updated_at=artifact.updated_at,
