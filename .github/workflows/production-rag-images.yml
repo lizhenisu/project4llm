@@ -1,5 +1,6 @@
 name: Production RAG Images
 
+# Builds and publishes Production RAG images when main changes.
 on:
   push:
     branches: [main, master]
