@@ -18,7 +18,7 @@ from rag_core.milvus_store import (
     image_search,
 )
 from rag_core.multimodal import reciprocal_rank_fusion
-from rag_core.pipeline import elapsed_ms
+from rag_core.pipeline import StageCallback, elapsed_ms, emit_stage
 from rag_core.rewrite import rewrite_query
 from rag_core.types import SearchHit, TraceInfo
 from rag_core.versioning import load_current_versions
@@ -45,6 +45,7 @@ def retrieve_multimodal(
     source_types: list[str] | None = None,
     history: list[str] | None = None,
     request_id: str | None = None,
+    stage_callback: StageCallback | None = None,
 ) -> MultimodalRetrievalResult:
     config = load_config()
     resolved_request_id = request_id or str(uuid.uuid4())
@@ -58,11 +59,28 @@ def retrieve_multimodal(
         rewrite_backend = "file-path"
         rewrite_ms = 0.0
     else:
+        emit_stage(
+            stage_callback,
+            "rewrite",
+            "active",
+            "查询重写",
+            "正在结合对话历史改写多模态问题。",
+        )
         rewrite_start = perf_counter()
         rewrite = rewrite_query(query, history=history, config=config)
         rewrite_ms = elapsed_ms(rewrite_start)
         rewritten_query = rewrite.rewritten_query
         rewrite_backend = rewrite.backend
+        emit_stage(
+            stage_callback,
+            "rewrite",
+            "done",
+            "查询重写",
+            "已得到多模态检索查询。",
+            latency_ms=rewrite_ms,
+            rewritten_query=rewritten_query,
+            backend=rewrite_backend,
+        )
         if mentions_other_tenant(rewritten_query, tenant_id):
             trace = TraceInfo(
                 request_id=resolved_request_id,
@@ -114,9 +132,31 @@ def retrieve_multimodal(
     text_search_ms = 0.0
     text_hits: list[SearchHit] = []
     if not is_image_file_query:
+        emit_stage(
+            stage_callback,
+            "embedding",
+            "active",
+            "文本向量编码",
+            "正在把问题转换为文本向量。",
+        )
         text_embedding_start = perf_counter()
         text_query_vector = text_model.encode([rewritten_query])[0]
         text_embedding_ms = elapsed_ms(text_embedding_start)
+        emit_stage(
+            stage_callback,
+            "embedding",
+            "done",
+            "文本向量编码",
+            f"已使用 {text_model.model_name} 完成文本编码。",
+            latency_ms=text_embedding_ms,
+        )
+        emit_stage(
+            stage_callback,
+            "search",
+            "active",
+            "文本检索",
+            "正在检索 OCR、标题和文本证据。",
+        )
         text_search_start = perf_counter()
         text_hits = hybrid_search(
             client,
@@ -127,12 +167,43 @@ def retrieve_multimodal(
             limit=max(candidate_limit, 10),
         )
         text_search_ms = elapsed_ms(text_search_start)
+        emit_stage(
+            stage_callback,
+            "search",
+            "done",
+            "文本检索",
+            f"已召回 {len(text_hits)} 个文本候选。",
+            latency_ms=text_search_ms,
+            candidate_count=len(text_hits),
+        )
+    emit_stage(
+        stage_callback,
+        "image_embedding",
+        "active",
+        "图片向量编码",
+        "正在生成图片/多模态向量。",
+    )
     image_embedding_start = perf_counter()
     if is_image_file_query:
         image_query_vector = image_model.encode_images([query_path])[0]
     else:
         image_query_vector = image_model.encode([rewritten_query])[0]
     image_embedding_ms = elapsed_ms(image_embedding_start)
+    emit_stage(
+        stage_callback,
+        "image_embedding",
+        "done",
+        "图片向量编码",
+        "图片/多模态向量已生成。",
+        latency_ms=image_embedding_ms,
+    )
+    emit_stage(
+        stage_callback,
+        "image_search",
+        "active",
+        "图片向量检索",
+        "正在检索相似图片和多模态证据。",
+    )
     image_search_start = perf_counter()
     image_hits = image_search(
         client,
@@ -142,6 +213,22 @@ def retrieve_multimodal(
         limit=max(candidate_limit, 10),
     )
     image_search_ms = elapsed_ms(image_search_start)
+    emit_stage(
+        stage_callback,
+        "image_search",
+        "done",
+        "图片向量检索",
+        f"已召回 {len(image_hits)} 个图片候选。",
+        latency_ms=image_search_ms,
+        candidate_count=len(image_hits),
+    )
+    emit_stage(
+        stage_callback,
+        "fusion",
+        "active",
+        "多模态融合检索",
+        "正在融合文本与图片检索结果。",
+    )
     fusion_start = perf_counter()
     if is_image_file_query:
         candidates = image_only_candidates(image_hits, limit=candidate_limit)
@@ -154,6 +241,22 @@ def retrieve_multimodal(
             limit=candidate_limit,
         )
     fusion_ms = elapsed_ms(fusion_start)
+    emit_stage(
+        stage_callback,
+        "fusion",
+        "done",
+        "多模态融合检索",
+        f"已融合得到 {len(candidates)} 个候选证据。",
+        latency_ms=fusion_ms,
+        candidate_count=len(candidates),
+    )
+    emit_stage(
+        stage_callback,
+        "context",
+        "active",
+        "上下文组装",
+        "正在选择最终进入大模型提示词的多模态证据。",
+    )
     packing_start = perf_counter()
     hits, packing_stats = pack_context(
         candidates,
@@ -164,6 +267,15 @@ def retrieve_multimodal(
         text_unit_counter=getattr(text_model, "count_tokens", None),
     )
     packing_ms = elapsed_ms(packing_start)
+    emit_stage(
+        stage_callback,
+        "context",
+        "done",
+        "上下文组装",
+        f"已选出 {len(hits)} 个证据片段进入回答上下文。",
+        latency_ms=packing_ms,
+        context_count=len(hits),
+    )
     trace = TraceInfo(
         request_id=resolved_request_id,
         original_query=query,

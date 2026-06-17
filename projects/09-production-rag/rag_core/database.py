@@ -163,6 +163,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, table="messages", column="request_id", definition="TEXT")
     ensure_column(conn, table="messages", column="feedback_rating", definition="INTEGER")
     ensure_column(conn, table="messages", column="image_data_url", definition="TEXT")
+    ensure_column(conn, table="messages", column="rag_progress", definition="TEXT NOT NULL DEFAULT '[]'")
     ensure_column(conn, table="users", column="avatar_url", definition="TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, table="users", column="status", definition="TEXT NOT NULL DEFAULT 'active'")
     ensure_column(conn, table="users", column="profile_name_edit_allowed", definition="INTEGER NOT NULL DEFAULT 1")

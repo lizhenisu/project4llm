@@ -61,6 +61,7 @@ export type ChatMessage = {
   status?: "sending" | "done" | "failed";
   created_at?: number | null;
   feedbackRating?: 1 | -1 | null;
+  ragProgress?: RagProgressStage[];
 };
 
 export type QueryResponse = {
@@ -69,6 +70,24 @@ export type QueryResponse = {
   citations: Citation[];
   trace?: Record<string, unknown>;
 };
+
+export type RagProgressStatus = "pending" | "active" | "done" | "failed";
+
+export type RagProgressStage = {
+  stage: string;
+  label: string;
+  detail: string;
+  status: RagProgressStatus;
+  latency_ms?: number;
+  candidate_count?: number;
+  reranked_count?: number;
+  context_count?: number;
+};
+
+export type QueryStreamEvent =
+  | ({ type: "stage" } & RagProgressStage & Record<string, unknown>)
+  | { type: "result"; request_id: string; answer: string; citations: Citation[]; trace?: Record<string, unknown> }
+  | { type: "error"; detail: string };
 
 export type MindMapNode = {
   id: string;

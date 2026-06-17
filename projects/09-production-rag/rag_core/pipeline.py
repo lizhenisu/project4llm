@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from time import perf_counter
+from typing import Callable
 
 from rag_core.config import load_config
 from rag_core.context import pack_context
@@ -25,6 +26,9 @@ class RetrievalResult:
     trace: TraceInfo
 
 
+StageCallback = Callable[[dict[str, object]], None]
+
+
 def retrieve_and_rerank(
     query: str,
     *,
@@ -37,6 +41,7 @@ def retrieve_and_rerank(
     source_types: list[str] | None = None,
     history: list[str] | None = None,
     request_id: str | None = None,
+    stage_callback: StageCallback | None = None,
 ) -> RetrievalResult:
     config = load_config()
     resolved_request_id = request_id or str(uuid.uuid4())
@@ -48,6 +53,13 @@ def retrieve_and_rerank(
         if doc_version is not None
         else load_current_versions(config.object_store_dir, tenant_id=tenant_id)
     )
+    emit_stage(
+        stage_callback,
+        "source_guides",
+        "active",
+        "读取知识库摘要",
+        "正在加载来源摘要，用于让查询改写更贴近当前文档。",
+    )
     source_summaries = load_source_guides_for_rewrite(
         config.object_store_dir,
         tenant_id=tenant_id,
@@ -55,9 +67,33 @@ def retrieve_and_rerank(
         doc_version=doc_version,
         current_doc_versions=current_versions,
     )
+    emit_stage(
+        stage_callback,
+        "source_guides",
+        "done",
+        "读取知识库摘要",
+        f"已加载 {len(source_summaries)} 条来源摘要。",
+    )
+    emit_stage(
+        stage_callback,
+        "rewrite",
+        "active",
+        "查询重写",
+        "正在结合对话历史和来源摘要改写问题。",
+    )
     rewrite_start = perf_counter()
     rewrite = rewrite_query(query, history=history, source_summaries=source_summaries, config=config)
     rewrite_ms = elapsed_ms(rewrite_start)
+    emit_stage(
+        stage_callback,
+        "rewrite",
+        "done",
+        "查询重写",
+        "已得到检索查询。",
+        latency_ms=rewrite_ms,
+        rewritten_query=rewrite.rewritten_query,
+        backend=rewrite.backend,
+    )
     if mentions_other_tenant(rewrite.rewritten_query, tenant_id):
         trace = TraceInfo(
             request_id=resolved_request_id,
@@ -88,9 +124,25 @@ def retrieve_and_rerank(
             reranked=[],
             trace=trace,
         )
+    emit_stage(
+        stage_callback,
+        "embedding",
+        "active",
+        "向量编码",
+        "正在把查询转换为向量表示。",
+    )
     embedding_start = perf_counter()
     query_vector = embedding_model.encode([rewrite.rewritten_query])[0]
     embedding_ms = elapsed_ms(embedding_start)
+    emit_stage(
+        stage_callback,
+        "embedding",
+        "done",
+        "向量编码",
+        f"已使用 {embedding_model.model_name} 完成编码。",
+        latency_ms=embedding_ms,
+        embedding_model=embedding_model.model_name,
+    )
     filter_expr = build_filter_expr(
         tenant_id=tenant_id,
         allowed_acl_groups=acl_groups,
@@ -99,6 +151,13 @@ def retrieve_and_rerank(
         embedding_model=embedding_model.model_name,
         doc_ids=doc_ids,
         source_types=source_types,
+    )
+    emit_stage(
+        stage_callback,
+        "search",
+        "active",
+        "向量检索",
+        "正在 Milvus 中执行 hybrid dense + sparse 检索。",
     )
     search_start = perf_counter()
     candidates = hybrid_search(
@@ -110,6 +169,22 @@ def retrieve_and_rerank(
         limit=candidate_limit,
     )
     search_ms = elapsed_ms(search_start)
+    emit_stage(
+        stage_callback,
+        "search",
+        "done",
+        "向量检索",
+        f"已召回 {len(candidates)} 个候选片段。",
+        latency_ms=search_ms,
+        candidate_count=len(candidates),
+    )
+    emit_stage(
+        stage_callback,
+        "rerank",
+        "active",
+        "重排序",
+        "正在按问题相关性重排候选片段。",
+    )
     rerank_start = perf_counter()
     reranked = build_reranker(config).rerank(
         rewrite.rewritten_query,
@@ -117,6 +192,22 @@ def retrieve_and_rerank(
         limit=len(candidates),
     )
     rerank_ms = elapsed_ms(rerank_start)
+    emit_stage(
+        stage_callback,
+        "rerank",
+        "done",
+        "重排序",
+        f"已完成 {len(reranked)} 个候选片段重排。",
+        latency_ms=rerank_ms,
+        reranked_count=len(reranked),
+    )
+    emit_stage(
+        stage_callback,
+        "context",
+        "active",
+        "上下文组装",
+        "正在选择最终进入大模型提示词的证据片段。",
+    )
     packing_start = perf_counter()
     hits, packing_stats = pack_context(
         reranked,
@@ -127,6 +218,18 @@ def retrieve_and_rerank(
         text_unit_counter=getattr(embedding_model, "count_tokens", None),
     )
     packing_ms = elapsed_ms(packing_start)
+    emit_stage(
+        stage_callback,
+        "context",
+        "done",
+        "上下文组装",
+        f"已选出 {len(hits)} 个证据片段进入回答上下文。",
+        latency_ms=packing_ms,
+        context_count=len(hits),
+        dropped_by_score=packing_stats.dropped_by_score,
+        dropped_by_doc_limit=packing_stats.dropped_by_doc_limit,
+        dropped_by_budget=packing_stats.dropped_by_budget,
+    )
     trace = TraceInfo(
         request_id=resolved_request_id,
         original_query=rewrite.original_query,
@@ -166,3 +269,24 @@ def retrieve_and_rerank(
 
 def elapsed_ms(start: float) -> float:
     return round((perf_counter() - start) * 1000, 2)
+
+
+def emit_stage(
+    callback: StageCallback | None,
+    stage: str,
+    status: str,
+    label: str,
+    detail: str,
+    **payload: object,
+) -> None:
+    if callback is None:
+        return
+    callback(
+        {
+            "stage": stage,
+            "status": status,
+            "label": label,
+            "detail": detail,
+            **payload,
+        }
+    )

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from rag_core.answering import generate_answer
 from rag_core.config import load_config
+from rag_core.pipeline import StageCallback, emit_stage
 from rag_core.types import SearchHit, TraceInfo
 from search_multimodal import retrieve_multimodal
 
@@ -33,6 +34,7 @@ def answer_multimodal_query(
     history: list[str] | None = None,
     request_id: str | None = None,
     answer_query: str | None = None,
+    stage_callback: StageCallback | None = None,
 ) -> MultimodalAnswerResult:
     retrieval = retrieve_multimodal(
         query,
@@ -45,12 +47,29 @@ def answer_multimodal_query(
         source_types=source_types,
         history=history,
         request_id=request_id,
+        stage_callback=stage_callback,
     )
     config = load_config()
+    emit_stage(
+        stage_callback,
+        "answer",
+        "active",
+        "大模型最终输出",
+        "正在基于多模态证据生成最终回答。",
+    )
     generation = generate_answer(
         config,
         multimodal_answer_query(answer_query or retrieval.trace.rewritten_query),
         retrieval.hits,
+    )
+    emit_stage(
+        stage_callback,
+        "answer",
+        "done",
+        "大模型最终输出",
+        "最终回答已生成。",
+        latency_ms=generation.latency_ms,
+        llm_model=generation.llm_model,
     )
     return MultimodalAnswerResult(
         request_id=retrieval.request_id,

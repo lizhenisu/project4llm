@@ -1,10 +1,10 @@
-import { ArrowRight, Bot, Check, Copy, ImagePlus, MoreVertical, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { ArrowRight, Bot, Check, ChevronRight, Circle, Copy, ImagePlus, Loader2, MoreVertical, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
-import type { ChatMessage, Citation, SourceItem } from "../../lib/types";
+import type { ChatMessage, Citation, RagProgressStage, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
 
 type Props = {
@@ -14,9 +14,11 @@ type Props = {
   busy: boolean;
   conversationTitle: string;
   typingMessageId: string | null;
+  openRagMessageId: string | null;
   onTypingComplete: () => void;
   onAsk: (query: string, imageDataUrl?: string | null) => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
+  onOpenRagProgress: (message: ChatMessage) => void;
   onDeleteConversation: () => void;
 };
 
@@ -27,9 +29,11 @@ export function ChatPanel({
   busy,
   conversationTitle,
   typingMessageId,
+  openRagMessageId,
   onTypingComplete,
   onAsk,
   onFeedback,
+  onOpenRagProgress,
   onDeleteConversation,
 }: Props) {
   const [draft, setDraft] = useState("");
@@ -144,8 +148,10 @@ export function ChatPanel({
                   key={message.id}
                   message={message}
                   typing={message.id === typingMessageId && message.status === "done"}
+                  ragOpen={message.id === openRagMessageId}
                   onTypingComplete={onTypingComplete}
                   onFeedback={onFeedback}
+                  onOpenRagProgress={onOpenRagProgress}
                   onPreviewImage={setPreviewImage}
                 />
               ),
@@ -257,14 +263,18 @@ function Overview({ sources, onAsk }: { sources: SourceItem[]; onAsk: (query: st
 function AssistantMessage({
   message,
   typing,
+  ragOpen,
   onTypingComplete,
   onFeedback,
+  onOpenRagProgress,
   onPreviewImage,
 }: {
   message: ChatMessage;
   typing: boolean;
+  ragOpen: boolean;
   onTypingComplete: () => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
+  onOpenRagProgress: (message: ChatMessage) => void;
   onPreviewImage: (image: { url: string; title: string }) => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -290,7 +300,17 @@ function AssistantMessage({
 
   return (
     <article className={className}>
-      <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{text}</ReactMarkdown>
+      {showControls && message.ragProgress?.length ? (
+        <button className={`rag-summary-toggle${ragOpen ? " is-open" : ""}`} type="button" onClick={() => onOpenRagProgress(message)}>
+          <span>{formatRagThoughtLabel(message.ragProgress)}</span>
+          <ChevronRight size={15} />
+        </button>
+      ) : null}
+      {message.status === "sending" && message.ragProgress?.length ? (
+        <RagProgressTimeline stages={message.ragProgress} />
+      ) : (
+        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{text}</ReactMarkdown>
+      )}
       {typing && !done ? <span className="type-caret" aria-hidden="true" /> : null}
       {showControls && message.citations?.length ? <Citations message={message} onPreviewImage={onPreviewImage} /> : null}
       {showControls ? (
@@ -324,6 +344,74 @@ function AssistantMessage({
       ) : null}
     </article>
   );
+}
+
+function RagProgressTimeline({ stages }: { stages: RagProgressStage[] }) {
+  const activeStage = stages.find((stage) => stage.status === "active") ?? stages.find((stage) => stage.status === "pending");
+  return (
+    <div className="rag-progress" aria-live="polite">
+      <div className="rag-progress-header">
+        <span>RAG 调用链</span>
+        <strong>{activeStage?.label || "准备回答"}</strong>
+      </div>
+      <div className="rag-progress-track">
+        {stages.map((stage) => (
+          <div className={`rag-progress-step ${stage.status}`} key={stage.stage}>
+            <span className="rag-progress-node" aria-hidden="true">
+              {stage.status === "done" ? (
+                <Check size={14} />
+              ) : stage.status === "active" ? (
+                <Loader2 size={14} />
+              ) : (
+                <Circle size={10} />
+              )}
+            </span>
+            <span className="rag-progress-copy">
+              <span className="rag-progress-title">
+                {stage.label}
+                {formatStageMeta(stage) ? <em>{formatStageMeta(stage)}</em> : null}
+              </span>
+              <span className="rag-progress-detail">{stage.detail}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatStageMeta(stage: RagProgressStage) {
+  const parts: string[] = [];
+  if (typeof stage.latency_ms === "number") {
+    parts.push(`${Math.max(1, Math.round(stage.latency_ms))}ms`);
+  }
+  if (typeof stage.candidate_count === "number") {
+    parts.push(`${stage.candidate_count} 候选`);
+  } else if (typeof stage.reranked_count === "number") {
+    parts.push(`${stage.reranked_count} 重排`);
+  } else if (typeof stage.context_count === "number") {
+    parts.push(`${stage.context_count} 证据`);
+  }
+  return parts.join(" · ");
+}
+
+function totalRagLatency(stages: RagProgressStage[]) {
+  return stages.reduce((sum, stage) => sum + (typeof stage.latency_ms === "number" ? stage.latency_ms : 0), 0);
+}
+
+function formatRagThoughtLabel(stages: RagProgressStage[]) {
+  const duration = formatRagDuration(totalRagLatency(stages));
+  return duration ? `已思考 ${duration}` : "已思考";
+}
+
+function formatRagDuration(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return "";
+  }
+  if (ms >= 1000) {
+    return `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)}s`;
+  }
+  return `${Math.max(1, Math.round(ms))}ms`;
 }
 
 function useTypewriter(content: string, enabled: boolean) {
