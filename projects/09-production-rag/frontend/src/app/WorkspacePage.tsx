@@ -145,8 +145,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     [artifacts],
   );
   const artifactCooldownRemainingMs = Math.max(0, artifactGenerationReadyAt - Date.now());
-  const artifactGenerationLocked = artifactGenerationBusy || artifactCooldownRemainingMs > 0;
-  const artifactGenerationLockReason = artifactGenerationBusy
+  const artifactGenerationLocked = artifactGenerationBusy || hasServerGeneratingArtifact || artifactCooldownRemainingMs > 0;
+  const artifactGenerationLockReason = artifactGenerationBusy || hasServerGeneratingArtifact
     ? "正在生成上一个 Studio 项"
     : artifactCooldownRemainingMs > 0
       ? `请等待 ${Math.ceil(artifactCooldownRemainingMs / 1000)} 秒后再生成`

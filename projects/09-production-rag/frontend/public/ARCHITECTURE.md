@@ -2,8 +2,6 @@
 
 > **基于 Milvus 的企业级多模态 RAG 知识库系统**
 
-> 文档维护约定：`docs/ARCHITECTURE.md` 是权威源文档；`frontend/public/ARCHITECTURE.md` 是前端 `/architecture` 页面通过 `fetch("/ARCHITECTURE.md")` 读取的静态镜像。修改架构文档后需要同步两个文件，保持内容完全一致。
-
 ---
 
 ## 目录
@@ -1106,24 +1104,6 @@ docker compose --profile ingest up rag-ingest
 | PATCH | `/admin/settings/registration` | 管理员: 注册开关 |
 | POST | `/admin/announcements` | 管理员: 发布公告 |
 | DELETE | `/admin/announcements/{id}` | 管理员: 删除公告 |
-
-### 18.4 架构文档同步
-
-仓库保留两个 `ARCHITECTURE.md`：
-
-| 路径 | 角色 |
-|------|------|
-| `docs/ARCHITECTURE.md` | README 引用的权威源文档 |
-| `frontend/public/ARCHITECTURE.md` | Vite/Nginx 静态资源，供前端 `/architecture` 页面运行时读取 |
-
-保留双文件的原因是前端静态资源必须位于 `frontend/public/` 才能被 `fetch("/ARCHITECTURE.md")` 稳定访问，而文档源文件应保留在 `docs/` 目录供 README、代码审查和文档站引用。修改后用以下命令同步并检查：
-
-```bash
-cp docs/ARCHITECTURE.md frontend/public/ARCHITECTURE.md
-cmp docs/ARCHITECTURE.md frontend/public/ARCHITECTURE.md
-```
-
----
 
 ## 模块文件索引
 

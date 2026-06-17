@@ -116,17 +116,16 @@ def main() -> None:
             else:
                 sys.modules["openai"] = old_openai
 
-    assert len(FakeOpenAI.calls) == 3
+    assert len(FakeOpenAI.calls) == 2
     partial_prompts = [
         call["messages"][-1]["content"]
         for call in FakeOpenAI.calls
         if "原文块批次:" in call["messages"][-1]["content"]
     ]
-    assert len(partial_prompts) == 2
+    assert len(partial_prompts) == 1
     assert "第 1 页" in partial_prompts[0]
     assert "第 5 页" in partial_prompts[0]
-    assert "第 6 页" not in partial_prompts[0]
-    assert "第 6 页" in partial_prompts[1]
+    assert "第 6 页" in partial_prompts[0]
     assert root["label"] == "实习招聘思维导图"
     assert [child["label"] for child in root["children"]] == ["研究院概况", "核心研究方向"]
     assert [child["label"] for child in root["children"][0]["children"]] == [
@@ -177,6 +176,7 @@ def make_config(object_store_dir: Path) -> RagConfig:
         query_rewrite_max_tokens=256,
         require_auth_context=False,
         api_token=None,
+        fixed_test_login_token="production-rag-fixed-test-login-token",
         dense_hnsw_m=16,
         dense_hnsw_ef_construction=100,
         dense_search_ef=128,

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -23,10 +25,11 @@ from rag_core.text_utils import now_ms
 
 ARTIFACTS_DIR = Path("artifacts")
 DEFAULT_MINDMAP_BATCH_CHUNK_COUNT = 5
+DEFAULT_ARTIFACT_LLM_WORKERS = 3
+DEFAULT_MINDMAP_CHUNK_CHARS = 230_000
 MINDMAP_MAX_CHILDREN = 8
 MINDMAP_MAX_GRANDCHILDREN = 6
-TABLE_CHUNK_CHARS = 9000
-TABLE_MAX_ROWS = 24
+DEFAULT_TABLE_CHUNK_CHARS = 230_000
 TABLE_MAX_COLUMNS = 8
 
 
@@ -303,16 +306,18 @@ def build_llm_outline(
     if not batches:
         raise RuntimeError("Archived source documents are empty; cannot generate mind map.")
 
-    partial_roots = [
-        generate_partial_mindmap_with_llm(
-            config=config,
-            title=title,
-            batch_text=batch_text,
-            index=index,
-            total=len(batches),
-        )
-        for index, batch_text in enumerate(batches, start=1)
-    ]
+    partial_roots = parallel_map_ordered(
+        [
+            lambda batch_text=batch_text, index=index: generate_partial_mindmap_with_llm(
+                config=config,
+                title=title,
+                batch_text=batch_text,
+                index=index,
+                total=len(batches),
+            )
+            for index, batch_text in enumerate(batches, start=1)
+        ]
+    )
     root = merge_mindmaps_with_llm(config=config, title=title, partial_roots=partial_roots)
     return normalize_mindmap_node(root, default_label=title or infer_title(source_doc_ids), node_id="root")
 
@@ -334,12 +339,20 @@ def build_llm_table(
         raise RuntimeError("No archived source documents found for LLM table generation.")
 
     text = "\n\n".join(format_doc_for_mindmap(doc) for doc in docs if doc.text.strip()).strip()
-    chunks = split_mindmap_text(text, chunk_chars=TABLE_CHUNK_CHARS, max_chunks=1)
+    chunks = split_mindmap_text(text, chunk_chars=table_chunk_chars())
     if not chunks:
         raise RuntimeError("Archived source documents are empty; cannot generate table.")
 
-    raw_table = generate_table_with_llm(config=config, title=title, source_text=chunks[0])
-    return normalize_table(raw_table, default_title=title)
+    tables = parallel_map_ordered(
+        [
+            lambda chunk=chunk: normalize_table(
+                generate_table_with_llm(config=config, title=title, source_text=chunk),
+                default_title=title,
+            )
+            for chunk in chunks
+        ]
+    )
+    return merge_tables(tables, default_title=title)
 
 
 def load_selected_archived_docs(*, config: RagConfig, tenant_id: str, source_doc_ids: list[str]) -> list:
@@ -358,31 +371,69 @@ def format_doc_for_mindmap(doc) -> str:
 
 
 def batch_mindmap_docs(docs: list, *, batch_chunk_count: int) -> list[str]:
-    batch_size = max(1, batch_chunk_count)
     formatted_docs = [format_doc_for_mindmap(doc) for doc in docs if doc.text.strip()]
-    return [
-        "\n\n".join(formatted_docs[start : start + batch_size])
-        for start in range(0, len(formatted_docs), batch_size)
-    ]
+    text = "\n\n".join(formatted_docs).strip()
+    if not text:
+        return []
+    return split_mindmap_text(
+        text,
+        chunk_chars=mindmap_chunk_chars(),
+    )
 
 
-def split_mindmap_text(text: str, *, chunk_chars: int, max_chunks: int) -> list[str]:
+def split_mindmap_text(text: str, *, chunk_chars: int) -> list[str]:
+    chunk_chars = max(1, chunk_chars)
     paragraphs = [paragraph.strip() for paragraph in text.splitlines() if paragraph.strip()]
     chunks: list[str] = []
     current: list[str] = []
     current_len = 0
     for paragraph in paragraphs:
+        if len(paragraph) > chunk_chars:
+            if current:
+                chunks.append("\n".join(current))
+                current = []
+                current_len = 0
+            chunks.extend(paragraph[start : start + chunk_chars] for start in range(0, len(paragraph), chunk_chars))
+            continue
         if current and current_len + len(paragraph) > chunk_chars:
             chunks.append("\n".join(current))
             current = []
             current_len = 0
-            if len(chunks) >= max_chunks:
-                break
         current.append(paragraph)
         current_len += len(paragraph)
-    if current and len(chunks) < max_chunks:
+    if current:
         chunks.append("\n".join(current))
     return chunks
+
+
+def parallel_map_ordered(tasks: list) -> list:
+    if not tasks:
+        return []
+    workers = min(len(tasks), artifact_llm_workers())
+    if workers <= 1:
+        return [task() for task in tasks]
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(lambda task: task(), tasks))
+
+
+def artifact_llm_workers() -> int:
+    return env_int("RAG_ARTIFACT_LLM_WORKERS", DEFAULT_ARTIFACT_LLM_WORKERS)
+
+
+def mindmap_chunk_chars() -> int:
+    return env_int("RAG_MINDMAP_CHUNK_CHARS", DEFAULT_MINDMAP_CHUNK_CHARS)
+
+
+def table_chunk_chars() -> int:
+    return env_int("RAG_TABLE_CHUNK_CHARS", DEFAULT_TABLE_CHUNK_CHARS)
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.environ.get(name, str(default))
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return default
 
 
 def generate_partial_mindmap_with_llm(
@@ -505,7 +556,7 @@ def normalize_table(raw: dict[str, Any], *, default_title: str) -> dict[str, Any
 
     rows = raw.get("rows") if isinstance(raw.get("rows"), list) else []
     clean_rows: list[list[str]] = []
-    for row in rows[:TABLE_MAX_ROWS]:
+    for row in rows:
         values = row if isinstance(row, list) else []
         clean_row = [clean_table_cell(value) for value in values[: len(clean_columns)]]
         if len(clean_row) < len(clean_columns):
@@ -518,6 +569,46 @@ def normalize_table(raw: dict[str, Any], *, default_title: str) -> dict[str, Any
         "rows": clean_rows,
         "summary": clean_table_cell(raw.get("summary")),
     }
+
+
+def merge_tables(tables: list[dict[str, Any]], *, default_title: str) -> dict[str, Any]:
+    if not tables:
+        return {"title": default_title or "数据表格", "columns": ["主题", "要点", "证据"], "rows": [], "summary": ""}
+    columns = list(tables[0].get("columns") or ["主题", "要点", "证据"])[:TABLE_MAX_COLUMNS]
+    rows: list[list[str]] = []
+    summaries: list[str] = []
+    seen_rows: set[tuple[str, ...]] = set()
+    for table in tables:
+        summary = clean_table_cell(table.get("summary"))
+        if summary:
+            summaries.append(summary)
+        table_columns = list(table.get("columns") or [])
+        for raw_row in table.get("rows") or []:
+            row = [clean_table_cell(value) for value in list(raw_row)]
+            row = align_table_row(row, table_columns, columns)
+            row_key = tuple(row)
+            if row_key in seen_rows:
+                continue
+            seen_rows.add(row_key)
+            rows.append(row)
+    return {
+        "title": clean_table_cell(tables[0].get("title")) or default_title or "数据表格",
+        "columns": columns,
+        "rows": rows,
+        "summary": " ".join(summaries),
+    }
+
+
+def align_table_row(row: list[str], source_columns: list[Any], target_columns: list[str]) -> list[str]:
+    if not source_columns:
+        aligned = row[: len(target_columns)]
+    else:
+        source_names = [clean_table_cell(column)[:40] for column in source_columns]
+        value_by_column = {column: row[index] for index, column in enumerate(source_names) if index < len(row)}
+        aligned = [value_by_column.get(column, "") for column in target_columns]
+    if len(aligned) < len(target_columns):
+        aligned.extend([""] * (len(target_columns) - len(aligned)))
+    return aligned[: len(target_columns)]
 
 
 def clean_table_cell(value: Any) -> str:

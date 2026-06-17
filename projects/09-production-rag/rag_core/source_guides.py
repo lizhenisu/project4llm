@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 from rag_core.config import RagConfig
@@ -11,7 +14,8 @@ from rag_core.types import SourceDocument
 
 
 SOURCE_GUIDES_PATH = Path("canonical/source_guides.jsonl")
-SOURCE_GUIDE_MAX_CHARS = 9000
+DEFAULT_SOURCE_GUIDE_CHUNK_CHARS = 230_000
+DEFAULT_SOURCE_GUIDE_LLM_WORKERS = 3
 
 
 def get_or_create_source_guide(
@@ -44,13 +48,44 @@ def get_or_create_source_guide(
     return result
 
 
-def generate_source_guide(*, config: RagConfig, title: str, docs: list[SourceDocument]) -> str:
+def generate_source_guide(*, config: RagConfig, title: str, docs: list[SourceDocument]) -> SourceGuideResult:
     if not config.llm_base_url or not config.llm_api_key:
         raise RuntimeError("NEW_API_URL/NEW_API_KEY must be configured for source guide generation.")
-    source_text = build_source_guide_context(docs)
-    if not source_text:
-        return "该来源暂无可总结的解析正文。"
+    source_chunks = build_source_guide_context_chunks(docs)
+    if not source_chunks:
+        guide = "该来源暂无可总结的解析正文。"
+        return SourceGuideResult(title=title or guide, guide=guide)
 
+    partial_guides = parallel_map_ordered(
+        [
+            lambda source_text=source_text: generate_source_guide_text(
+                config=config,
+                title=title,
+                source_text=source_text,
+            )
+            for source_text in source_chunks
+        ],
+        workers=source_guide_llm_workers(),
+    )
+    if len(partial_guides) == 1:
+        guide = partial_guides[0]
+    else:
+        merged_source_text = "\n\n".join(
+            f"[摘要片段 {index}]\n{guide}"
+            for index, guide in enumerate(partial_guides, start=1)
+        )
+        guide = generate_source_guide_text(
+            config=config,
+            title=title,
+            source_text=merged_source_text,
+        )
+    title_text, guide_text = parse_title_and_guide(guide)
+    if not title_text:
+        title_text = title
+    return SourceGuideResult(title=normalize_guide_text(title_text), guide=normalize_guide_text(guide_text))
+
+
+def generate_source_guide_text(*, config: RagConfig, title: str, source_text: str) -> str:
     from openai import OpenAI
 
     client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
@@ -71,10 +106,7 @@ def generate_source_guide(*, config: RagConfig, title: str, docs: list[SourceDoc
     guide = (response.choices[0].message.content or "").strip()
     if not guide:
         raise RuntimeError("LLM source guide generation returned empty content.")
-    title_text, guide_text = parse_title_and_guide(guide)
-    if not title_text:
-        title_text = title
-    return SourceGuideResult(title=normalize_guide_text(title_text), guide=normalize_guide_text(guide_text))
+    return guide
 
 
 def parse_title_and_guide(raw: str) -> tuple[str, str]:
@@ -95,23 +127,70 @@ def build_source_guide_prompt(*, title: str, source_text: str) -> str:
 
 
 def build_source_guide_context(docs: list[SourceDocument]) -> str:
+    return "\n\n".join(build_source_guide_context_chunks(docs)).strip()
+
+
+def build_source_guide_context_chunks(docs: list[SourceDocument]) -> list[str]:
     blocks: list[str] = []
-    total = 0
     for doc in docs:
         text = doc.text.strip()
         if not text:
             continue
         page_no = doc.metadata.get("page_no")
         header = f"[第 {page_no} 页]" if page_no is not None else f"[{doc.title}]"
-        block = f"{header}\n{text}"
-        remaining = SOURCE_GUIDE_MAX_CHARS - total
-        if remaining <= 0:
-            break
-        if len(block) > remaining:
-            block = block[:remaining]
-        blocks.append(block)
-        total += len(block)
-    return "\n\n".join(blocks).strip()
+        blocks.append(f"{header}\n{text}")
+    return split_source_guide_text("\n\n".join(blocks).strip(), chunk_chars=source_guide_chunk_chars())
+
+
+def split_source_guide_text(text: str, *, chunk_chars: int) -> list[str]:
+    chunk_chars = max(1, chunk_chars)
+    paragraphs = [paragraph.strip() for paragraph in text.splitlines() if paragraph.strip()]
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for paragraph in paragraphs:
+        if len(paragraph) > chunk_chars:
+            if current:
+                chunks.append("\n".join(current))
+                current = []
+                current_len = 0
+            chunks.extend(paragraph[start : start + chunk_chars] for start in range(0, len(paragraph), chunk_chars))
+            continue
+        if current and current_len + len(paragraph) > chunk_chars:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+        current.append(paragraph)
+        current_len += len(paragraph)
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+def parallel_map_ordered(tasks: list, *, workers: int) -> list:
+    if not tasks:
+        return []
+    worker_count = min(len(tasks), max(1, workers))
+    if worker_count <= 1:
+        return [task() for task in tasks]
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        return list(executor.map(lambda task: task(), tasks))
+
+
+def source_guide_chunk_chars() -> int:
+    return env_int("RAG_SOURCE_GUIDE_CHUNK_CHARS", DEFAULT_SOURCE_GUIDE_CHUNK_CHARS)
+
+
+def source_guide_llm_workers() -> int:
+    return env_int("RAG_SOURCE_GUIDE_LLM_WORKERS", DEFAULT_SOURCE_GUIDE_LLM_WORKERS)
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.environ.get(name, str(default))
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return default
 
 
 def normalize_guide_text(text: str) -> str:
@@ -266,7 +345,7 @@ def source_guide_key(row: dict) -> tuple[str, str, int]:
         str(row["source_doc_id"]),
         int(row["doc_version"]),
     )
-from dataclasses import dataclass
+
 
 @dataclass
 class SourceGuideResult:

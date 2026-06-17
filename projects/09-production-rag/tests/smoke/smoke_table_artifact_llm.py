@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from dataclasses import replace
@@ -26,15 +27,20 @@ class FakeOpenAI:
         assert temperature == 0.2
         user_prompt = messages[-1]["content"]
         assert "JSON schema" in user_prompt
-        assert "岗位职责" in user_prompt
         self.calls.append({"messages": messages, "temperature": temperature})
+        if "SECOND_CHUNK_UNIQUE_MARKER" in user_prompt:
+            rows = [["后半部分岗位", "覆盖长文档后半段", "不能丢弃第二块"]]
+        elif "岗位职责" in user_prompt:
+            rows = [
+                ["大模型应用开发实习生", "开发 RAG 与智能体应用", "熟悉 Python 和 LLM"],
+                ["前端工程实习生", "构建知识库交互界面", "熟悉 TypeScript"],
+            ]
+        else:
+            rows = [["补充说明", "覆盖长文档中间部分", "不能跳过中间块"]]
         content = {
             "title": "实习岗位数据表格",
             "columns": ["岗位", "职责", "要求"],
-            "rows": [
-                ["大模型应用开发实习生", "开发 RAG 与智能体应用", "熟悉 Python 和 LLM"],
-                ["前端工程实习生", "构建知识库交互界面", "熟悉 TypeScript"],
-            ],
+            "rows": rows,
             "summary": "该表格用于比较实习岗位的职责和要求。",
         }
         return SimpleNamespace(
@@ -44,6 +50,10 @@ class FakeOpenAI:
 
 def main() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
+        old_table_chunk_chars = os.environ.get("RAG_TABLE_CHUNK_CHARS")
+        old_artifact_workers = os.environ.get("RAG_ARTIFACT_LLM_WORKERS")
+        os.environ["RAG_TABLE_CHUNK_CHARS"] = "1000"
+        os.environ["RAG_ARTIFACT_LLM_WORKERS"] = "1"
         config = replace(
             load_config(),
             object_store_dir=Path(temp_dir) / "object_store",
@@ -62,7 +72,11 @@ def main() -> None:
                     source_type="pdf",
                     source_uri="/tmp/internship-guide.pdf",
                     title="创维 AI 研究院实习介绍资料",
-                    text="岗位职责：开发 RAG 与智能体应用。要求：熟悉 Python、TypeScript 和 LLM。",
+                    text=(
+                        "岗位职责：开发 RAG 与智能体应用。要求：熟悉 Python、TypeScript 和 LLM。\n"
+                        + "补充说明。" * 2200
+                        + "\nSECOND_CHUNK_UNIQUE_MARKER：后半部分岗位不能被丢弃。"
+                    ),
                     acl_groups=["engineering"],
                     metadata={"relative_path": "创维 AI 研究院实习介绍资料.pdf", "page_no": 1},
                 )
@@ -85,16 +99,27 @@ def main() -> None:
                 sys.modules.pop("openai", None)
             else:
                 sys.modules["openai"] = old_openai
+            restore_env("RAG_TABLE_CHUNK_CHARS", old_table_chunk_chars)
+            restore_env("RAG_ARTIFACT_LLM_WORKERS", old_artifact_workers)
 
         loaded = load_artifact(config, tenant_id="team_a", artifact_id=artifact.id)
 
-    assert len(FakeOpenAI.calls) == 1
+    assert len(FakeOpenAI.calls) >= 2
+    assert any("SECOND_CHUNK_UNIQUE_MARKER" in call["messages"][-1]["content"] for call in FakeOpenAI.calls)
     assert loaded is not None
     assert loaded.artifact_type == "table"
     assert loaded.table is not None
     assert loaded.table["columns"] == ["岗位", "职责", "要求"]
     assert loaded.table["rows"][0][0] == "大模型应用开发实习生"
+    assert loaded.table["rows"][-1][0] == "后半部分岗位"
     print("table artifact llm smoke passed")
+
+
+def restore_env(name: str, value: str | None) -> None:
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
 
 
 if __name__ == "__main__":
