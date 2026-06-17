@@ -292,14 +292,19 @@ def source_guide_rows_for_rewrite(
         source_doc_id = str(row.get("source_doc_id") or "")
         if str(row.get("tenant_id")) != tenant_id:
             continue
-        if allowed_doc_ids and source_doc_id not in allowed_doc_ids:
+        if allowed_doc_ids and not source_guide_matches_allowed_doc_ids(source_doc_id, allowed_doc_ids):
             continue
         row_version = int(row.get("doc_version", 0))
         if doc_version is not None:
             if row_version != int(doc_version):
                 continue
-        elif current_doc_versions is not None and current_doc_versions.get(source_doc_id) != row_version:
-            continue
+        elif current_doc_versions is not None:
+            current_version = current_source_guide_version(
+                source_doc_id,
+                current_doc_versions=current_doc_versions,
+            )
+            if current_version != row_version:
+                continue
         title = str(row.get("title") or "").strip()
         guide = str(row.get("guide") or "").strip()
         if not guide:
@@ -308,6 +313,32 @@ def source_guide_rows_for_rewrite(
         if len(rows) >= limit:
             break
     return rows
+
+
+def source_guide_matches_allowed_doc_ids(source_doc_id: str, allowed_doc_ids: set[str]) -> bool:
+    if source_doc_id in allowed_doc_ids:
+        return True
+    child_prefix = f"{source_doc_id}/"
+    return any(doc_id.startswith(child_prefix) for doc_id in allowed_doc_ids)
+
+
+def current_source_guide_version(
+    source_doc_id: str,
+    *,
+    current_doc_versions: dict[str, int],
+) -> int | None:
+    exact = current_doc_versions.get(source_doc_id)
+    if exact is not None:
+        return int(exact)
+    child_prefix = f"{source_doc_id}/"
+    child_versions = [
+        int(version)
+        for doc_id, version in current_doc_versions.items()
+        if str(doc_id).startswith(child_prefix)
+    ]
+    if not child_versions:
+        return None
+    return max(child_versions)
 
 
 def save_source_guide(

@@ -1,4 +1,4 @@
-import { ArrowRight, Bot, Check, ChevronRight, Circle, Copy, ImagePlus, Loader2, MoreVertical, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { ArrowDown, ArrowRight, Bot, Check, ChevronRight, Circle, Copy, ImagePlus, Loader2, MoreVertical, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -41,6 +41,13 @@ export function ChatPanel({
   const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [inputHeight, setInputHeight] = useState(46);
+  const [showJumpLatest, setShowJumpLatest] = useState(false);
+  const [jumpLatestClosing, setJumpLatestClosing] = useState(false);
+  const wasNearBottomRef = useRef(true);
+  const programmaticScrollRef = useRef(false);
+  const jumpLatestTimerRef = useRef<number | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const canSend = (draft.trim().length > 0 || Boolean(attachedImage)) && !busy;
@@ -52,6 +59,66 @@ export function ChatPanel({
     document.addEventListener("click", handleClickOutside);
     return () => document.removeEventListener("click", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (jumpLatestTimerRef.current !== null) {
+        window.clearTimeout(jumpLatestTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    if (wasNearBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ block: "end" });
+    }
+    updateJumpLatestState();
+  }, [messages, typingMessageId]);
+
+  function isNearBottom() {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return true;
+    return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 72;
+  }
+
+  function updateJumpLatestState() {
+    const nearBottom = isNearBottom();
+    wasNearBottomRef.current = nearBottom;
+    if (programmaticScrollRef.current) {
+      if (nearBottom) {
+        programmaticScrollRef.current = false;
+        setShowJumpLatest(false);
+        setJumpLatestClosing(false);
+        if (jumpLatestTimerRef.current !== null) {
+          window.clearTimeout(jumpLatestTimerRef.current);
+          jumpLatestTimerRef.current = null;
+        }
+      }
+      return;
+    }
+    setShowJumpLatest(messages.length > 0 && !nearBottom);
+  }
+
+  function jumpToLatest() {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    programmaticScrollRef.current = true;
+    wasNearBottomRef.current = true;
+    setJumpLatestClosing(true);
+    scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: "smooth" });
+    if (jumpLatestTimerRef.current !== null) {
+      window.clearTimeout(jumpLatestTimerRef.current);
+    }
+    jumpLatestTimerRef.current = window.setTimeout(() => {
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+      programmaticScrollRef.current = false;
+      setShowJumpLatest(false);
+      setJumpLatestClosing(false);
+      jumpLatestTimerRef.current = null;
+    }, 900);
+  }
 
 
   function submit() {
@@ -127,7 +194,7 @@ export function ChatPanel({
           </div>
         </div>
       </div>
-      <div className="chat-scroll">
+      <div className="chat-scroll" ref={scrollRef} onScroll={updateJumpLatestState}>
         {messages.length === 0 ? (
           selectedSources.length === 0 ? (
             <EmptyState
@@ -156,9 +223,27 @@ export function ChatPanel({
                 />
               ),
             )}
+            <div ref={bottomRef} aria-hidden="true" />
           </div>
         )}
       </div>
+      {showJumpLatest || jumpLatestClosing ? (
+        <div
+          className="jump-latest-anchor"
+          style={{ bottom: `${inputHeight + (attachedImage ? 102 : 72)}px` }}
+        >
+          <button
+            className={`jump-latest-button${jumpLatestClosing ? " is-hiding" : ""}`}
+            type="button"
+            aria-label="回到最新对话"
+            title="回到最新对话"
+            disabled={jumpLatestClosing}
+            onClick={jumpToLatest}
+          >
+            <ArrowDown size={22} />
+          </button>
+        </div>
+      ) : null}
       <div className="chat-input" style={{ position: "relative" }}>
         <div
           className="chat-input-resizer"
