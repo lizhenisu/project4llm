@@ -9,6 +9,7 @@ import type {
   ConversationListItem,
   MindMapArtifact,
   QueryResponse,
+  QueryStreamEvent,
   Settings,
   SourceContent,
   SourceItem,
@@ -37,10 +38,11 @@ type RequestOptions = RequestInit & {
 
 type ApiConversation = Omit<Conversation, "messages"> & {
   messages: Array<
-    Omit<ChatMessage, "requestId" | "feedbackRating" | "imageDataUrl"> & {
+    Omit<ChatMessage, "requestId" | "feedbackRating" | "imageDataUrl" | "ragProgress"> & {
       request_id?: string | null;
       feedback_rating?: 1 | -1 | null;
       image_data_url?: string | null;
+      rag_progress?: ChatMessage["ragProgress"] | null;
     }
   >;
 };
@@ -181,6 +183,100 @@ export function queryRag(
   }).then((response) => normalizeQueryResponseAssets(settings, response));
 }
 
+export async function queryRagStream(
+  settings: Settings,
+  params: {
+    query: string;
+    docIds: string[];
+    history: string[];
+    imageDataUrl?: string | null;
+    onEvent: (event: QueryStreamEvent) => void;
+  },
+): Promise<QueryResponse> {
+  const headers = new Headers();
+  headers.set("Content-Type", "application/json");
+  headers.set("X-RAG-Tenant-ID", settings.tenantId);
+  headers.set("X-RAG-ACL-Groups", settings.aclGroups.join(","));
+  if (settings.token) {
+    headers.set("Authorization", `Bearer ${settings.token}`);
+  }
+  const response = await fetch(`${settings.apiBaseUrl}/query/stream`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      query: params.query,
+      query_mode: params.imageDataUrl ? "multimodal" : "text",
+      image_data_url: params.imageDataUrl || null,
+      history: params.history,
+      tenant_id: settings.tenantId,
+      acl_groups: settings.aclGroups,
+      doc_ids: params.docIds,
+      candidate_limit: 20,
+      context_limit: RAG_CONTEXT_LIMIT,
+    }),
+  });
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    if (response.status === 401) {
+      unauthorizedHandler?.();
+    }
+    throw new ApiError(detail, response.status);
+  }
+  if (!response.body) {
+    throw new ApiError("流式响应不可用", response.status);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: QueryResponse | null = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const event = parseStreamEvent(line);
+      if (!event) continue;
+      if (event.type === "result") {
+        result = normalizeQueryResponseAssets(settings, event);
+      }
+      params.onEvent(event);
+      if (event.type === "error") {
+        throw new ApiError(event.detail, response.status);
+      }
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) {
+    const event = parseStreamEvent(buffer);
+    if (event) {
+      if (event.type === "result") {
+        result = normalizeQueryResponseAssets(settings, event);
+      }
+      params.onEvent(event);
+      if (event.type === "error") {
+        throw new ApiError(event.detail, response.status);
+      }
+    }
+  }
+  if (!result) {
+    throw new ApiError("回答流结束但没有返回最终结果", response.status);
+  }
+  return result;
+}
+
+function parseStreamEvent(line: string): QueryStreamEvent | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed) as QueryStreamEvent;
+  } catch {
+    return { type: "error", detail: "回答流解析失败" };
+  }
+}
+
 export function sendFeedback(
   settings: Settings,
   requestId: string,
@@ -243,6 +339,7 @@ export function saveConversation(
         image_data_url: message.imageDataUrl || null,
         created_at: message.created_at || null,
         feedback_rating: message.feedbackRating ?? null,
+        rag_progress: message.ragProgress || [],
       })),
       source_doc_ids: params.sourceDocIds,
     },
@@ -265,6 +362,7 @@ function normalizeConversation(settings: Settings, conversation: ApiConversation
       citations: message.citations?.map((citation) => normalizeCitationAssets(settings, citation)),
       imageDataUrl: message.image_data_url ?? null,
       feedbackRating: message.feedback_rating ?? null,
+      ragProgress: message.rag_progress ?? undefined,
     })),
   };
 }

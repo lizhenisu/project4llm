@@ -311,6 +311,10 @@
   flex-direction: column;
 }
 
+.chat-panel {
+  position: relative;
+}
+
 .panel-header {
   display: flex;
   align-items: center;
@@ -700,6 +704,44 @@ button:not(:disabled):active {
   }
 }
 
+@keyframes jump-latest-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes jump-latest-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@keyframes rag-stage-scan {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+@keyframes rag-inline-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;
@@ -796,6 +838,49 @@ button:not(:disabled):active {
   flex-direction: column;
   flex: 1;
   padding: 18px;
+}
+
+.jump-latest-anchor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 118px;
+  z-index: 5;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.jump-latest-button {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: 0 8px 22px rgb(15 23 42 / 18%);
+  transform: none;
+  backdrop-filter: blur(10px);
+  animation: jump-latest-in 180ms ease both;
+  pointer-events: auto;
+}
+
+button.jump-latest-button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--surface);
+  transform: none !important;
+}
+
+button.jump-latest-button:active:not(:disabled) {
+  transform: none !important;
+}
+
+.jump-latest-button.is-hiding {
+  pointer-events: none;
+  animation: jump-latest-out 220ms ease both;
 }
 
 .overview {
@@ -912,6 +997,189 @@ button:not(:disabled):active {
   animation:
     message-in 220ms ease both,
     assistant-thinking 1.2s ease-in-out infinite;
+}
+
+.rag-progress {
+  display: grid;
+  gap: 12px;
+}
+
+.rag-progress-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.rag-progress-header span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.rag-progress-header strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.rag-progress-track {
+  position: relative;
+  display: grid;
+  gap: 10px;
+}
+
+.rag-progress-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 44px;
+}
+
+.rag-progress-step::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 26px;
+  bottom: -12px;
+  width: 2px;
+  background: var(--line);
+}
+
+.rag-progress-step:last-child::before {
+  display: none;
+}
+
+.rag-progress-node {
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.rag-progress-step.done .rag-progress-node {
+  border-color: rgb(31 184 111 / 42%);
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.rag-progress-step.active .rag-progress-node {
+  border-color: rgb(91 111 255 / 52%);
+  color: var(--accent);
+  background: rgb(91 111 255 / 10%);
+  box-shadow: 0 0 0 5px rgb(91 111 255 / 8%);
+}
+
+.rag-progress-step.active .rag-progress-node svg {
+  animation: spin 900ms linear infinite;
+}
+
+.rag-progress-copy {
+  position: relative;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 2px 0 8px;
+}
+
+.rag-progress-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.rag-progress-title em {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rag-progress-detail {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.rag-progress-step.pending .rag-progress-title,
+.rag-progress-step.pending .rag-progress-detail {
+  color: color-mix(in srgb, var(--text-muted) 68%, transparent);
+}
+
+.rag-progress-step.active .rag-progress-copy::after {
+  content: "";
+  position: absolute;
+  inset: -2px -8px 2px -8px;
+  z-index: -1;
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgb(91 111 255 / 0%), rgb(91 111 255 / 10%), rgb(31 184 111 / 8%), rgb(91 111 255 / 0%));
+  background-size: 220% 100%;
+  animation: rag-stage-scan 1.6s ease-in-out infinite;
+}
+
+.rag-summary-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  width: fit-content;
+  min-height: 24px;
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.rag-summary-toggle:hover {
+  color: var(--text);
+  background: transparent;
+  transform: none;
+}
+
+.rag-summary-toggle svg {
+  transition: transform 160ms ease;
+}
+
+.rag-summary-toggle.is-open svg {
+  transform: rotate(90deg);
+}
+
+.rag-inline-trace {
+  margin: 0 0 12px;
+  animation: rag-inline-in 180ms ease both;
+}
+
+.rag-inline-trace .rag-progress {
+  margin: 0;
+  padding: 14px 16px 16px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, var(--accent));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--accent-soft));
 }
 
 .assistant-message p:first-child {

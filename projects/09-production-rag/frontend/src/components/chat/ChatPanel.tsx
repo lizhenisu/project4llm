@@ -1,10 +1,10 @@
-import { ArrowRight, Bot, Check, Copy, ImagePlus, MoreVertical, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { ArrowDown, ArrowRight, Bot, Check, ChevronRight, Circle, Copy, ImagePlus, Loader2, MoreVertical, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
-import type { ChatMessage, Citation, SourceItem } from "../../lib/types";
+import type { ChatMessage, Citation, RagProgressStage, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
 
 type Props = {
@@ -37,6 +37,13 @@ export function ChatPanel({
   const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [inputHeight, setInputHeight] = useState(46);
+  const [showJumpLatest, setShowJumpLatest] = useState(false);
+  const [jumpLatestClosing, setJumpLatestClosing] = useState(false);
+  const wasNearBottomRef = useRef(true);
+  const programmaticScrollRef = useRef(false);
+  const jumpLatestTimerRef = useRef<number | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const canSend = (draft.trim().length > 0 || Boolean(attachedImage)) && !busy;
@@ -48,6 +55,66 @@ export function ChatPanel({
     document.addEventListener("click", handleClickOutside);
     return () => document.removeEventListener("click", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (jumpLatestTimerRef.current !== null) {
+        window.clearTimeout(jumpLatestTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    if (wasNearBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ block: "end" });
+    }
+    updateJumpLatestState();
+  }, [messages, typingMessageId]);
+
+  function isNearBottom() {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return true;
+    return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 72;
+  }
+
+  function updateJumpLatestState() {
+    const nearBottom = isNearBottom();
+    wasNearBottomRef.current = nearBottom;
+    if (programmaticScrollRef.current) {
+      if (nearBottom) {
+        programmaticScrollRef.current = false;
+        setShowJumpLatest(false);
+        setJumpLatestClosing(false);
+        if (jumpLatestTimerRef.current !== null) {
+          window.clearTimeout(jumpLatestTimerRef.current);
+          jumpLatestTimerRef.current = null;
+        }
+      }
+      return;
+    }
+    setShowJumpLatest(messages.length > 0 && !nearBottom);
+  }
+
+  function jumpToLatest() {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    programmaticScrollRef.current = true;
+    wasNearBottomRef.current = true;
+    setJumpLatestClosing(true);
+    scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: "smooth" });
+    if (jumpLatestTimerRef.current !== null) {
+      window.clearTimeout(jumpLatestTimerRef.current);
+    }
+    jumpLatestTimerRef.current = window.setTimeout(() => {
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+      programmaticScrollRef.current = false;
+      setShowJumpLatest(false);
+      setJumpLatestClosing(false);
+      jumpLatestTimerRef.current = null;
+    }, 900);
+  }
 
 
   function submit() {
@@ -123,7 +190,7 @@ export function ChatPanel({
           </div>
         </div>
       </div>
-      <div className="chat-scroll">
+      <div className="chat-scroll" ref={scrollRef} onScroll={updateJumpLatestState}>
         {messages.length === 0 ? (
           selectedSources.length === 0 ? (
             <EmptyState
@@ -150,9 +217,27 @@ export function ChatPanel({
                 />
               ),
             )}
+            <div ref={bottomRef} aria-hidden="true" />
           </div>
         )}
       </div>
+      {showJumpLatest || jumpLatestClosing ? (
+        <div
+          className="jump-latest-anchor"
+          style={{ bottom: `${inputHeight + (attachedImage ? 102 : 72)}px` }}
+        >
+          <button
+            className={`jump-latest-button${jumpLatestClosing ? " is-hiding" : ""}`}
+            type="button"
+            aria-label="回到最新对话"
+            title="回到最新对话"
+            disabled={jumpLatestClosing}
+            onClick={jumpToLatest}
+          >
+            <ArrowDown size={22} />
+          </button>
+        </div>
+      ) : null}
       <div className="chat-input" style={{ position: "relative" }}>
         <div
           className="chat-input-resizer"
@@ -268,6 +353,7 @@ function AssistantMessage({
   onPreviewImage: (image: { url: string; title: string }) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [ragOpen, setRagOpen] = useState(false);
   const feedbackRating = message.feedbackRating ?? null;
   
   const { text, done } = useTypewriter(message.content, typing);
@@ -290,7 +376,27 @@ function AssistantMessage({
 
   return (
     <article className={className}>
-      <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{text}</ReactMarkdown>
+      {showControls && message.ragProgress?.length ? (
+        <button
+          className={`rag-summary-toggle${ragOpen ? " is-open" : ""}`}
+          type="button"
+          aria-expanded={ragOpen}
+          onClick={() => setRagOpen((open) => !open)}
+        >
+          <span>{formatRagThoughtLabel(message.ragProgress)}</span>
+          <ChevronRight size={15} />
+        </button>
+      ) : null}
+      {showControls && ragOpen && message.ragProgress?.length ? (
+        <div className="rag-inline-trace">
+          <RagProgressTimeline stages={message.ragProgress} />
+        </div>
+      ) : null}
+      {message.status === "sending" && message.ragProgress?.length ? (
+        <RagProgressTimeline stages={message.ragProgress} />
+      ) : (
+        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{text}</ReactMarkdown>
+      )}
       {typing && !done ? <span className="type-caret" aria-hidden="true" /> : null}
       {showControls && message.citations?.length ? <Citations message={message} onPreviewImage={onPreviewImage} /> : null}
       {showControls ? (
@@ -324,6 +430,77 @@ function AssistantMessage({
       ) : null}
     </article>
   );
+}
+
+function RagProgressTimeline({ stages }: { stages: RagProgressStage[] }) {
+  const activeStage =
+    stages.find((stage) => stage.status === "active") ??
+    stages.find((stage) => stage.status === "pending") ??
+    stages[stages.length - 1];
+  return (
+    <div className="rag-progress" aria-live="polite">
+      <div className="rag-progress-header">
+        <span>RAG 调用链</span>
+        <strong>{activeStage?.label || "准备回答"}</strong>
+      </div>
+      <div className="rag-progress-track">
+        {stages.map((stage) => (
+          <div className={`rag-progress-step ${stage.status}`} key={stage.stage}>
+            <span className="rag-progress-node" aria-hidden="true">
+              {stage.status === "done" ? (
+                <Check size={14} />
+              ) : stage.status === "active" ? (
+                <Loader2 size={14} />
+              ) : (
+                <Circle size={10} />
+              )}
+            </span>
+            <span className="rag-progress-copy">
+              <span className="rag-progress-title">
+                {stage.label}
+                {formatStageMeta(stage) ? <em>{formatStageMeta(stage)}</em> : null}
+              </span>
+              <span className="rag-progress-detail">{stage.detail}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatStageMeta(stage: RagProgressStage) {
+  const parts: string[] = [];
+  if (typeof stage.latency_ms === "number") {
+    parts.push(`${Math.max(1, Math.round(stage.latency_ms))}ms`);
+  }
+  if (typeof stage.candidate_count === "number") {
+    parts.push(`${stage.candidate_count} 候选`);
+  } else if (typeof stage.reranked_count === "number") {
+    parts.push(`${stage.reranked_count} 重排`);
+  } else if (typeof stage.context_count === "number") {
+    parts.push(`${stage.context_count} 证据`);
+  }
+  return parts.join(" · ");
+}
+
+function totalRagLatency(stages: RagProgressStage[]) {
+  return stages.reduce((sum, stage) => sum + (typeof stage.latency_ms === "number" ? stage.latency_ms : 0), 0);
+}
+
+function formatRagThoughtLabel(stages: RagProgressStage[]) {
+  const duration = formatRagDuration(totalRagLatency(stages));
+  return duration ? `已思考 ${duration}` : "已思考";
+}
+
+function formatRagDuration(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return "";
+  }
+  if (ms >= 1000) {
+    return `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)}s`;
+  }
+  return `${Math.max(1, Math.round(ms))}ms`;
 }
 
 function useTypewriter(content: string, enabled: boolean) {

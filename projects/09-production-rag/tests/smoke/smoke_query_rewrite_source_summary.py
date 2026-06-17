@@ -36,6 +36,14 @@ def main() -> None:
         )
         assert child_fallback == summaries
 
+        child_only_current_versions = load_source_guides_for_rewrite(
+            object_store_dir,
+            tenant_id="tenant-a",
+            doc_ids=["source-parent/page-1"],
+            current_doc_versions={"source-parent/page-1": 2, "source-parent/page-2": 2},
+        )
+        assert child_only_current_versions == summaries
+
         prompt = build_query_rewrite_prompt(
             source_summary_text="\n".join(summaries),
             history_text="用户询问过科学技术哲学。",

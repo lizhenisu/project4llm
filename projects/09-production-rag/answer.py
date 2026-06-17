@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from rag_core.answering import build_prompt, generate_answer, generate_chat
 from rag_core.config import load_config
-from rag_core.pipeline import retrieve_and_rerank
+from rag_core.pipeline import StageCallback, emit_stage, retrieve_and_rerank
 from rag_core.types import SearchHit, TraceInfo
 
 
@@ -33,6 +33,7 @@ def answer_query(
     source_types: list[str] | None = None,
     history: list[str] | None = None,
     request_id: str | None = None,
+    stage_callback: StageCallback | None = None,
 ) -> AnswerResult:
     config = load_config()
     has_doc_filter = bool(doc_ids or source_types or doc_version)
@@ -42,6 +43,7 @@ def answer_query(
             query,
             history=history,
             request_id=request_id,
+            stage_callback=stage_callback,
         )
     retrieval = retrieve_and_rerank(
         query,
@@ -54,8 +56,25 @@ def answer_query(
         source_types=source_types,
         history=history,
         request_id=request_id,
+        stage_callback=stage_callback,
+    )
+    emit_stage(
+        stage_callback,
+        "answer",
+        "active",
+        "大模型最终输出",
+        "正在基于证据片段生成最终回答。",
     )
     generation = generate_answer(config, retrieval.trace.rewritten_query, retrieval.hits)
+    emit_stage(
+        stage_callback,
+        "answer",
+        "done",
+        "大模型最终输出",
+        "最终回答已生成。",
+        latency_ms=generation.latency_ms,
+        llm_model=generation.llm_model,
+    )
     return AnswerResult(
         request_id=retrieval.request_id,
         answer=generation.answer,
@@ -72,6 +91,7 @@ def answer_query_without_retrieval(
     *,
     history: list[str] | None = None,
     request_id: str | None = None,
+    stage_callback: StageCallback | None = None,
 ) -> AnswerResult:
     """Pure LLM chat mode — bypasses Milvus retrieval entirely. Passes conversation history directly to LLM."""
     import uuid as _uuid
@@ -85,7 +105,23 @@ def answer_query_without_retrieval(
             role = "assistant" if prefix == "assistant" else "user"
             chat_messages.append({"role": role, "content": content})
     chat_messages.append({"role": "user", "content": query})
+    emit_stage(
+        stage_callback,
+        "answer",
+        "active",
+        "大模型直接回答",
+        "当前未选择文档，正在直接调用大模型。",
+    )
     generation = generate_chat(config, chat_messages)
+    emit_stage(
+        stage_callback,
+        "answer",
+        "done",
+        "大模型直接回答",
+        "回答已生成。",
+        latency_ms=generation.latency_ms,
+        llm_model=generation.llm_model,
+    )
     trace = TraceInfo(
         request_id=resolved_request_id,
         original_query=query,

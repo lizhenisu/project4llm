@@ -3,13 +3,16 @@ from __future__ import annotations
 import time
 import uuid
 import base64
+import json
 import mimetypes
+import threading
 from dataclasses import replace
+from queue import Queue
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field, field_validator
 
 from answer import answer_query
 from answer_multimodal import answer_multimodal_query
@@ -244,6 +247,12 @@ class ConversationMessageRequest(BaseModel):
     image_data_url: str | None = None
     created_at: int | None = None
     feedback_rating: int | None = Field(default=None, ge=-1, le=1)
+    rag_progress: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("rag_progress", mode="before")
+    @classmethod
+    def normalize_rag_progress(cls, value):
+        return [] if value is None else value
 
 
 class ConversationUpsertRequest(BaseModel):
@@ -375,7 +384,7 @@ class UserListResponse(BaseModel):
 
 
 def create_app():
-    app = FastAPI(title="Production RAG", version="0.3.0")
+    app = FastAPI(title="Production RAG", version="0.3.2")
     ensure_default_test_account(load_config())
 
     @app.get("/health")
@@ -879,6 +888,86 @@ def create_app():
             },
         )
         return response
+
+    @app.post("/query/stream")
+    def query_stream(
+        request: QueryRequest,
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> StreamingResponse:
+        config = load_config()
+        auth_context = resolve_auth_context(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            request=request,
+        )
+
+        def stream_events():
+            event_queue: Queue[dict[str, object] | None] = Queue()
+
+            def emit(event_type: str, payload: dict[str, object]) -> None:
+                event_queue.put({"type": event_type, **payload})
+
+            def emit_stage_event(payload: dict[str, object]) -> None:
+                emit("stage", payload)
+
+            def run_query() -> None:
+                try:
+                    emit(
+                        "stage",
+                        {
+                            "stage": "start",
+                            "status": "done",
+                            "label": "接收问题",
+                            "detail": "已收到问题，正在准备 RAG 调用链。",
+                        },
+                    )
+                    result = resolve_answer_result(request, auth_context, stage_callback=emit_stage_event)
+                    response = QueryResponse(
+                        request_id=result.request_id,
+                        answer=result.answer,
+                        citations=[
+                            hit_to_response(hit, config=config, tenant_id=auth_context.tenant_id)
+                            for hit in result.hits
+                        ],
+                        trace=result.trace.__dict__,
+                    )
+                    append_event(
+                        config.runtime_dir,
+                        "answer_events",
+                        {
+                            "request_id": result.request_id,
+                            "query": request.query,
+                            "query_mode": request.query_mode,
+                            "history_len": len(request.history),
+                            "auth_context": auth_context.summary(),
+                            "doc_version": request.doc_version,
+                            "doc_ids": request.doc_ids,
+                            "source_types": request.source_types,
+                            "trace": result.trace,
+                            "raw_hits": hit_event_summaries(result.candidates),
+                            "rerank_hits": hit_event_summaries(result.reranked),
+                            "final_context": hit_event_summaries(result.hits),
+                            "llm": result.generation,
+                        },
+                    )
+                    emit("result", response.model_dump())
+                except Exception as exc:  # noqa: BLE001 - streamed API must serialize failures.
+                    emit("error", {"detail": str(exc) or exc.__class__.__name__})
+                finally:
+                    event_queue.put(None)
+
+            threading.Thread(target=run_query, daemon=True).start()
+            while True:
+                event = event_queue.get()
+                if event is None:
+                    break
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(stream_events(), media_type="application/x-ndjson")
 
     @app.post("/feedback", response_model=FeedbackResponse)
     def feedback(
@@ -1421,7 +1510,7 @@ def resolve_search_result(request: SearchRequest, auth_context):
     )
 
 
-def resolve_answer_result(request: QueryRequest, auth_context):
+def resolve_answer_result(request: QueryRequest, auth_context, stage_callback=None):
     if request.query_mode == "multimodal":
         query = materialize_query_image(request) or request.query
         return answer_multimodal_query(
@@ -1436,6 +1525,7 @@ def resolve_answer_result(request: QueryRequest, auth_context):
             history=request.history,
             request_id=request.request_id,
             answer_query=request.query,
+            stage_callback=stage_callback,
         )
     return answer_query(
         request.query,
@@ -1448,6 +1538,7 @@ def resolve_answer_result(request: QueryRequest, auth_context):
         source_types=request.source_types or None,
         history=request.history,
         request_id=request.request_id,
+        stage_callback=stage_callback,
     )
 
 
@@ -1516,6 +1607,7 @@ def message_request_to_domain(message: ConversationMessageRequest) -> Conversati
         image_data_url=message.image_data_url,
         created_at=message.created_at,
         feedback_rating=message.feedback_rating,
+        rag_progress=message.rag_progress,
     )
 
 
@@ -1535,6 +1627,7 @@ def conversation_to_response(conversation) -> ConversationResponse:
                 image_data_url=message.image_data_url,
                 created_at=message.created_at,
                 feedback_rating=message.feedback_rating,
+                rag_progress=message.rag_progress,
             )
             for message in conversation.messages
         ],

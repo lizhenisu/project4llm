@@ -26,7 +26,7 @@ import {
   listConversations,
   listSources,
   publishAnnouncement,
-  queryRag,
+  queryRagStream,
   changeCurrentPassword,
   saveConversation,
   sendFeedback,
@@ -63,7 +63,7 @@ import {
   saveWorkspaceName,
   saveWorkspaces,
 } from "../lib/storage";
-import type { AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, MindMapArtifact, Settings, SourceContent, SourceItem, WorkspaceRecord } from "../lib/types";
+import type { AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, MindMapArtifact, RagProgressStage, Settings, SourceContent, SourceItem, WorkspaceRecord } from "../lib/types";
 
 type PanelLayout = {
   source: number;
@@ -85,6 +85,32 @@ const MIN_LAYOUT: PanelLayout = { source: 17, chat: 31, studio: 22 };
 const ARTIFACT_GENERATION_COOLDOWN_MS = 4_000;
 const ARTIFACT_STATUS_POLL_MS = 1_200;
 type ArtifactKind = "mindmap" | "table";
+
+function initialRagProgress(enabled: boolean): RagProgressStage[] | undefined {
+  if (!enabled) {
+    return [
+      {
+        stage: "answer",
+        label: "大模型直接回答",
+        detail: "等待大模型接收问题。",
+        status: "pending",
+      },
+    ];
+  }
+  return [
+    { stage: "start", label: "接收问题", detail: "等待后端接收问题。", status: "pending" },
+  ];
+}
+
+function mergeRagProgress(current: RagProgressStage[] | undefined, incoming: RagProgressStage): RagProgressStage[] {
+  const stages = current?.length ? [...current] : [];
+  const existingIndex = stages.findIndex((item) => item.stage === incoming.stage);
+  if (existingIndex >= 0) {
+    stages[existingIndex] = { ...stages[existingIndex], ...incoming };
+    return stages;
+  }
+  return [...stages, incoming];
+}
 
 export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => void }) {
   const auth = useAuth();
@@ -531,15 +557,17 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     const pending: ChatMessage = {
       id: crypto.randomUUID(),
       role: "assistant",
-      content: requestSelectedDocIds.length > 0 ? "正在检索资料并生成回答..." : "思考中...",
+      content: requestSelectedDocIds.length > 0 ? "RAG 调用链启动中..." : "大模型正在思考...",
       status: "sending",
       created_at: Date.now(),
+      ragProgress: initialRagProgress(requestSelectedDocIds.length > 0 || Boolean(imageDataUrl)),
     };
     const baseMessages = [...messages, userMessage, pending];
     setMessages(baseMessages);
     setTypingMessageId(null);
     setBusy(true);
     let targetConversationId = requestConversationId;
+    let latestRagProgress = pending.ragProgress || [];
     try {
       const savedPending = await persistConversation(
         baseMessages,
@@ -550,11 +578,31 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       );
       if (!isCurrentSession()) return;
       targetConversationId = savedPending?.id ?? targetConversationId;
-      const response = await queryRag(settings, {
+      const updateRagProgress = (stage: RagProgressStage) => {
+        latestRagProgress = mergeRagProgress(latestRagProgress, stage);
+        if (!isCurrentWorkspace()) return;
+        setMessages((current) =>
+          current.map((item) =>
+            item.id === pending.id
+              ? {
+                  ...item,
+                  content: stage.detail || item.content,
+                  ragProgress: latestRagProgress,
+                }
+              : item,
+          ),
+        );
+      };
+      const response = await queryRagStream(settings, {
         query,
         docIds: requestSelectedDocIds,
         history: requestHistory,
         imageDataUrl,
+        onEvent: (event) => {
+          if (event.type === "stage") {
+            updateRagProgress(event);
+          }
+        },
       });
       if (!isCurrentSession()) return;
       const nextMessages: ChatMessage[] = baseMessages.map((item) =>
@@ -565,6 +613,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
                 requestId: response.request_id,
                 citations: response.citations,
                 status: "done" as const,
+                ragProgress: latestRagProgress,
               }
             : item,
       );
@@ -580,7 +629,12 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       }
       const failedMessages: ChatMessage[] = baseMessages.map((item) =>
           item.id === pending.id
-            ? { ...item, content: error instanceof Error ? error.message : "回答失败", status: "failed" as const }
+            ? {
+                ...item,
+                content: error instanceof Error ? error.message : "回答失败",
+                status: "failed" as const,
+                ragProgress: latestRagProgress,
+              }
               : item,
       );
       if (isCurrentWorkspace()) {
@@ -609,8 +663,37 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     const userMessage = conversation.messages[userIndex];
     setBusy(true);
     setTypingMessageId(null);
+    let latestRagProgress = initialRagProgress(conversation.source_doc_ids.length > 0 || Boolean(userMessage.imageDataUrl)) || [];
     try {
-      const response = await queryRag(nextSettings, {
+      if (isCurrentWorkspace()) {
+        setMessages((current) =>
+          current.map((item, index) =>
+            index === pendingIndex
+              ? {
+                  ...item,
+                  content: conversation.source_doc_ids.length > 0 ? "RAG 调用链启动中..." : "大模型正在思考...",
+                  ragProgress: latestRagProgress,
+                }
+              : item,
+          ),
+        );
+      }
+      const updateRagProgress = (stage: RagProgressStage) => {
+        latestRagProgress = mergeRagProgress(latestRagProgress, stage);
+        if (!isCurrentWorkspace()) return;
+        setMessages((current) =>
+          current.map((item, index) =>
+            index === pendingIndex
+              ? {
+                  ...item,
+                  content: stage.detail || item.content,
+                  ragProgress: latestRagProgress,
+                }
+              : item,
+          ),
+        );
+      };
+      const response = await queryRagStream(nextSettings, {
         query: userMessage.content,
         docIds: conversation.source_doc_ids,
         history: conversation.messages
@@ -618,6 +701,11 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
           .map((message) => `${message.role}: ${message.content}`)
           .slice(-8),
         imageDataUrl: userMessage.imageDataUrl,
+        onEvent: (event) => {
+          if (event.type === "stage") {
+            updateRagProgress(event);
+          }
+        },
       });
       if (!isCurrentSession()) return;
       const nextMessages: ChatMessage[] = conversation.messages.map((item, index) =>
@@ -628,6 +716,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
               requestId: response.request_id,
               citations: response.citations,
               status: "done" as const,
+              ragProgress: latestRagProgress,
             }
           : item,
       );
@@ -647,6 +736,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
               ...item,
               content: error instanceof Error ? error.message : "回答恢复失败",
               status: "failed" as const,
+              ragProgress: latestRagProgress,
             }
           : item,
       );
@@ -1119,7 +1209,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       )}
       <footer className="statusbar">
         <span>{status}</span>
-        <span className="version-badge" onClick={() => onNavigate("/architecture")} title="查看系统架构">v0.3.1</span>
+        <span className="version-badge" onClick={() => onNavigate("/architecture")} title="查看系统架构">v0.3.2</span>
       </footer>
       <SettingsDialog
         open={settingsOpen}

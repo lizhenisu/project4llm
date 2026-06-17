@@ -53,23 +53,9 @@ If `pip` is unavailable inside `.venv`, prefer `uv add` / `uv sync` instead of t
 
 ## Running Code
 
-Run commands from the repository root unless a script explicitly says otherwise.
+Run commands from the repository root unless a script explicitly says otherwise. Prefer focused smoke checks for the files or project being changed instead of running unrelated demos.
 
-Common smoke commands:
-
-```bash
-source .venv/bin/activate
-python projects/01-ml-basics/train_mlp.py --epochs 3
-python projects/03-tokenizer-and-data/train_bpe_tokenizer.py
-python projects/03-tokenizer-and-data/data_pipeline.py
-python projects/02-transformer-from-scratch/smoke_test.py
-python projects/02-transformer-from-scratch/train_tiny_gpt.py --steps 20
-python projects/04-sft-qwen-lora/build_sft_dataset.py
-python projects/05-dpo-preference/build_preference_dataset.py
-python projects/07-milvus-rag/milvus_lite_rag_demo.py
-```
-
-For a quick syntax check:
+For a quick Python syntax check:
 
 ```bash
 source .venv/bin/activate
@@ -85,13 +71,16 @@ uv pip check
 
 ## Production RAG Development Workflow
 
-For `projects/09-production-rag`, avoid rebuilding Docker containers for every frontend change.
+For `projects/09-production-rag`, avoid rebuilding Docker containers for routine development.
 
-During normal frontend development, keep the backend containers running and use the Vite dev server for hot reload:
+Use Docker for Milvus dependencies, run the FastAPI backend locally with reload, and use the Vite dev server for frontend hot reload:
 
 ```bash
 cd projects/09-production-rag
-docker compose up -d rag-api
+docker compose up -d milvus
+
+source ../../.venv/bin/activate
+uvicorn serve:app --reload --host 0.0.0.0 --port 8008
 
 cd frontend
 npm run dev -- --host 0.0.0.0
@@ -105,7 +94,7 @@ http://localhost:5173/
 
 The Vite dev server proxies `/api/*` to the containerized backend at `http://127.0.0.1:8008`, so frontend changes under `projects/09-production-rag/frontend/src/` should be visible immediately in the browser without rebuilding `rag-web`.
 
-Only rebuild containers when validating production packaging, Dockerfile changes, nginx config changes, backend dependency/image changes, or before a final production-like check:
+Only rebuild containers when validating production packaging, Dockerfile changes, nginx config changes, backend dependency/image changes, or before a final production-like check.
 
 ```bash
 cd projects/09-production-rag
@@ -120,16 +109,23 @@ http://localhost:8080/
 
 ## Milvus Lite Note
 
-`projects/07-milvus-rag/milvus_lite_rag_demo.py` starts a local Milvus Lite server and binds a local gRPC port. In sandboxed environments this may require elevated permission to bind `127.0.0.1`.
+Do not commit local Milvus database files, caches, `__pycache__/`, `.venv/`, generated runtime directories, or object-store data.
 
-The generated local database directory is ignored by git:
+## Privacy And Sensitive Data
 
-```text
-projects/07-milvus-rag/milvus_lite_demo.db/
-```
+The repository must not contain user-private information or secrets. This includes, but is not limited to:
 
-Do not commit local Milvus database files, caches, `__pycache__/`, or `.venv/`.
+- Real names or identifiable personal profiles.
+- Email addresses, phone numbers, addresses, ID numbers, account names, or other contact details.
+- API keys, tokens, passwords, cookies, session IDs, private keys, `.env` values, or service credentials.
+- Resumes, CVs, screenshots, documents, PDFs, uploads, exports, logs, database files, or object-store data that may contain private user information.
+
+Use synthetic placeholders in committed examples and fixtures. Do not copy real user-provided content into committed files.
 
 ## Branch Management Rule
+
+Development happens on the `dev` branch. The `main` branch is reserved for stable version releases only.
+
+Do not implement ordinary code changes directly on `main`. Merge `dev` into `main` only when the user explicitly asks to publish a stable release.
 
 **Do NOT automatically merge `dev` into `main` unless explicitly asked.** Always ask the user before merging or force-pushing to `main`. The `dev` branch is for development and experimentation; only the user decides when to promote changes to `main`.

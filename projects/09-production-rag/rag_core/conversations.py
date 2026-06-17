@@ -25,6 +25,7 @@ class ConversationMessage:
     image_data_url: str | None = None
     created_at: int | None = None
     feedback_rating: int | None = None
+    rag_progress: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ def load_conversation(
         else:
             message_rows = conn.execute(
                 """
-                SELECT id, role, content, status, request_id, citations, image_data_url, created_at, feedback_rating
+                SELECT id, role, content, status, request_id, citations, image_data_url, created_at, feedback_rating, rag_progress
                 FROM messages
                 WHERE conversation_id = ?
                 ORDER BY created_at ASC
@@ -102,6 +103,7 @@ def load_conversation(
                 image_data_url=message["image_data_url"],
                 created_at=int(message["created_at"] or now_ms()),
                 feedback_rating=message["feedback_rating"],
+                rag_progress=json.loads(message["rag_progress"] or "[]"),
             )
             for message in message_rows
         ],
@@ -179,8 +181,8 @@ def save_conversation_row(config: RagConfig, conversation: Conversation) -> None
         for index, message in enumerate(conversation.messages):
             conn.execute(
                 """
-                INSERT INTO messages(id, conversation_id, role, content, status, request_id, citations, image_data_url, created_at, feedback_rating)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages(id, conversation_id, role, content, status, request_id, citations, image_data_url, created_at, feedback_rating, rag_progress)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message.id,
@@ -193,6 +195,7 @@ def save_conversation_row(config: RagConfig, conversation: Conversation) -> None
                     message.image_data_url,
                     message.created_at or conversation.created_at + index,
                     message.feedback_rating,
+                    json.dumps(message.rag_progress, ensure_ascii=False),
                 ),
             )
 
@@ -253,6 +256,7 @@ def conversation_from_row(row: dict[str, Any]) -> Conversation:
                 image_data_url=message.get("image_data_url"),
                 created_at=message.get("created_at"),
                 feedback_rating=message.get("feedback_rating"),
+                rag_progress=list(message.get("rag_progress") or []),
             )
             for message in row.get("messages", [])
         ],
