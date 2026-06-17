@@ -14,11 +14,9 @@ type Props = {
   busy: boolean;
   conversationTitle: string;
   typingMessageId: string | null;
-  openRagMessageId: string | null;
   onTypingComplete: () => void;
   onAsk: (query: string, imageDataUrl?: string | null) => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
-  onOpenRagProgress: (message: ChatMessage) => void;
   onDeleteConversation: () => void;
 };
 
@@ -29,11 +27,9 @@ export function ChatPanel({
   busy,
   conversationTitle,
   typingMessageId,
-  openRagMessageId,
   onTypingComplete,
   onAsk,
   onFeedback,
-  onOpenRagProgress,
   onDeleteConversation,
 }: Props) {
   const [draft, setDraft] = useState("");
@@ -215,10 +211,8 @@ export function ChatPanel({
                   key={message.id}
                   message={message}
                   typing={message.id === typingMessageId && message.status === "done"}
-                  ragOpen={message.id === openRagMessageId}
                   onTypingComplete={onTypingComplete}
                   onFeedback={onFeedback}
-                  onOpenRagProgress={onOpenRagProgress}
                   onPreviewImage={setPreviewImage}
                 />
               ),
@@ -348,21 +342,18 @@ function Overview({ sources, onAsk }: { sources: SourceItem[]; onAsk: (query: st
 function AssistantMessage({
   message,
   typing,
-  ragOpen,
   onTypingComplete,
   onFeedback,
-  onOpenRagProgress,
   onPreviewImage,
 }: {
   message: ChatMessage;
   typing: boolean;
-  ragOpen: boolean;
   onTypingComplete: () => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
-  onOpenRagProgress: (message: ChatMessage) => void;
   onPreviewImage: (image: { url: string; title: string }) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [ragOpen, setRagOpen] = useState(false);
   const feedbackRating = message.feedbackRating ?? null;
   
   const { text, done } = useTypewriter(message.content, typing);
@@ -386,10 +377,20 @@ function AssistantMessage({
   return (
     <article className={className}>
       {showControls && message.ragProgress?.length ? (
-        <button className={`rag-summary-toggle${ragOpen ? " is-open" : ""}`} type="button" onClick={() => onOpenRagProgress(message)}>
+        <button
+          className={`rag-summary-toggle${ragOpen ? " is-open" : ""}`}
+          type="button"
+          aria-expanded={ragOpen}
+          onClick={() => setRagOpen((open) => !open)}
+        >
           <span>{formatRagThoughtLabel(message.ragProgress)}</span>
           <ChevronRight size={15} />
         </button>
+      ) : null}
+      {showControls && ragOpen && message.ragProgress?.length ? (
+        <div className="rag-inline-trace">
+          <RagProgressTimeline stages={message.ragProgress} />
+        </div>
       ) : null}
       {message.status === "sending" && message.ragProgress?.length ? (
         <RagProgressTimeline stages={message.ragProgress} />
@@ -432,7 +433,10 @@ function AssistantMessage({
 }
 
 function RagProgressTimeline({ stages }: { stages: RagProgressStage[] }) {
-  const activeStage = stages.find((stage) => stage.status === "active") ?? stages.find((stage) => stage.status === "pending");
+  const activeStage =
+    stages.find((stage) => stage.status === "active") ??
+    stages.find((stage) => stage.status === "pending") ??
+    stages[stages.length - 1];
   return (
     <div className="rag-progress" aria-live="polite">
       <div className="rag-progress-header">

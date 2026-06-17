@@ -384,7 +384,7 @@ class UserListResponse(BaseModel):
 
 
 def create_app():
-    app = FastAPI(title="Production RAG", version="0.3.0")
+    app = FastAPI(title="Production RAG", version="0.3.2")
     ensure_default_test_account(load_config())
 
     @app.get("/health")

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { ArrowLeft, Ban, Check, CheckCircle2, Circle, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, ListChecks, LogIn, LogOut, Megaphone, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PencilLine, Search, Settings as SettingsIcon, Shield, Trash2, UserRound, Users, X } from "lucide-react";
+import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PencilLine, Search, Settings as SettingsIcon, Shield, Trash2, UserRound, Users, X } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -142,11 +142,9 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   const [, setCooldownTick] = useState(0);
   const [panelLayout, setPanelLayout] = useState<PanelLayout>(DEFAULT_LAYOUT);
   const [typingMessageId, setTypingMessageId] = useState<string | null>(null);
-  const [ragDrawerMessageId, setRagDrawerMessageId] = useState<string | null>(null);
   const gridRef = useRef<HTMLElement | null>(null);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const studioListLayoutRef = useRef<PanelLayout | null>(null);
-  const ragDrawerLayoutRef = useRef<PanelLayout | null>(null);
   const artifactGenerationBusyRef = useRef(false);
   const artifactGenerationReadyAtRef = useRef(0);
   const suppressAutoConversationLoadRef = useRef(false);
@@ -167,10 +165,6 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         source.child_doc_ids && source.child_doc_ids.length > 0 ? source.child_doc_ids : [source.doc_id],
       ),
     [selectedSources],
-  );
-  const ragDrawerMessage = useMemo(
-    () => messages.find((message) => message.id === ragDrawerMessageId && message.ragProgress?.length) ?? null,
-    [messages, ragDrawerMessageId],
   );
   const hasServerGeneratingArtifact = useMemo(
     () => artifacts.some((artifact) => artifact.status === "generating" && !isLocalPendingArtifact(artifact.id)),
@@ -789,7 +783,6 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     setConversationId(null);
     setConversationTitle("未命名对话");
     setMessages([]);
-    setRagDrawerMessageId(null);
   }
 
   async function handleFeedback(message: ChatMessage, rating: 1 | -1) {
@@ -803,7 +796,6 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }
 
   function openArtifact(artifact: MindMapArtifact) {
-    setRagDrawerMessageId(null);
     setPanelLayout((layout) => {
       if (!activeArtifact) {
         studioListLayoutRef.current = layout;
@@ -818,30 +810,6 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     if (studioListLayoutRef.current) {
       setPanelLayout(studioListLayoutRef.current);
       studioListLayoutRef.current = null;
-    }
-  }
-
-  function openRagDrawer(message: ChatMessage) {
-    if (!message.ragProgress?.length) return;
-    if (ragDrawerMessageId === message.id) {
-      closeRagDrawer();
-      return;
-    }
-    setActiveArtifact(null);
-    setRagDrawerMessageId(message.id);
-    setPanelLayout((layout) => {
-      if (!ragDrawerLayoutRef.current) {
-        ragDrawerLayoutRef.current = layout;
-      }
-      return layout.studio >= MINDMAP_LAYOUT.studio ? layout : MINDMAP_LAYOUT;
-    });
-  }
-
-  function closeRagDrawer() {
-    setRagDrawerMessageId(null);
-    if (ragDrawerLayoutRef.current) {
-      setPanelLayout(ragDrawerLayoutRef.current);
-      ragDrawerLayoutRef.current = null;
     }
   }
 
@@ -1213,41 +1181,35 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             busy={busy}
             conversationTitle={conversationTitle}
             typingMessageId={typingMessageId}
-            openRagMessageId={ragDrawerMessageId}
             onTypingComplete={() => setTypingMessageId(null)}
             onAsk={handleAsk}
             onFeedback={handleFeedback}
-            onOpenRagProgress={openRagDrawer}
             onDeleteConversation={handleDeleteConversation}
           />
           <ResizeDivider
             label="调整对话和 Studio 宽度"
             onPointerDown={(event) => startPanelResize(event, "chat-studio", gridRef, panelLayout, setPanelLayout)}
           />
-          {ragDrawerMessage ? (
-            <RagTraceDrawer message={ragDrawerMessage} onClose={closeRagDrawer} />
-          ) : (
-            <StudioPanel
-              artifacts={artifacts}
-              sources={sources}
-              selectedSources={selectedSources}
-              activeArtifact={activeArtifact}
-              artifactGenerationLocked={artifactGenerationLocked}
-              artifactGenerationLockReason={artifactGenerationLockReason}
-              onCreateMindMap={handleCreateMindMap}
-              onCreateDataTable={handleCreateDataTable}
-              onOpenArtifact={openArtifact}
-              onRenameArtifact={handleRenameArtifact}
-              onDeleteArtifact={handleDeleteArtifact}
-              onOpenSource={handleOpenSource}
-              onBack={backToStudioList}
-            />
-          )}
+          <StudioPanel
+            artifacts={artifacts}
+            sources={sources}
+            selectedSources={selectedSources}
+            activeArtifact={activeArtifact}
+            artifactGenerationLocked={artifactGenerationLocked}
+            artifactGenerationLockReason={artifactGenerationLockReason}
+            onCreateMindMap={handleCreateMindMap}
+            onCreateDataTable={handleCreateDataTable}
+            onOpenArtifact={openArtifact}
+            onRenameArtifact={handleRenameArtifact}
+            onDeleteArtifact={handleDeleteArtifact}
+            onOpenSource={handleOpenSource}
+            onBack={backToStudioList}
+          />
         </main>
       )}
       <footer className="statusbar">
         <span>{status}</span>
-        <span className="version-badge" onClick={() => onNavigate("/architecture")} title="查看系统架构">v0.3.1</span>
+        <span className="version-badge" onClick={() => onNavigate("/architecture")} title="查看系统架构">v0.3.2</span>
       </footer>
       <SettingsDialog
         open={settingsOpen}
@@ -1265,69 +1227,6 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       ) : null}
     </div>
   );
-}
-
-function RagTraceDrawer({ message, onClose }: { message: ChatMessage; onClose: () => void }) {
-  const stages = message.ragProgress || [];
-  const doneCount = stages.filter((stage) => stage.status === "done").length;
-  const totalLatency = stages.reduce((sum, stage) => sum + (typeof stage.latency_ms === "number" ? stage.latency_ms : 0), 0);
-  return (
-    <aside className="panel studio-panel rag-trace-drawer">
-      <div className="panel-header rag-trace-header">
-        <div>
-          <h2>思考过程</h2>
-          <span>{doneCount || stages.length} 个步骤{totalLatency > 0 ? ` · ${formatRagDuration(totalLatency)}` : ""}</span>
-        </div>
-        <button className="icon-button" type="button" aria-label="关闭调用链" title="关闭" onClick={onClose}>
-          <X size={18} />
-        </button>
-      </div>
-      <div className="rag-trace-body">
-        <div className="rag-trace-question">
-          <ListChecks size={18} />
-          <span>{message.requestId ? `请求 ${message.requestId.slice(0, 8)}` : "当前回答"}</span>
-        </div>
-        <div className="rag-trace-steps">
-          {stages.map((stage, index) => (
-            <section className={`rag-trace-step ${stage.status}`} key={`${stage.stage}-${index}`}>
-              <span className="rag-trace-node" aria-hidden="true">
-                {stage.status === "done" ? <Check size={14} /> : <Circle size={11} />}
-              </span>
-              <div>
-                <div className="rag-trace-title">
-                  <strong>{stage.label}</strong>
-                  {formatRagStageMeta(stage) ? <em>{formatRagStageMeta(stage)}</em> : null}
-                </div>
-                <p>{stage.detail}</p>
-              </div>
-            </section>
-          ))}
-        </div>
-      </div>
-    </aside>
-  );
-}
-
-function formatRagStageMeta(stage: RagProgressStage) {
-  const parts: string[] = [];
-  if (typeof stage.latency_ms === "number") {
-    parts.push(formatRagDuration(stage.latency_ms));
-  }
-  if (typeof stage.candidate_count === "number") {
-    parts.push(`${stage.candidate_count} 候选`);
-  } else if (typeof stage.reranked_count === "number") {
-    parts.push(`${stage.reranked_count} 重排`);
-  } else if (typeof stage.context_count === "number") {
-    parts.push(`${stage.context_count} 证据`);
-  }
-  return parts.join(" · ");
-}
-
-function formatRagDuration(ms: number) {
-  if (ms >= 1000) {
-    return `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)}s`;
-  }
-  return `${Math.max(1, Math.round(ms))}ms`;
 }
 
 function AccountMenu({
