@@ -1080,10 +1080,45 @@ test("opens parsed source content from a document-level source row", async ({ pa
 });
 
 test("sends an attached chat image as a multimodal query", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "production-rag-auth-session",
+      JSON.stringify({
+        user: {
+          id: "test-user",
+          username: "tester",
+          display_name: "测试用户",
+          role: "user",
+          tenant_id: "team_a",
+          avatar_url: "",
+          status: "active",
+          created_at: Date.now(),
+          last_login_at: Date.now(),
+        },
+        token: "test-session",
+        expires_at: Date.now() + 86_400_000,
+      }),
+    );
+  });
   await mockSourceAssetRoute(page);
   let queryPayload: any = null;
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/auth/me", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "test-user",
+        username: "tester",
+        display_name: "测试用户",
+        role: "user",
+        tenant_id: "team_a",
+        avatar_url: "",
+        status: "active",
+        created_at: Date.now(),
+        last_login_at: Date.now(),
+      },
+    });
   });
   await page.route("**/sources?**", async (route) => {
     await route.fulfill({
@@ -1116,41 +1151,45 @@ test("sends an attached chat image as a multimodal query", async ({ page }) => {
     const body = route.request().postDataJSON();
     await route.fulfill({ json: { ...body, id: "conv-image-query", updated_at: Date.now() } });
   });
-  await page.route("**/query", async (route) => {
+  await page.route("**/query/stream", async (route) => {
     queryPayload = route.request().postDataJSON();
-    await route.fulfill({
-      json: {
-        request_id: "image-query",
-        answer: "已根据图片检索到相关论文图示。",
-        citations: [
-          {
-            doc_id: "paper/page-1",
-            title: "attention is all you need p1",
-            source_uri: "/uploads/paper.pdf",
-            source_type: "pdf",
-            chunk_index: 0,
-            score: 0.8,
-            rerank_score: 0.7,
-            acl_groups: ["engineering"],
-            metadata: {
-              page_no: 1,
-              display_blocks: [
-                {
-                  type: "image",
-                  title: "Figure 1",
-                  url: "/source-assets/uploads/team_a/regression/paper.assets/page-1-image-1.png?tenant_id=team_a",
-                },
-              ],
-            },
-            text_preview: "Figure evidence",
+    const result = {
+      type: "result",
+      request_id: "image-query",
+      answer: "已根据图片检索到相关论文图示。",
+      citations: [
+        {
+          doc_id: "paper/page-1",
+          title: "attention is all you need p1",
+          source_uri: "/uploads/paper.pdf",
+          source_type: "pdf",
+          chunk_index: 0,
+          score: 0.8,
+          rerank_score: 0.7,
+          acl_groups: ["engineering"],
+          metadata: {
+            page_no: 1,
+            display_blocks: [
+              {
+                type: "image",
+                title: "Figure 1",
+                url: "/source-assets/uploads/team_a/regression/paper.assets/page-1-image-1.png?tenant_id=team_a",
+              },
+            ],
           },
-        ],
-        trace: {},
-      },
+          text_preview: "Figure evidence",
+        },
+      ],
+      trace: {},
+    };
+    await route.fulfill({
+      contentType: "application/x-ndjson",
+      body: `${JSON.stringify(result)}\n`,
     });
   });
 
-  await page.goto("/");
+  await page.goto("/#token=test-session");
+  await expect(page.getByPlaceholder("提问或创作内容")).toBeVisible();
   await page.getByRole("button", { name: "上传图片提问" }).click();
   await page.locator('.chat-input input[type="file"]').setInputFiles({
     name: "query.png",
@@ -1158,9 +1197,16 @@ test("sends an attached chat image as a multimodal query", async ({ page }) => {
     buffer: Buffer.from(ONE_PIXEL_PNG_BASE64, "base64"),
   });
   await expect(page.getByRole("img", { name: "待发送图片" })).toBeVisible();
+  await page.getByRole("img", { name: "待发送图片" }).click();
+  const pendingImageDialog = page.getByRole("dialog", { name: "待发送图片" });
+  await expect(pendingImageDialog).toBeVisible();
+  await expect(pendingImageDialog.getByRole("img", { name: "待发送图片" })).toBeVisible();
+  await pendingImageDialog.getByRole("button", { name: "关闭图片预览" }).click();
+  await expect(pendingImageDialog).toBeHidden();
   await page.getByPlaceholder("提问或创作内容").fill("这张图和论文中哪部分相关？");
   await page.getByRole("button", { name: "发送消息" }).click();
 
+  await expect(page.getByText("已根据图片检索到相关论文图示。")).toBeVisible();
   const sentImage = page.getByRole("img", { name: "发送的图片" });
   await expect(sentImage).toBeVisible();
   await expect.poll(async () => sentImage.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
@@ -1170,7 +1216,6 @@ test("sends an attached chat image as a multimodal query", async ({ page }) => {
   await expect(sentImageDialog.getByRole("img", { name: "发送的图片" })).toBeVisible();
   await sentImageDialog.getByRole("button", { name: "关闭图片预览" }).click();
 
-  await expect(page.getByText("已根据图片检索到相关论文图示。")).toBeVisible();
   const citationImage = page.getByRole("img", { name: "Figure 1" });
   await expect(citationImage).toBeVisible();
   await expect(citationImage).toHaveAttribute("src", /\/api\/source-assets\/uploads\/team_a\/regression\/paper\.assets\/page-1-image-1\.png/);

@@ -79,6 +79,7 @@ type AdminUserDraft = {
   profileNameEditAllowed: boolean;
   avatarEditAllowed: boolean;
 };
+const APP_VERSION = import.meta.env.VITE_APP_VERSION || "0.0.0";
 
 const DEFAULT_LAYOUT: PanelLayout = { source: 24, chat: 46, studio: 30 };
 const MINDMAP_LAYOUT: PanelLayout = { source: 20, chat: 38, studio: 42 };
@@ -1204,7 +1205,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       )}
       <footer className="statusbar">
         <span>{status}</span>
-        <span className="version-badge" onClick={() => onNavigate("/architecture")} title="查看系统架构">v0.3.2</span>
+        <span className="version-badge" onClick={() => onNavigate("/architecture")} title="查看系统架构">v{APP_VERSION}</span>
       </footer>
       <SettingsDialog
         open={settingsOpen}

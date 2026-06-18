@@ -3,6 +3,7 @@ FROM node:24-alpine AS build
 WORKDIR /app
 COPY projects/09-production-rag/frontend/package*.json ./
 RUN npm ci
+COPY projects/09-production-rag/VERSION ./VERSION
 COPY projects/09-production-rag/frontend ./
 RUN npm run build
 

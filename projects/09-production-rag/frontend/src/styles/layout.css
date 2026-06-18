@@ -1280,16 +1280,31 @@ button.jump-latest-button:active:not(:disabled) {
   min-width: 0;
 }
 
-.chat-image-attachment img {
+.attachment-preview-button {
+  display: block;
   width: 72px;
   height: 54px;
-  object-fit: cover;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: white;
+  padding: 0;
+  cursor: zoom-in;
 }
 
-.chat-image-attachment button {
+.attachment-preview-button:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.attachment-preview-button img {
+  display: block;
+  width: 72px;
+  height: 54px;
+  object-fit: cover;
+}
+
+.chat-image-attachment .attachment-remove-button {
   width: 26px;
   height: 26px;
 }

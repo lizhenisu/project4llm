@@ -30,6 +30,7 @@ from rag_core.artifacts import (
     save_metadata_artifact,
 )
 from rag_core.auth import build_auth_context, validate_bearer_token
+from rag_core.app_version import app_version
 from rag_core.config import load_config
 from rag_core.conversations import (
     ConversationMessage,
@@ -385,7 +386,7 @@ class UserListResponse(BaseModel):
 
 
 def create_app():
-    app = FastAPI(title="Production RAG", version="0.3.2")
+    app = FastAPI(title="Production RAG", version=app_version())
     ensure_default_test_account(load_config())
 
     @app.get("/health")
