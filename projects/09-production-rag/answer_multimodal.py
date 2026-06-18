@@ -22,8 +22,10 @@ class MultimodalAnswerResult:
 
 
 def answer_multimodal_query(
-    query: str,
+    query: str | None = None,
     *,
+    text_query: str | None = None,
+    image_query_path: str | None = None,
     tenant_id: str,
     candidate_limit: int,
     context_limit: int,
@@ -36,8 +38,11 @@ def answer_multimodal_query(
     answer_query: str | None = None,
     stage_callback: StageCallback | None = None,
 ) -> MultimodalAnswerResult:
+    resolved_text_query = text_query if text_query is not None else query
     retrieval = retrieve_multimodal(
         query,
+        text_query=text_query,
+        image_query_path=image_query_path,
         tenant_id=tenant_id,
         candidate_limit=candidate_limit,
         context_limit=context_limit,
@@ -59,7 +64,7 @@ def answer_multimodal_query(
     )
     generation = generate_answer(
         config,
-        multimodal_answer_query(answer_query or retrieval.trace.rewritten_query),
+        multimodal_answer_query(answer_query or resolved_text_query or retrieval.trace.rewritten_query),
         retrieval.hits,
     )
     emit_stage(

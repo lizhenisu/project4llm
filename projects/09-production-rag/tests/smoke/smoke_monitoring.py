@@ -48,7 +48,7 @@ def main() -> None:
             {
                 "request_id": "monitor-answer-1",
                 "trace": {
-                    "retrieval_mode": "multimodal_text_image_fusion",
+                    "retrieval_mode": "multimodal_text_image_fusion_rerank",
                     "context_count": 1,
                     "source_types": ["image"],
                     "stage_latency_ms": {
@@ -96,7 +96,7 @@ def main() -> None:
     assert summary["feedback_events"] == 1
     assert summary["retrieval_modes"] == {
         "hybrid_dense_sparse_rerank": 1,
-        "multimodal_text_image_fusion": 1,
+        "multimodal_text_image_fusion_rerank": 1,
     }
     assert summary["requested_source_types"] == {"image": 2, "md": 1}
     assert summary["context"]["avg"] == 1.5

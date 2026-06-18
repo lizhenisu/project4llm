@@ -19,6 +19,7 @@ from rag_core.milvus_store import (
 )
 from rag_core.multimodal import reciprocal_rank_fusion
 from rag_core.pipeline import StageCallback, elapsed_ms, emit_stage
+from rag_core.rerankers import build_reranker
 from rag_core.rewrite import rewrite_query
 from rag_core.types import SearchHit, TraceInfo
 from rag_core.versioning import load_current_versions
@@ -34,8 +35,10 @@ class MultimodalRetrievalResult:
 
 
 def retrieve_multimodal(
-    query: str,
+    query: str | None = None,
     *,
+    text_query: str | None = None,
+    image_query_path: str | Path | None = None,
     tenant_id: str,
     candidate_limit: int,
     context_limit: int,
@@ -53,12 +56,23 @@ def retrieve_multimodal(
     ensure_collection(client, config, reset=False)
     text_model = build_embedding_model(config)
     image_model = build_image_embedding_model(config)
-    query_path = Path(query)
-    if query_path.exists() and query_path.is_file():
+    query_path = Path(image_query_path) if image_query_path else Path(query or "")
+    has_image_file_query = query_path.exists() and query_path.is_file()
+    query_text = (
+        text_query
+        if text_query is not None
+        else ""
+        if has_image_file_query
+        else query or ""
+    ).strip()
+    has_text_query = bool(query_text)
+    if has_image_file_query and not has_text_query:
         rewritten_query = str(query_path)
         rewrite_backend = "file-path"
         rewrite_ms = 0.0
     else:
+        if not has_text_query:
+            raise ValueError("text_query or image_query_path is required")
         emit_stage(
             stage_callback,
             "rewrite",
@@ -67,7 +81,7 @@ def retrieve_multimodal(
             "正在结合对话历史改写多模态问题。",
         )
         rewrite_start = perf_counter()
-        rewrite = rewrite_query(query, history=history, config=config)
+        rewrite = rewrite_query(query_text, history=history, config=config)
         rewrite_ms = elapsed_ms(rewrite_start)
         rewritten_query = rewrite.rewritten_query
         rewrite_backend = rewrite.backend
@@ -84,7 +98,7 @@ def retrieve_multimodal(
         if mentions_other_tenant(rewritten_query, tenant_id):
             trace = TraceInfo(
                 request_id=resolved_request_id,
-                original_query=query,
+                original_query=query_text,
                 rewritten_query=rewritten_query,
                 rewrite_backend=rewrite_backend,
                 tenant_id=tenant_id,
@@ -92,7 +106,7 @@ def retrieve_multimodal(
                 doc_version=doc_version,
                 current_versions={},
                 embedding_model=text_model.model_name,
-                source_types=source_types or ["image"],
+                source_types=source_types or [],
                 doc_ids=doc_ids or [],
                 filter_expr=f'tenant_id == "{tenant_id}" and blocked_other_tenant == true',
                 retrieval_mode="blocked_cross_tenant_query",
@@ -112,26 +126,36 @@ def retrieve_multimodal(
                 trace=trace,
             )
 
-    resolved_source_types = source_types or ["image"]
+    text_source_types = source_types
+    image_source_types = source_types or ["image"]
+    trace_source_types = source_types or []
     current_versions = (
         {}
         if doc_version is not None
         else load_current_versions(config.object_store_dir, tenant_id=tenant_id)
     )
-    filter_expr = build_filter_expr(
+    text_filter_expr = build_filter_expr(
         tenant_id=tenant_id,
         allowed_acl_groups=acl_groups,
         doc_version=doc_version,
         current_doc_versions=current_versions,
         embedding_model=text_model.model_name,
         doc_ids=doc_ids,
-        source_types=resolved_source_types,
+        source_types=text_source_types,
     )
-    is_image_file_query = query_path.exists() and query_path.is_file()
+    image_filter_expr = build_filter_expr(
+        tenant_id=tenant_id,
+        allowed_acl_groups=acl_groups,
+        doc_version=doc_version,
+        current_doc_versions=current_versions,
+        embedding_model=text_model.model_name,
+        doc_ids=doc_ids,
+        source_types=image_source_types,
+    )
     text_embedding_ms = 0.0
     text_search_ms = 0.0
     text_hits: list[SearchHit] = []
-    if not is_image_file_query:
+    if has_text_query:
         emit_stage(
             stage_callback,
             "embedding",
@@ -163,7 +187,7 @@ def retrieve_multimodal(
             collection_name=config.collection_name,
             query_vector=text_query_vector,
             query_text=rewritten_query,
-            filter_expr=filter_expr,
+            filter_expr=text_filter_expr,
             limit=max(candidate_limit, 10),
         )
         text_search_ms = elapsed_ms(text_search_start)
@@ -184,7 +208,7 @@ def retrieve_multimodal(
         "正在生成图片/多模态向量。",
     )
     image_embedding_start = perf_counter()
-    if is_image_file_query:
+    if has_image_file_query:
         image_query_vector = image_model.encode_images([query_path])[0]
     else:
         image_query_vector = image_model.encode([rewritten_query])[0]
@@ -209,7 +233,7 @@ def retrieve_multimodal(
         client,
         collection_name=config.collection_name,
         image_query_vector=image_query_vector,
-        filter_expr=filter_expr,
+        filter_expr=image_filter_expr,
         limit=max(candidate_limit, 10),
     )
     image_search_ms = elapsed_ms(image_search_start)
@@ -230,7 +254,7 @@ def retrieve_multimodal(
         "正在融合文本与图片检索结果。",
     )
     fusion_start = perf_counter()
-    if is_image_file_query:
+    if has_image_file_query and not has_text_query:
         candidates = image_only_candidates(image_hits, limit=candidate_limit)
     else:
         candidates = reciprocal_rank_fusion(
@@ -250,6 +274,33 @@ def retrieve_multimodal(
         latency_ms=fusion_ms,
         candidate_count=len(candidates),
     )
+    rerank_ms = 0.0
+    if has_text_query and candidates:
+        emit_stage(
+            stage_callback,
+            "rerank",
+            "active",
+            "多模态重排序",
+            "正在按文字问题重排融合后的候选证据。",
+        )
+        rerank_start = perf_counter()
+        reranked = build_reranker(config).rerank(
+            rewritten_query,
+            candidates,
+            limit=len(candidates),
+        )
+        rerank_ms = elapsed_ms(rerank_start)
+        emit_stage(
+            stage_callback,
+            "rerank",
+            "done",
+            "多模态重排序",
+            f"已完成 {len(reranked)} 个候选证据重排。",
+            latency_ms=rerank_ms,
+            reranked_count=len(reranked),
+        )
+    else:
+        reranked = candidates
     emit_stage(
         stage_callback,
         "context",
@@ -259,7 +310,7 @@ def retrieve_multimodal(
     )
     packing_start = perf_counter()
     hits, packing_stats = pack_context(
-        candidates,
+        reranked,
         max_selected=context_limit,
         max_chars=config.max_context_chars,
         max_chunks_per_doc=config.max_chunks_per_doc,
@@ -278,7 +329,7 @@ def retrieve_multimodal(
     )
     trace = TraceInfo(
         request_id=resolved_request_id,
-        original_query=query,
+        original_query=query_text or str(query_path),
         rewritten_query=rewritten_query,
         rewrite_backend=rewrite_backend,
         tenant_id=tenant_id,
@@ -286,12 +337,15 @@ def retrieve_multimodal(
         doc_version=doc_version,
         current_versions=current_versions,
         embedding_model=text_model.model_name,
-        source_types=resolved_source_types,
+        source_types=trace_source_types,
         doc_ids=doc_ids or [],
-        filter_expr=filter_expr,
-        retrieval_mode="image_vector_file_query" if is_image_file_query else "multimodal_text_image_fusion",
+        filter_expr=text_filter_expr if has_text_query else image_filter_expr,
+        retrieval_mode=multimodal_retrieval_mode(
+            has_text_query=has_text_query,
+            has_image_file_query=has_image_file_query,
+        ),
         candidate_count=len(candidates),
-        reranked_count=len(candidates),
+        reranked_count=len(reranked),
         context_count=len(hits),
         dropped_by_score=packing_stats.dropped_by_score,
         dropped_by_doc_limit=packing_stats.dropped_by_doc_limit,
@@ -303,6 +357,7 @@ def retrieve_multimodal(
             "image_embedding": image_embedding_ms,
             "image_search": image_search_ms,
             "fusion": fusion_ms,
+            "rerank": rerank_ms,
             "context_pack": packing_ms,
         },
     )
@@ -310,7 +365,7 @@ def retrieve_multimodal(
         request_id=resolved_request_id,
         hits=hits,
         candidates=candidates,
-        reranked=candidates,
+        reranked=reranked,
         trace=trace,
     )
 
@@ -328,6 +383,14 @@ def image_only_candidates(image_hits: list[SearchHit], *, limit: int) -> list[Se
         }
         candidates.append(replace_search_hit_metadata(hit, metadata))
     return candidates
+
+
+def multimodal_retrieval_mode(*, has_text_query: bool, has_image_file_query: bool) -> str:
+    if has_text_query and has_image_file_query:
+        return "multimodal_text_image_file_fusion_rerank"
+    if has_text_query:
+        return "multimodal_text_image_fusion_rerank"
+    return "image_vector_file_query"
 
 
 def replace_search_hit_metadata(hit: SearchHit, metadata: dict) -> SearchHit:

@@ -1483,9 +1483,11 @@ def materialize_query_image(request: QueryRequest) -> str | None:
 
 def resolve_search_result(request: SearchRequest, auth_context):
     if request.query_mode == "multimodal":
-        query = materialize_query_image(request) or request.query
+        image_query_path = materialize_query_image(request)
         return retrieve_multimodal(
-            query,
+            request.query,
+            text_query=request.query,
+            image_query_path=image_query_path,
             tenant_id=auth_context.tenant_id,
             candidate_limit=request.candidate_limit,
             context_limit=request.context_limit,
@@ -1512,9 +1514,11 @@ def resolve_search_result(request: SearchRequest, auth_context):
 
 def resolve_answer_result(request: QueryRequest, auth_context, stage_callback=None):
     if request.query_mode == "multimodal":
-        query = materialize_query_image(request) or request.query
+        image_query_path = materialize_query_image(request)
         return answer_multimodal_query(
-            query,
+            request.query,
+            text_query=request.query,
+            image_query_path=image_query_path,
             tenant_id=auth_context.tenant_id,
             candidate_limit=request.candidate_limit,
             context_limit=request.context_limit,

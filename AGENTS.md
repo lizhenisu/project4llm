@@ -92,6 +92,12 @@ Open the development UI at:
 http://localhost:5173/
 ```
 
+When a frontend test needs an authenticated session, use the fixed-token development URL:
+
+```text
+http://localhost:5173/#token=production-rag-fixed-test-login-token
+```
+
 The Vite dev server proxies `/api/*` to the containerized backend at `http://127.0.0.1:8008`, so frontend changes under `projects/09-production-rag/frontend/src/` should be visible immediately in the browser without rebuilding `rag-web`.
 
 Only rebuild containers when validating production packaging, Dockerfile changes, nginx config changes, backend dependency/image changes, or before a final production-like check.
@@ -129,3 +135,17 @@ Development happens on the `dev` branch. The `main` branch is reserved for stabl
 Do not implement ordinary code changes directly on `main`. Merge `dev` into `main` only when the user explicitly asks to publish a stable release.
 
 **Do NOT automatically merge `dev` into `main` unless explicitly asked.** Always ask the user before merging or force-pushing to `main`. The `dev` branch is for development and experimentation; only the user decides when to promote changes to `main`.
+
+## Commit Message Rule
+
+For small changes, a one-sentence English commit message is enough.
+
+For larger changes, use one summary sentence followed by bullet points:
+
+```text
+Short summary sentence
+
+- First concrete change
+- Second concrete change
+- Verification or migration note
+```
