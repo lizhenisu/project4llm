@@ -535,6 +535,13 @@ export function logoutAccount(settings: Settings): Promise<{ status: string }> {
   });
 }
 
+export function refreshLoginToken(settings: Settings): Promise<AuthResponse> {
+  return request<AuthResponse>("/auth/token/refresh", {
+    method: "POST",
+    settings,
+  });
+}
+
 export function getCurrentUser(settings: Settings): Promise<AuthUser> {
   return request<AuthUser>("/auth/me", { settings });
 }

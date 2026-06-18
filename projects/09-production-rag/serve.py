@@ -69,6 +69,7 @@ from rag_core.user_auth import (
     login_user,
     logout_user,
     register_user,
+    refresh_session_token,
     set_registration_enabled,
     set_user_status,
     update_user_profile,
@@ -438,6 +439,19 @@ def create_app():
         if token:
             logout_user(config, token=token)
         return {"status": "ok"}
+
+    @app.post("/auth/token/refresh", response_model=AuthResponse)
+    def refresh_token(authorization: str | None = Header(default=None)) -> AuthResponse:
+        config = load_config()
+        token = bearer_token(authorization)
+        if not token:
+            raise HTTPException(status_code=401, detail="请先登录")
+        try:
+            user, next_token, expires_at = refresh_session_token(config, current_token=token)
+        except ValueError as exc:
+            status_code = 401 if str(exc) == "请先登录" else 400
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        return AuthResponse(user=user_to_response(user), token=next_token, expires_at=expires_at)
 
     @app.get("/auth/me", response_model=UserResponse)
     def me(authorization: str | None = Header(default=None)) -> UserResponse:

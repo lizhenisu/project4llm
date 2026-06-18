@@ -42,6 +42,12 @@ def run_smoke() -> None:
     )
     assert fixed_login.status_code == 200, fixed_login.text
     assert fixed_login.json()["token"] == "production-rag-fixed-test-login-token"
+    fixed_refresh = api.post(
+        "/auth/token/refresh",
+        headers={"Authorization": "Bearer production-rag-fixed-test-login-token"},
+    )
+    assert fixed_refresh.status_code == 400, fixed_refresh.text
+    assert "固定" in fixed_refresh.json()["detail"]
 
     first = api.post(
         "/auth/register",
@@ -111,6 +117,16 @@ def run_smoke() -> None:
     assert me.json()["username"] == "normal_user"
     assert me.json()["status"] == "active"
     assert me.json()["created_at"]
+
+    refreshed = api.post("/auth/token/refresh", headers=user_headers)
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["user"]["username"] == "normal_user"
+    assert refreshed.json()["token"] != second_body["token"]
+    expired_old = api.get("/auth/me", headers=user_headers)
+    assert expired_old.status_code == 401, expired_old.text
+    user_headers = {"Authorization": f"Bearer {refreshed.json()['token']}"}
+    refreshed_me = api.get("/auth/me", headers=user_headers)
+    assert refreshed_me.status_code == 200, refreshed_me.text
 
     profile = api.patch(
         "/auth/me",

@@ -2248,7 +2248,7 @@ button.jump-latest-button:active:not(:disabled) {
 
 .secret-field {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 36px 36px;
+  grid-template-columns: minmax(0, 1fr) 36px 36px 36px;
   gap: 8px;
 }
 
@@ -2259,6 +2259,57 @@ button.jump-latest-button:active:not(:disabled) {
 .secret-field .icon-button {
   width: 36px;
   height: 38px;
+}
+
+.login-link-more {
+  position: relative;
+}
+
+.login-link-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.login-link-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 70;
+  min-width: 148px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 28px rgb(15 23 42 / 16%);
+  padding: 6px;
+  animation: popover-in 140ms ease both;
+}
+
+.login-link-menu button {
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.login-link-menu button:not(:disabled):hover {
+  background: var(--surface-muted);
+}
+
+.login-link-menu button:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 
 .announcement-form {

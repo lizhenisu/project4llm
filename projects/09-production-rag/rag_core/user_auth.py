@@ -185,6 +185,40 @@ def generate_session_token(length: int = 24) -> str:
     return "".join(secrets.choice(SESSION_TOKEN_ALPHABET) for _ in range(length))
 
 
+def refresh_session_token(config: RagConfig, *, current_token: str) -> tuple[User, str, int]:
+    if current_token == config.fixed_test_login_token:
+        raise ValueError("测试账号使用固定登录 token，不能刷新")
+    timestamp = now_ms()
+    expires_at = timestamp + SESSION_TTL_SECONDS * 1000
+    with connect_metadata_db(config) as conn:
+        conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (timestamp,))
+        row = conn.execute(
+            """
+            SELECT users.* FROM sessions
+            JOIN users ON users.id = sessions.user_id
+            WHERE sessions.token = ? AND sessions.expires_at > ?
+            """,
+            (current_token, timestamp),
+        ).fetchone()
+        if row is None:
+            raise ValueError("请先登录")
+        if str(row["status"] or "active") != "active":
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
+            raise ValueError("账号已被封禁")
+        if str(row["username"]) == TEST_ACCOUNT_USERNAME:
+            raise ValueError("测试账号使用固定登录 token，不能刷新")
+
+        token = generate_session_token()
+        while conn.execute("SELECT 1 FROM sessions WHERE token = ?", (token,)).fetchone():
+            token = generate_session_token()
+        conn.execute("DELETE FROM sessions WHERE token = ?", (current_token,))
+        conn.execute(
+            "INSERT INTO sessions(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+            (token, row["id"], expires_at, timestamp),
+        )
+        return user_from_row(row), token, expires_at
+
+
 def logout_user(config: RagConfig, *, token: str) -> None:
     if token == config.fixed_test_login_token:
         return

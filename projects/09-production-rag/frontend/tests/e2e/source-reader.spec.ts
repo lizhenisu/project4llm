@@ -875,6 +875,74 @@ test("shows a masked personal login link on the profile page", async ({ page, co
   await expect(page.getByRole("link", { name: "打开 GitHub 仓库" })).toHaveAttribute("href", "https://github.com/lizhenisu/project4llm");
 });
 
+test("refreshes the personal login link token from the more menu", async ({ page }) => {
+  await mockWorkspaceShell(page);
+  await page.route("**/auth/token/refresh", async (route) => {
+    await route.fulfill({
+      json: {
+        user: {
+          id: "test-user",
+          username: "tester",
+          display_name: "测试用户",
+          role: "user",
+          tenant_id: "team_a",
+          avatar_url: "",
+          status: "active",
+          created_at: Date.now(),
+          last_login_at: Date.now(),
+        },
+        token: "new-session-token",
+        expires_at: Date.now() + 86_400_000,
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "用户头像" }).click();
+  await page.getByRole("menuitem", { name: /个人信息/ }).click();
+  await page.getByRole("button", { name: "更多专属登录链接选项" }).click();
+  await page.getByRole("menuitem", { name: "刷新 token" }).click();
+
+  const secretInput = page.locator(".secret-field input");
+  await expect(secretInput).toHaveValue(/#token=new-session-token$/);
+  await expect(page.getByText("专属登录链接已刷新")).toBeVisible();
+  await expect.poll(async () =>
+    page.evaluate(() => JSON.parse(localStorage.getItem("production-rag-auth-session") || "{}").token),
+  ).toBe("new-session-token");
+});
+
+test("disables personal login token refresh for the fixed test account", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "production-rag-auth-session",
+      JSON.stringify({
+        user: {
+          id: "user-fixed-test",
+          username: "test_user",
+          display_name: "测试账号",
+          role: "user",
+          tenant_id: "tenant-fixed-test",
+          avatar_url: "",
+          status: "active",
+          created_at: Date.now(),
+          last_login_at: Date.now(),
+        },
+        token: "production-rag-fixed-test-login-token",
+        expires_at: Date.now() + 86_400_000,
+      }),
+    );
+  });
+  await mockWorkspaceShell(page);
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "用户头像" }).click();
+  await page.getByRole("menuitem", { name: /个人信息/ }).click();
+  await page.getByRole("button", { name: "更多专属登录链接选项" }).click();
+
+  await expect(page.getByRole("menuitem", { name: "刷新 token" })).toBeDisabled();
+  await expect(page.getByText("测试账号使用固定专属 token，不能刷新。")).toBeVisible();
+});
+
 test("renders assistant math formulas with KaTeX", async ({ page }) => {
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok" } });
