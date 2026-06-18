@@ -235,6 +235,180 @@ test("allows deleting the only database and creates a fresh default database", a
   await expect(page.getByText("历史回答")).toHaveCount(0);
 });
 
+test("refreshes all workspace panels after deleting the active database", async ({ page }) => {
+  const now = Date.now();
+  let sourceRows = [
+    {
+      doc_id: "source-a",
+      title: "A 来源.txt",
+      source_type: "txt",
+      source_uri: "/uploads/source-a.txt",
+      doc_version: 1,
+      chunk_count: 1,
+      acl_groups: ["engineering"],
+      status: "ready",
+      current: true,
+      child_doc_ids: [],
+    },
+    {
+      doc_id: "source-b",
+      title: "B 来源.txt",
+      source_type: "txt",
+      source_uri: "/uploads/source-b.txt",
+      doc_version: 1,
+      chunk_count: 1,
+      acl_groups: ["engineering"],
+      status: "ready",
+      current: true,
+      child_doc_ids: [],
+    },
+  ];
+  let artifactRows = [
+    {
+      id: "artifact-a",
+      title: "A 思维导图",
+      status: "ready",
+      tenant_id: "team_a",
+      source_doc_ids: ["source-a"],
+      created_at: now,
+      updated_at: now,
+      root: { id: "root-a", label: "A 思维导图", children: [] },
+    },
+    {
+      id: "artifact-b",
+      title: "B 思维导图",
+      status: "ready",
+      tenant_id: "team_a",
+      source_doc_ids: ["source-b"],
+      created_at: now,
+      updated_at: now,
+      root: { id: "root-b", label: "B 思维导图", children: [] },
+    },
+  ];
+  let conversationRows = [
+    {
+      id: "conv-a",
+      tenant_id: "team_a",
+      title: "A 对话",
+      message_count: 2,
+      source_doc_ids: ["source-a"],
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "conv-b",
+      tenant_id: "team_a",
+      title: "B 对话",
+      message_count: 2,
+      source_doc_ids: ["source-b"],
+      created_at: now + 1,
+      updated_at: now + 1,
+    },
+  ];
+  await page.addInitScript(() => {
+    const createdAt = Date.now();
+    localStorage.setItem(
+      "production-rag-workspaces:test-user",
+      JSON.stringify([
+        { id: "workspace-a", name: "知识库 A", user_id: "test-user", created_at: createdAt, updated_at: createdAt },
+        { id: "workspace-b", name: "知识库 B", user_id: "test-user", created_at: createdAt, updated_at: createdAt },
+      ]),
+    );
+    localStorage.setItem("production-rag-active-workspace-id:test-user", "workspace-a");
+    localStorage.setItem("production-rag-workspace-sources:workspace-a", JSON.stringify(["source-a"]));
+    localStorage.setItem("production-rag-workspace-sources:workspace-b", JSON.stringify(["source-b"]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-a", JSON.stringify(["conv-a"]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-b", JSON.stringify(["conv-b"]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-a", JSON.stringify(["artifact-a"]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-b", JSON.stringify(["artifact-b"]));
+  });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/auth/me", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "test-user",
+        username: "tester",
+        display_name: "测试用户",
+        role: "user",
+        tenant_id: "team_a",
+        avatar_url: "",
+        status: "active",
+        created_at: now,
+        last_login_at: now,
+        profile_name_edit_allowed: true,
+        avatar_edit_allowed: true,
+      },
+    });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({ json: { sources: sourceRows } });
+  });
+  await page.route("**/sources/source-a?**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      sourceRows = sourceRows.filter((source) => source.doc_id !== "source-a");
+      await route.fulfill({ json: { status: "deleted" } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: artifactRows } });
+  });
+  await page.route("**/artifacts/artifact-a?**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      artifactRows = artifactRows.filter((artifact) => artifact.id !== "artifact-a");
+      await route.fulfill({ json: { status: "deleted", artifact_id: "artifact-a" } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({ json: { conversations: conversationRows } });
+  });
+  await page.route("**/conversations/conv-a?**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      conversationRows = conversationRows.filter((conversation) => conversation.id !== "conv-a");
+      await route.fulfill({ json: { status: "deleted", conversation_id: "conv-a" } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/conversations/conv-b?**", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "conv-b",
+        tenant_id: "team_a",
+        title: "B 对话",
+        source_doc_ids: ["source-b"],
+        created_at: now + 1,
+        updated_at: now + 1,
+        messages: [
+          { id: "msg-b-1", role: "user", content: "B 问题", status: "done", citations: [] },
+          { id: "msg-b-2", role: "assistant", content: "B 回答", status: "done", citations: [] },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/#token=production-rag-fixed-test-login-token");
+  await expect(page.locator(".source-row", { hasText: "A 来源.txt" })).toBeVisible();
+  await expect(page.getByText("A 思维导图")).toBeVisible();
+  await page.getByRole("button", { name: "设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "知识库设置" });
+  await dialog.locator(".database-list-item.active .icon-button").click();
+  await page.getByRole("menuitem", { name: "删除知识库" }).click();
+
+  await expect(dialog.locator(".database-list-item.active")).toContainText("知识库 B");
+  await expect(page.locator(".source-row", { hasText: "B 来源.txt" })).toBeVisible();
+  await expect(page.locator(".source-row", { hasText: "A 来源.txt" })).toHaveCount(0);
+  await expect(page.getByText("B 回答")).toBeVisible();
+  await expect(page.getByText("A 思维导图")).toHaveCount(0);
+  await expect(page.getByText("B 思维导图")).toBeVisible();
+  await expect(page.locator(".statusbar span").first()).toContainText("API 已连接");
+});
+
 test("removing a shared source only unlinks it from the current database", async ({ page }) => {
   let sourceDeletes = 0;
   await page.addInitScript(() => {

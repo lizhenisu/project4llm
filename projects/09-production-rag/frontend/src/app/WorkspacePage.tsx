@@ -1023,6 +1023,10 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   function handleSelectWorkspace(id: string) {
     if (id === activeWorkspaceId || !workspaces.some((workspace) => workspace.id === id)) return;
+    switchWorkspace(id);
+  }
+
+  function switchWorkspace(id: string) {
     activeWorkspaceIdRef.current = id;
     setActiveWorkspaceId(id);
     setSources([]);
@@ -1042,18 +1046,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     try {
       await deleteWorkspaceRemoteData(id, settings, workspaces);
       const { workspaces: remaining, nextActive } = deleteWorkspace(id, auth.user?.id ?? null);
-      activeWorkspaceIdRef.current = nextActive;
       setWorkspaces(remaining);
-      setActiveWorkspaceId(nextActive);
-      setSources([]);
-      setMessages([]);
-      setConversationId(null);
-      setConversationTitle("未命名对话");
-      setArtifacts([]);
-      setActiveArtifact(null);
-      setActiveSourceContent(null);
-      suppressAutoConversationLoadRef.current = true;
-      setStatus("知识库已删除");
+      switchWorkspace(nextActive);
     } catch (error) {
       setStatus(error instanceof Error ? `删除知识库失败：${error.message}` : "删除知识库失败");
     } finally {
