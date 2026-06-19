@@ -4,15 +4,39 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArrowLeft } from "lucide-react";
 
+type MarkdownPageProps = {
+  documentPath?: string;
+  loadError?: string;
+  onBack: () => void;
+  title?: string;
+};
+
 export function ArchitecturePage({ onBack }: { onBack: () => void }) {
+  return (
+    <MarkdownPage
+      documentPath="/ARCHITECTURE.md"
+      loadError="# 加载失败\n无法加载架构文档。"
+      onBack={onBack}
+      title="系统架构"
+    />
+  );
+}
+
+export function MarkdownPage({
+  documentPath = "/ARCHITECTURE.md",
+  loadError = "# 加载失败\n无法加载文档。",
+  onBack,
+  title = "文档",
+}: MarkdownPageProps) {
   const [content, setContent] = useState("");
 
   useEffect(() => {
-    fetch("/ARCHITECTURE.md")
+    const cacheKey = encodeURIComponent(import.meta.env.VITE_APP_VERSION || "dev");
+    fetch(`${documentPath}?raw=1&v=${cacheKey}`, { cache: "no-cache" })
       .then((res) => res.text())
       .then(setContent)
-      .catch(() => setContent("# 加载失败\n无法加载架构文档。"));
-  }, []);
+      .catch(() => setContent(loadError));
+  }, [documentPath, loadError]);
 
   useEffect(() => {
     if (!content) return;
@@ -27,7 +51,7 @@ export function ArchitecturePage({ onBack }: { onBack: () => void }) {
         <button className="icon-button" type="button" aria-label="返回" onClick={onBack}>
           <ArrowLeft size={18} />
         </button>
-        <h1>系统架构</h1>
+        <h1>{title}</h1>
       </div>
       <article className="architecture-content">
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{content}</ReactMarkdown>

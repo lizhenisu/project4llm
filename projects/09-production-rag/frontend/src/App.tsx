@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AuthPage } from "./app/AuthPage";
-import { ArchitecturePage } from "./app/ArchitecturePage";
+import { ArchitecturePage, MarkdownPage } from "./app/ArchitecturePage";
 import { WorkspacePage } from "./app/WorkspacePage";
 import { AuthProvider } from "./lib/AuthContext";
 
@@ -24,6 +24,7 @@ export function App() {
 
   const authMode = pathname === "/register" ? "register" : pathname === "/login" ? "login" : null;
   const isArchitecture = pathname === "/architecture";
+  const isProjectEvaluation = pathname === "/project-evaluation" || pathname === "/PROJECT_EVALUATION.md";
 
   return (
     <AuthProvider>
@@ -31,6 +32,13 @@ export function App() {
         <AuthPage mode={authMode} onNavigate={navigate} />
       ) : isArchitecture ? (
         <ArchitecturePage onBack={() => navigate("/", { replace: true })} />
+      ) : isProjectEvaluation ? (
+        <MarkdownPage
+          documentPath="/PROJECT_EVALUATION.md"
+          loadError="# 加载失败\n无法加载项目测评文档。"
+          onBack={() => navigate("/architecture", { replace: true })}
+          title="项目测评"
+        />
       ) : (
         <WorkspacePage onNavigate={navigate} />
       )}
