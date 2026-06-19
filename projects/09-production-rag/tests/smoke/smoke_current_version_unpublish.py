@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 from pathlib import Path
 
 from rag_core.types import SourceDocument
 from rag_core.versioning import (
+    CURRENT_VERSIONS_PATH,
     load_all_current_versions,
     publish_current_versions,
     unpublish_current_version,
@@ -78,6 +80,42 @@ def main() -> None:
             doc_id="versioned-runbook",
         )
         assert load_all_current_versions(object_store_dir) == {}
+
+        current_path = object_store_dir / CURRENT_VERSIONS_PATH
+        current_path.write_text('{"team_a":{"doc-a":1}}1\n  }\n}', encoding="utf-8")
+        assert load_all_current_versions(object_store_dir) == {
+            "team_a": {"doc-a": 1},
+        }
+
+        docs = [
+            SourceDocument(
+                tenant_id="team_a",
+                doc_id=f"bulk-doc-{index}",
+                doc_version=1,
+                source_type="md",
+                source_uri=f"memory://bulk-doc-{index}",
+                title=f"Bulk Doc {index}",
+                text="并发删除测试。",
+                acl_groups=["ops"],
+            )
+            for index in range(20)
+        ]
+        publish_current_versions(object_store_dir, docs)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(
+                executor.map(
+                    lambda doc: unpublish_current_version(
+                        object_store_dir,
+                        tenant_id=doc.tenant_id,
+                        doc_id=doc.doc_id,
+                        doc_version=doc.doc_version,
+                    ),
+                    docs,
+                )
+            )
+        assert all(results)
+        current = load_all_current_versions(object_store_dir)
+        assert not any(doc.doc_id in current.get("team_a", {}) for doc in docs)
 
     print("smoke_current_version_unpublish=ok")
 

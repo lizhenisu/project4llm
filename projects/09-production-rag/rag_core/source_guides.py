@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ from rag_core.types import SourceDocument
 SOURCE_GUIDES_PATH = Path("canonical/source_guides.jsonl")
 DEFAULT_SOURCE_GUIDE_CHUNK_CHARS = 230_000
 DEFAULT_SOURCE_GUIDE_LLM_WORKERS = 3
+SOURCE_GUIDES_LOCK = threading.Lock()
 
 
 def get_or_create_source_guide(
@@ -353,21 +355,64 @@ def save_source_guide(
 ) -> None:
     path = object_store_dir / SOURCE_GUIDES_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    rows = read_jsonl(path) if path.exists() else []
-    row = {
-        "tenant_id": tenant_id,
-        "source_doc_id": source_doc_id,
-        "doc_version": int(doc_version),
-        "title": title,
-        "guide": guide,
-        "model": model,
-        "updated_at": now_ms(),
-    }
-    merged = {
-        source_guide_key(item): item
-        for item in [*rows, row]
-    }
-    write_jsonl(path, merged.values())
+    with SOURCE_GUIDES_LOCK:
+        rows = read_jsonl(path) if path.exists() else []
+        row = {
+            "tenant_id": tenant_id,
+            "source_doc_id": source_doc_id,
+            "doc_version": int(doc_version),
+            "title": title,
+            "guide": guide,
+            "model": model,
+            "updated_at": now_ms(),
+        }
+        merged = {
+            source_guide_key(item): item
+            for item in [*rows, row]
+        }
+        write_jsonl(path, merged.values())
+
+
+def delete_source_guides(
+    object_store_dir: Path,
+    *,
+    tenant_id: str,
+    source_doc_ids: set[str],
+    doc_version: int | None = None,
+) -> int:
+    path = object_store_dir / SOURCE_GUIDES_PATH
+    if not path.exists() or not source_doc_ids:
+        return 0
+    with SOURCE_GUIDES_LOCK:
+        rows = read_jsonl(path)
+        remaining = [
+            row
+            for row in rows
+            if not source_guide_matches_delete(
+                row,
+                tenant_id=tenant_id,
+                source_doc_ids=source_doc_ids,
+                doc_version=doc_version,
+            )
+        ]
+        removed = len(rows) - len(remaining)
+        if removed:
+            write_jsonl(path, remaining)
+        return removed
+
+
+def source_guide_matches_delete(
+    row: dict,
+    *,
+    tenant_id: str,
+    source_doc_ids: set[str],
+    doc_version: int | None,
+) -> bool:
+    if str(row.get("tenant_id")) != tenant_id:
+        return False
+    if str(row.get("source_doc_id")) not in source_doc_ids:
+        return False
+    return doc_version is None or int(row.get("doc_version", 0)) == int(doc_version)
 
 
 def source_guide_key(row: dict) -> tuple[str, str, int]:

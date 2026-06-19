@@ -14,6 +14,7 @@
 - **🐳 Docker 一键部署**：ETCD + MinIO + Milvus + FastAPI + Nginx/React
 
 压测设计和命令见 [`docs/LOAD_TESTING.md`](docs/LOAD_TESTING.md)。
+检索召回率实验见 [`docs/RETRIEVAL_RECALL_EXPERIMENT.md`](docs/RETRIEVAL_RECALL_EXPERIMENT.md)。
 
 ## 快速开始
 

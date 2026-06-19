@@ -2241,10 +2241,10 @@ function preferSourceRow(candidate: SourceItem, current: SourceItem) {
 
 function filterWorkspaceSources(rows: SourceItem[], workspaceSourceIds: string[]) {
   if (workspaceSourceIds.length === 0) {
-    return [];
+    return rows.filter((source) => source.status !== "ready");
   }
   const workspaceIds = new Set(workspaceSourceIds);
-  return rows.filter((source) => sourceMatchesWorkspace(source, workspaceIds));
+  return rows.filter((source) => source.status !== "ready" || sourceMatchesWorkspace(source, workspaceIds));
 }
 
 function applyWorkspaceSourceTitles(rows: SourceItem[], workspaceId: string) {
