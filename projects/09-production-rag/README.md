@@ -10,8 +10,11 @@
 - **🤖 LLM 智能增强**：查询改写、答案生成、思维导图、数据表格、文档摘要
 - **🔐 多租户 ACL**：PBKDF2 密码认证、Tenant 隔离、用户角色管理
 - **📊 Studio**：基于已选来源一键生成思维导图和数据表格
-- **🧪 完整评估框架**：Recall@K、MRR@K、nDCG@K、答案忠实度、发布门禁
+- **🧪 完整评估框架**：Recall@K、MRR@K、nDCG@K、答案忠实度、发布门禁、mock/real 外部 API 压测
 - **🐳 Docker 一键部署**：ETCD + MinIO + Milvus + FastAPI + Nginx/React
+
+压测设计和命令见 [`docs/LOAD_TESTING.md`](docs/LOAD_TESTING.md)。
+检索召回率实验见 [`docs/RETRIEVAL_RECALL_EXPERIMENT.md`](docs/RETRIEVAL_RECALL_EXPERIMENT.md)。
 
 ## 快速开始
 
@@ -154,12 +157,15 @@ docker compose --profile ingest up rag-ingest
 │
 ├── docs/                     # 项目文档
 │   ├── ARCHITECTURE.md       # 系统架构详解（权威源文档）
+│   ├── LOAD_TESTING.md       # mock/real 外部 API 压测流程
 │   ├── RELEASE_CHECKLIST.md  # 发布检查清单
 │   ├── PREPARE_ENV.md        # 环境准备指南
 │   ├── frontend-design/      # 前端 UI 设计参考
 │   └── archive/              # 历史版本文档
 │
 ├── tests/                    # 测试用例
+│   ├── load/                 # HTTP 并发压测与外部 API mock
+│   └── smoke/                # 聚焦冒烟测试
 ├── scripts/                  # 部署辅助脚本
 ├── object_store/             # 文档归档与版本数据
 ├── runtime/                  # 运行时数据（DB、对话、日志）

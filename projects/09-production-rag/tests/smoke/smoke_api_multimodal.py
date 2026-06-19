@@ -116,7 +116,7 @@ def run_smoke() -> None:
     search_body = search.json()
     assert search_body["request_id"] == "smoke-api-multimodal-search"
     assert search_body["hits"]
-    assert search_body["trace"]["retrieval_mode"] == "multimodal_text_image_fusion"
+    assert search_body["trace"]["retrieval_mode"] == "multimodal_text_image_fusion_rerank"
     assert search_body["trace"]["original_query"] == "它呢"
     assert "RAG Dashboard latency recall" in search_body["trace"]["rewritten_query"]
     assert search_body["hits"][0]["doc_id"] == "dashboard-screenshot"
@@ -144,7 +144,7 @@ def run_smoke() -> None:
     assert query_body["request_id"] == "smoke-api-multimodal-query"
     assert query_body["answer"]
     assert query_body["citations"]
-    assert query_body["trace"]["retrieval_mode"] == "multimodal_text_image_fusion"
+    assert query_body["trace"]["retrieval_mode"] == "multimodal_text_image_fusion_rerank"
     assert query_body["trace"]["original_query"] == "它呢"
     assert "RAG Dashboard latency recall" in query_body["trace"]["rewritten_query"]
     assert query_body["citations"][0]["source_type"] == "image"

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PencilLine, Search, Settings as SettingsIcon, Shield, Trash2, UserRound, Users, X } from "lucide-react";
+import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PencilLine, RefreshCw, Search, Settings as SettingsIcon, Shield, Trash2, UserRound, Users, X } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -28,6 +28,7 @@ import {
   publishAnnouncement,
   queryRagStream,
   changeCurrentPassword,
+  refreshLoginToken,
   saveConversation,
   sendFeedback,
   updateAdminUserStatus,
@@ -78,6 +79,7 @@ type AdminUserDraft = {
   profileNameEditAllowed: boolean;
   avatarEditAllowed: boolean;
 };
+const APP_VERSION = import.meta.env.VITE_APP_VERSION || "0.0.0";
 
 const DEFAULT_LAYOUT: PanelLayout = { source: 24, chat: 46, studio: 30 };
 const MINDMAP_LAYOUT: PanelLayout = { source: 20, chat: 38, studio: 42 };
@@ -1023,6 +1025,10 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   function handleSelectWorkspace(id: string) {
     if (id === activeWorkspaceId || !workspaces.some((workspace) => workspace.id === id)) return;
+    switchWorkspace(id);
+  }
+
+  function switchWorkspace(id: string) {
     activeWorkspaceIdRef.current = id;
     setActiveWorkspaceId(id);
     setSources([]);
@@ -1042,18 +1048,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     try {
       await deleteWorkspaceRemoteData(id, settings, workspaces);
       const { workspaces: remaining, nextActive } = deleteWorkspace(id, auth.user?.id ?? null);
-      activeWorkspaceIdRef.current = nextActive;
       setWorkspaces(remaining);
-      setActiveWorkspaceId(nextActive);
-      setSources([]);
-      setMessages([]);
-      setConversationId(null);
-      setConversationTitle("未命名对话");
-      setArtifacts([]);
-      setActiveArtifact(null);
-      setActiveSourceContent(null);
-      suppressAutoConversationLoadRef.current = true;
-      setStatus("知识库已删除");
+      switchWorkspace(nextActive);
     } catch (error) {
       setStatus(error instanceof Error ? `删除知识库失败：${error.message}` : "删除知识库失败");
     } finally {
@@ -1209,7 +1205,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       )}
       <footer className="statusbar">
         <span>{status}</span>
-        <span className="version-badge" onClick={() => onNavigate("/architecture")} title="查看系统架构">v0.3.2</span>
+        <span className="version-badge" onClick={() => onNavigate("/architecture")} title="查看系统架构">v{APP_VERSION}</span>
       </footer>
       <SettingsDialog
         open={settingsOpen}
@@ -1327,6 +1323,8 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
   const [newPassword, setNewPassword] = useState("");
   const [loginLinkVisible, setLoginLinkVisible] = useState(false);
   const [loginLinkCopied, setLoginLinkCopied] = useState(false);
+  const [loginLinkMenuOpen, setLoginLinkMenuOpen] = useState(false);
+  const [refreshingLoginToken, setRefreshingLoginToken] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
@@ -1334,6 +1332,7 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
   const loginLink = useMemo(() => buildLoginLink(auth.token), [auth.token]);
   const canEditProfileName = user.profile_name_edit_allowed !== false;
   const canEditAvatar = user.avatar_edit_allowed !== false;
+  const canRefreshLoginToken = user.username !== "test_user";
 
   useEffect(() => {
     setUsername(user.username);
@@ -1379,6 +1378,24 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
     await navigator.clipboard.writeText(loginLink);
     setLoginLinkCopied(true);
     window.setTimeout(() => setLoginLinkCopied(false), 1600);
+  }
+
+  async function refreshExclusiveLoginToken() {
+    if (!canRefreshLoginToken || refreshingLoginToken) return;
+    setError("");
+    setMessage("");
+    setRefreshingLoginToken(true);
+    try {
+      const response = await refreshLoginToken(settings);
+      auth.replaceSession(response);
+      setLoginLinkVisible(true);
+      setLoginLinkMenuOpen(false);
+      setMessage("专属登录链接已刷新");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "刷新 token 失败");
+    } finally {
+      setRefreshingLoginToken(false);
+    }
   }
 
   return (
@@ -1480,8 +1497,44 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
               >
                 {loginLinkCopied ? <Check size={16} style={{ color: "var(--green)" }} /> : <Copy size={16} />}
               </button>
+              <div className="login-link-more">
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="更多专属登录链接选项"
+                  aria-expanded={loginLinkMenuOpen}
+                  onClick={() => setLoginLinkMenuOpen((open) => !open)}
+                >
+                  <MoreHorizontal size={16} />
+                </button>
+                {loginLinkMenuOpen ? (
+                  <>
+                    <button
+                      type="button"
+                      className="login-link-menu-backdrop"
+                      aria-label="关闭专属登录链接选项"
+                      onClick={() => setLoginLinkMenuOpen(false)}
+                    />
+                    <div className="login-link-menu" role="menu">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={!canRefreshLoginToken || refreshingLoginToken}
+                        title={canRefreshLoginToken ? "刷新专属登录链接 token" : "测试账号使用固定 token，不能刷新"}
+                        onClick={refreshExclusiveLoginToken}
+                      >
+                        <RefreshCw size={15} />
+                        <span>{refreshingLoginToken ? "刷新中..." : "刷新 token"}</span>
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+              </div>
             </div>
           </label>
+          {!canRefreshLoginToken ? (
+            <p className="muted-text">测试账号使用固定专属 token，不能刷新。</p>
+          ) : null}
         </section>
       </section>
     </main>
@@ -2188,10 +2241,10 @@ function preferSourceRow(candidate: SourceItem, current: SourceItem) {
 
 function filterWorkspaceSources(rows: SourceItem[], workspaceSourceIds: string[]) {
   if (workspaceSourceIds.length === 0) {
-    return [];
+    return rows.filter((source) => source.status !== "ready");
   }
   const workspaceIds = new Set(workspaceSourceIds);
-  return rows.filter((source) => sourceMatchesWorkspace(source, workspaceIds));
+  return rows.filter((source) => source.status !== "ready" || sourceMatchesWorkspace(source, workspaceIds));
 }
 
 function applyWorkspaceSourceTitles(rows: SourceItem[], workspaceId: string) {

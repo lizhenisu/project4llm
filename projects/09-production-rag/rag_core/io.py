@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import io
 import json
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -13,6 +15,9 @@ from typing import Any, Iterable
 
 from rag_core.embeddings import post_json, siliconflow_url
 from rag_core.types import ImageDocument, SourceDocument
+
+MIN_INFORMATIVE_IMAGE_CHANNEL_RANGE = 4
+MIN_INFORMATIVE_IMAGE_STDDEV = 1.0
 
 
 @dataclass(frozen=True)
@@ -45,9 +50,12 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8") as file:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    with temp_path.open("w", encoding="utf-8") as file:
         for row in rows:
             file.write(json.dumps(row, ensure_ascii=False) + "\n")
+    temp_path.replace(path)
 
 
 def load_source_documents(path: Path) -> list[SourceDocument]:
@@ -520,16 +528,17 @@ def extract_pdf_pages_with_pymupdf(path: Path) -> list[PdfPage]:
                     page_no=page_index,
                     image_index=image_index,
                 )
-                if image_asset:
-                    display_blocks.append(
-                        {
-                            "type": "image",
-                            "title": f"Image {image_index}",
-                            "path": image_asset["path"],
-                            "image_uri": image_asset["path"],
-                            "media_type": image_asset["media_type"],
-                        }
-                    )
+                if not image_asset:
+                    continue
+                display_blocks.append(
+                    {
+                        "type": "image",
+                        "title": f"Image {image_index}",
+                        "path": image_asset["path"],
+                        "image_uri": image_asset["path"],
+                        "media_type": image_asset["media_type"],
+                    }
+                )
                 image_note = f"Image {image_index}: embedded image on PDF page {page_index}."
                 if image_captioner and captioned_images < max_captioned_images:
                     caption = image_captioner.caption_pdf_image(
@@ -689,6 +698,8 @@ def save_pdf_image_asset(*, document, image, pdf_path: Path, page_no: int, image
     extension = payload.get("ext") or "png"
     if not image_bytes:
         return {}
+    if not image_bytes_are_informative(image_bytes):
+        return {}
     normalized_extension = "jpg" if extension.lower() == "jpeg" else extension.lower()
     if not re.fullmatch(r"[a-z0-9]+", normalized_extension):
         normalized_extension = "png"
@@ -721,6 +732,22 @@ def image_data_url_from_parts(*, extension: str, image_bytes: bytes) -> str:
     media_type = image_media_type(extension)
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{media_type};base64,{encoded}"
+
+
+def image_bytes_are_informative(image_bytes: bytes) -> bool:
+    try:
+        from PIL import Image, ImageStat
+
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            converted = image.convert("RGB")
+            extrema = converted.getextrema()
+            stat = ImageStat.Stat(converted)
+    except Exception:
+        return True
+    channel_ranges = [high - low for low, high in extrema]
+    if max(channel_ranges, default=0) >= MIN_INFORMATIVE_IMAGE_CHANNEL_RANGE:
+        return True
+    return max(stat.stddev or [0.0]) >= MIN_INFORMATIVE_IMAGE_STDDEV
 
 
 def image_media_type(extension: str) -> str:

@@ -14,7 +14,7 @@ from urllib.parse import quote
 from rag_core.config import RagConfig
 from rag_core.database import connect_metadata_db
 from rag_core.embeddings import build_embedding_model, build_image_embedding_model, zero_image_vector
-from rag_core.io import load_file_documents, load_table_documents
+from rag_core.io import image_bytes_are_informative, load_file_documents, load_table_documents
 from rag_core.milvus_store import (
     chunk_to_entity,
     connect,
@@ -26,12 +26,17 @@ from rag_core.object_store import (
     archive_delete_tombstone,
     archive_source_documents,
     load_archived_source_documents,
+    purge_source_documents,
 )
 from rag_core.pii import apply_pii_policy
-from rag_core.source_guides import get_or_create_source_guide, load_source_guide, load_source_guide_full
+from rag_core.source_guides import delete_source_guides, get_or_create_source_guide, load_source_guide, load_source_guide_full
 from rag_core.text_utils import chunk_document, now_ms
 from rag_core.types import Chunk, SourceDocument
 from rag_core.versioning import load_current_versions, publish_current_versions, unpublish_current_version
+
+MIN_EMBEDDABLE_IMAGE_SIDE = 8
+MIN_EMBEDDABLE_IMAGE_PIXELS = 32
+MAX_EMBEDDABLE_IMAGE_ASPECT_RATIO = 20.0
 
 
 SUPPORTED_FILE_SUFFIXES = {".pdf", ".html", ".htm", ".md", ".txt", ".csv", ".tsv"}
@@ -412,18 +417,58 @@ def pdf_image_chunks(docs: list[SourceDocument]) -> list[Chunk]:
 
 
 def encode_pdf_image_vectors(*, config: RagConfig, image_model, chunks: list[Chunk]) -> list[list[float]]:
-    image_paths = [Path(chunk.source_uri) for chunk in chunks]
-    existing = [path.exists() and path.is_file() for path in image_paths]
-    if all(existing):
-        return image_model.encode_images(image_paths)
     zero_image = zero_image_vector(config)
-    vectors: list[list[float]] = []
-    for chunk, path_exists in zip(chunks, existing, strict=True):
-        if path_exists:
-            vectors.extend(image_model.encode_images([Path(chunk.source_uri)]))
+    vectors: list[list[float] | None] = []
+    embeddable_paths: list[Path] = []
+    embeddable_indexes: list[int] = []
+    for index, chunk in enumerate(chunks):
+        path = Path(chunk.source_uri)
+        if pdf_image_is_embeddable(path):
+            vectors.append(None)
+            embeddable_paths.append(path)
+            embeddable_indexes.append(index)
         else:
             vectors.append(zero_image)
-    return vectors
+
+    if embeddable_paths:
+        try:
+            encoded = image_model.encode_images(embeddable_paths)
+        except Exception:
+            encoded = [
+                encode_pdf_image_vector_or_zero(config=config, image_model=image_model, path=path)
+                for path in embeddable_paths
+            ]
+        for index, vector in zip(embeddable_indexes, encoded, strict=True):
+            vectors[index] = vector
+    return [vector or zero_image for vector in vectors]
+
+
+def encode_pdf_image_vector_or_zero(*, config: RagConfig, image_model, path: Path) -> list[float]:
+    try:
+        return image_model.encode_images([path])[0]
+    except Exception:
+        return zero_image_vector(config)
+
+
+def pdf_image_is_embeddable(path: Path) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width, height = image.size
+    except Exception:
+        return False
+    if width < MIN_EMBEDDABLE_IMAGE_SIDE or height < MIN_EMBEDDABLE_IMAGE_SIDE:
+        return False
+    pixels = width * height
+    if pixels < MIN_EMBEDDABLE_IMAGE_PIXELS:
+        return False
+    aspect_ratio = max(width, height) / max(1, min(width, height))
+    if aspect_ratio > MAX_EMBEDDABLE_IMAGE_ASPECT_RATIO:
+        return False
+    return image_bytes_are_informative(path.read_bytes())
 
 
 def summarize_ingested_sources(
@@ -780,6 +825,18 @@ def delete_source(
         )
         for target_doc_id in target_doc_ids
     )
+    purged = purge_source_documents(
+        config.object_store_dir,
+        tenant_id=tenant_id,
+        doc_ids=target_doc_ids,
+        doc_version=effective_version,
+    )
+    deleted_source_guides = delete_source_guides(
+        config.object_store_dir,
+        tenant_id=tenant_id,
+        source_doc_ids={doc_id},
+        doc_version=effective_version,
+    )
     if source is not None:
         with connect_metadata_db(config) as conn:
             conn.execute(
@@ -789,12 +846,21 @@ def delete_source(
                 """,
                 (tenant_id, source.doc_id, source.doc_version),
             )
+            conn.execute(
+                """
+                DELETE FROM source_tasks
+                WHERE tenant_id = ? AND (doc_id = ? OR doc_id IN ({placeholders}))
+                """.format(placeholders=", ".join("?" for _ in target_doc_ids)),
+                (tenant_id, source.doc_id, *target_doc_ids),
+            )
     return {
         "filter": filter_expr,
         "milvus": result,
         "target_doc_ids": target_doc_ids,
         "unpublished": unpublished,
         "tombstoned": tombstoned,
+        "purged": purged,
+        "deleted_source_guides": deleted_source_guides,
     }
 
 

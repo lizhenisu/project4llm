@@ -30,6 +30,7 @@ from rag_core.artifacts import (
     save_metadata_artifact,
 )
 from rag_core.auth import build_auth_context, validate_bearer_token
+from rag_core.app_version import app_version
 from rag_core.config import load_config
 from rag_core.conversations import (
     ConversationMessage,
@@ -69,6 +70,7 @@ from rag_core.user_auth import (
     login_user,
     logout_user,
     register_user,
+    refresh_session_token,
     set_registration_enabled,
     set_user_status,
     update_user_profile,
@@ -86,6 +88,7 @@ class QueryRequest(BaseModel):
     doc_version: int | None = None
     doc_ids: list[str] = Field(default_factory=list)
     source_types: list[str] = Field(default_factory=list)
+    include_all_sources: bool = False
     candidate_limit: int = Field(default=20, ge=1, le=100)
     context_limit: int = Field(default=5, ge=1, le=20)
     request_id: str | None = None
@@ -384,7 +387,7 @@ class UserListResponse(BaseModel):
 
 
 def create_app():
-    app = FastAPI(title="Production RAG", version="0.3.2")
+    app = FastAPI(title="Production RAG", version=app_version())
     ensure_default_test_account(load_config())
 
     @app.get("/health")
@@ -438,6 +441,19 @@ def create_app():
         if token:
             logout_user(config, token=token)
         return {"status": "ok"}
+
+    @app.post("/auth/token/refresh", response_model=AuthResponse)
+    def refresh_token(authorization: str | None = Header(default=None)) -> AuthResponse:
+        config = load_config()
+        token = bearer_token(authorization)
+        if not token:
+            raise HTTPException(status_code=401, detail="请先登录")
+        try:
+            user, next_token, expires_at = refresh_session_token(config, current_token=token)
+        except ValueError as exc:
+            status_code = 401 if str(exc) == "请先登录" else 400
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        return AuthResponse(user=user_to_response(user), token=next_token, expires_at=expires_at)
 
     @app.get("/auth/me", response_model=UserResponse)
     def me(authorization: str | None = Header(default=None)) -> UserResponse:
@@ -1483,9 +1499,11 @@ def materialize_query_image(request: QueryRequest) -> str | None:
 
 def resolve_search_result(request: SearchRequest, auth_context):
     if request.query_mode == "multimodal":
-        query = materialize_query_image(request) or request.query
+        image_query_path = materialize_query_image(request)
         return retrieve_multimodal(
-            query,
+            request.query,
+            text_query=request.query,
+            image_query_path=image_query_path,
             tenant_id=auth_context.tenant_id,
             candidate_limit=request.candidate_limit,
             context_limit=request.context_limit,
@@ -1493,6 +1511,7 @@ def resolve_search_result(request: SearchRequest, auth_context):
             doc_version=request.doc_version,
             doc_ids=request.doc_ids or None,
             source_types=request.source_types or None,
+            include_all_sources=request.include_all_sources,
             history=request.history,
             request_id=request.request_id,
         )
@@ -1505,6 +1524,7 @@ def resolve_search_result(request: SearchRequest, auth_context):
         doc_version=request.doc_version,
         doc_ids=request.doc_ids or None,
         source_types=request.source_types or None,
+        include_all_sources=request.include_all_sources,
         history=request.history,
         request_id=request.request_id,
     )
@@ -1512,9 +1532,11 @@ def resolve_search_result(request: SearchRequest, auth_context):
 
 def resolve_answer_result(request: QueryRequest, auth_context, stage_callback=None):
     if request.query_mode == "multimodal":
-        query = materialize_query_image(request) or request.query
+        image_query_path = materialize_query_image(request)
         return answer_multimodal_query(
-            query,
+            request.query,
+            text_query=request.query,
+            image_query_path=image_query_path,
             tenant_id=auth_context.tenant_id,
             candidate_limit=request.candidate_limit,
             context_limit=request.context_limit,
@@ -1522,6 +1544,7 @@ def resolve_answer_result(request: QueryRequest, auth_context, stage_callback=No
             doc_version=request.doc_version,
             doc_ids=request.doc_ids or None,
             source_types=request.source_types or None,
+            include_all_sources=request.include_all_sources,
             history=request.history,
             request_id=request.request_id,
             answer_query=request.query,
@@ -1536,6 +1559,7 @@ def resolve_answer_result(request: QueryRequest, auth_context, stage_callback=No
         doc_version=request.doc_version,
         doc_ids=request.doc_ids or None,
         source_types=request.source_types or None,
+        include_all_sources=request.include_all_sources,
         history=request.history,
         request_id=request.request_id,
         stage_callback=stage_callback,

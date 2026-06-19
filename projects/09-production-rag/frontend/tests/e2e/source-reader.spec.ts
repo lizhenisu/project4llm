@@ -235,6 +235,180 @@ test("allows deleting the only database and creates a fresh default database", a
   await expect(page.getByText("历史回答")).toHaveCount(0);
 });
 
+test("refreshes all workspace panels after deleting the active database", async ({ page }) => {
+  const now = Date.now();
+  let sourceRows = [
+    {
+      doc_id: "source-a",
+      title: "A 来源.txt",
+      source_type: "txt",
+      source_uri: "/uploads/source-a.txt",
+      doc_version: 1,
+      chunk_count: 1,
+      acl_groups: ["engineering"],
+      status: "ready",
+      current: true,
+      child_doc_ids: [],
+    },
+    {
+      doc_id: "source-b",
+      title: "B 来源.txt",
+      source_type: "txt",
+      source_uri: "/uploads/source-b.txt",
+      doc_version: 1,
+      chunk_count: 1,
+      acl_groups: ["engineering"],
+      status: "ready",
+      current: true,
+      child_doc_ids: [],
+    },
+  ];
+  let artifactRows = [
+    {
+      id: "artifact-a",
+      title: "A 思维导图",
+      status: "ready",
+      tenant_id: "team_a",
+      source_doc_ids: ["source-a"],
+      created_at: now,
+      updated_at: now,
+      root: { id: "root-a", label: "A 思维导图", children: [] },
+    },
+    {
+      id: "artifact-b",
+      title: "B 思维导图",
+      status: "ready",
+      tenant_id: "team_a",
+      source_doc_ids: ["source-b"],
+      created_at: now,
+      updated_at: now,
+      root: { id: "root-b", label: "B 思维导图", children: [] },
+    },
+  ];
+  let conversationRows = [
+    {
+      id: "conv-a",
+      tenant_id: "team_a",
+      title: "A 对话",
+      message_count: 2,
+      source_doc_ids: ["source-a"],
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "conv-b",
+      tenant_id: "team_a",
+      title: "B 对话",
+      message_count: 2,
+      source_doc_ids: ["source-b"],
+      created_at: now + 1,
+      updated_at: now + 1,
+    },
+  ];
+  await page.addInitScript(() => {
+    const createdAt = Date.now();
+    localStorage.setItem(
+      "production-rag-workspaces:test-user",
+      JSON.stringify([
+        { id: "workspace-a", name: "知识库 A", user_id: "test-user", created_at: createdAt, updated_at: createdAt },
+        { id: "workspace-b", name: "知识库 B", user_id: "test-user", created_at: createdAt, updated_at: createdAt },
+      ]),
+    );
+    localStorage.setItem("production-rag-active-workspace-id:test-user", "workspace-a");
+    localStorage.setItem("production-rag-workspace-sources:workspace-a", JSON.stringify(["source-a"]));
+    localStorage.setItem("production-rag-workspace-sources:workspace-b", JSON.stringify(["source-b"]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-a", JSON.stringify(["conv-a"]));
+    localStorage.setItem("production-rag-workspace-conversations:workspace-b", JSON.stringify(["conv-b"]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-a", JSON.stringify(["artifact-a"]));
+    localStorage.setItem("production-rag-workspace-artifacts:workspace-b", JSON.stringify(["artifact-b"]));
+  });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/auth/me", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "test-user",
+        username: "tester",
+        display_name: "测试用户",
+        role: "user",
+        tenant_id: "team_a",
+        avatar_url: "",
+        status: "active",
+        created_at: now,
+        last_login_at: now,
+        profile_name_edit_allowed: true,
+        avatar_edit_allowed: true,
+      },
+    });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({ json: { sources: sourceRows } });
+  });
+  await page.route("**/sources/source-a?**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      sourceRows = sourceRows.filter((source) => source.doc_id !== "source-a");
+      await route.fulfill({ json: { status: "deleted" } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: artifactRows } });
+  });
+  await page.route("**/artifacts/artifact-a?**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      artifactRows = artifactRows.filter((artifact) => artifact.id !== "artifact-a");
+      await route.fulfill({ json: { status: "deleted", artifact_id: "artifact-a" } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({ json: { conversations: conversationRows } });
+  });
+  await page.route("**/conversations/conv-a?**", async (route) => {
+    if (route.request().method() === "DELETE") {
+      conversationRows = conversationRows.filter((conversation) => conversation.id !== "conv-a");
+      await route.fulfill({ json: { status: "deleted", conversation_id: "conv-a" } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/conversations/conv-b?**", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "conv-b",
+        tenant_id: "team_a",
+        title: "B 对话",
+        source_doc_ids: ["source-b"],
+        created_at: now + 1,
+        updated_at: now + 1,
+        messages: [
+          { id: "msg-b-1", role: "user", content: "B 问题", status: "done", citations: [] },
+          { id: "msg-b-2", role: "assistant", content: "B 回答", status: "done", citations: [] },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/#token=production-rag-fixed-test-login-token");
+  await expect(page.locator(".source-row", { hasText: "A 来源.txt" })).toBeVisible();
+  await expect(page.getByText("A 思维导图")).toBeVisible();
+  await page.getByRole("button", { name: "设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "知识库设置" });
+  await dialog.locator(".database-list-item.active .icon-button").click();
+  await page.getByRole("menuitem", { name: "删除知识库" }).click();
+
+  await expect(dialog.locator(".database-list-item.active")).toContainText("知识库 B");
+  await expect(page.locator(".source-row", { hasText: "B 来源.txt" })).toBeVisible();
+  await expect(page.locator(".source-row", { hasText: "A 来源.txt" })).toHaveCount(0);
+  await expect(page.getByText("B 回答")).toBeVisible();
+  await expect(page.getByText("A 思维导图")).toHaveCount(0);
+  await expect(page.getByText("B 思维导图")).toBeVisible();
+  await expect(page.locator(".statusbar span").first()).toContainText("API 已连接");
+});
+
 test("removing a shared source only unlinks it from the current database", async ({ page }) => {
   let sourceDeletes = 0;
   await page.addInitScript(() => {
@@ -701,6 +875,74 @@ test("shows a masked personal login link on the profile page", async ({ page, co
   await expect(page.getByRole("link", { name: "打开 GitHub 仓库" })).toHaveAttribute("href", "https://github.com/lizhenisu/project4llm");
 });
 
+test("refreshes the personal login link token from the more menu", async ({ page }) => {
+  await mockWorkspaceShell(page);
+  await page.route("**/auth/token/refresh", async (route) => {
+    await route.fulfill({
+      json: {
+        user: {
+          id: "test-user",
+          username: "tester",
+          display_name: "测试用户",
+          role: "user",
+          tenant_id: "team_a",
+          avatar_url: "",
+          status: "active",
+          created_at: Date.now(),
+          last_login_at: Date.now(),
+        },
+        token: "new-session-token",
+        expires_at: Date.now() + 86_400_000,
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "用户头像" }).click();
+  await page.getByRole("menuitem", { name: /个人信息/ }).click();
+  await page.getByRole("button", { name: "更多专属登录链接选项" }).click();
+  await page.getByRole("menuitem", { name: "刷新 token" }).click();
+
+  const secretInput = page.locator(".secret-field input");
+  await expect(secretInput).toHaveValue(/#token=new-session-token$/);
+  await expect(page.getByText("专属登录链接已刷新")).toBeVisible();
+  await expect.poll(async () =>
+    page.evaluate(() => JSON.parse(localStorage.getItem("production-rag-auth-session") || "{}").token),
+  ).toBe("new-session-token");
+});
+
+test("disables personal login token refresh for the fixed test account", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "production-rag-auth-session",
+      JSON.stringify({
+        user: {
+          id: "user-fixed-test",
+          username: "test_user",
+          display_name: "测试账号",
+          role: "user",
+          tenant_id: "tenant-fixed-test",
+          avatar_url: "",
+          status: "active",
+          created_at: Date.now(),
+          last_login_at: Date.now(),
+        },
+        token: "production-rag-fixed-test-login-token",
+        expires_at: Date.now() + 86_400_000,
+      }),
+    );
+  });
+  await mockWorkspaceShell(page);
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "用户头像" }).click();
+  await page.getByRole("menuitem", { name: /个人信息/ }).click();
+  await page.getByRole("button", { name: "更多专属登录链接选项" }).click();
+
+  await expect(page.getByRole("menuitem", { name: "刷新 token" })).toBeDisabled();
+  await expect(page.getByText("测试账号使用固定专属 token，不能刷新。")).toBeVisible();
+});
+
 test("renders assistant math formulas with KaTeX", async ({ page }) => {
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok" } });
@@ -838,10 +1080,45 @@ test("opens parsed source content from a document-level source row", async ({ pa
 });
 
 test("sends an attached chat image as a multimodal query", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "production-rag-auth-session",
+      JSON.stringify({
+        user: {
+          id: "test-user",
+          username: "tester",
+          display_name: "测试用户",
+          role: "user",
+          tenant_id: "team_a",
+          avatar_url: "",
+          status: "active",
+          created_at: Date.now(),
+          last_login_at: Date.now(),
+        },
+        token: "test-session",
+        expires_at: Date.now() + 86_400_000,
+      }),
+    );
+  });
   await mockSourceAssetRoute(page);
   let queryPayload: any = null;
   await page.route("**/health", async (route) => {
     await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/auth/me", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "test-user",
+        username: "tester",
+        display_name: "测试用户",
+        role: "user",
+        tenant_id: "team_a",
+        avatar_url: "",
+        status: "active",
+        created_at: Date.now(),
+        last_login_at: Date.now(),
+      },
+    });
   });
   await page.route("**/sources?**", async (route) => {
     await route.fulfill({
@@ -874,41 +1151,45 @@ test("sends an attached chat image as a multimodal query", async ({ page }) => {
     const body = route.request().postDataJSON();
     await route.fulfill({ json: { ...body, id: "conv-image-query", updated_at: Date.now() } });
   });
-  await page.route("**/query", async (route) => {
+  await page.route("**/query/stream", async (route) => {
     queryPayload = route.request().postDataJSON();
-    await route.fulfill({
-      json: {
-        request_id: "image-query",
-        answer: "已根据图片检索到相关论文图示。",
-        citations: [
-          {
-            doc_id: "paper/page-1",
-            title: "attention is all you need p1",
-            source_uri: "/uploads/paper.pdf",
-            source_type: "pdf",
-            chunk_index: 0,
-            score: 0.8,
-            rerank_score: 0.7,
-            acl_groups: ["engineering"],
-            metadata: {
-              page_no: 1,
-              display_blocks: [
-                {
-                  type: "image",
-                  title: "Figure 1",
-                  url: "/source-assets/uploads/team_a/regression/paper.assets/page-1-image-1.png?tenant_id=team_a",
-                },
-              ],
-            },
-            text_preview: "Figure evidence",
+    const result = {
+      type: "result",
+      request_id: "image-query",
+      answer: "已根据图片检索到相关论文图示。",
+      citations: [
+        {
+          doc_id: "paper/page-1",
+          title: "attention is all you need p1",
+          source_uri: "/uploads/paper.pdf",
+          source_type: "pdf",
+          chunk_index: 0,
+          score: 0.8,
+          rerank_score: 0.7,
+          acl_groups: ["engineering"],
+          metadata: {
+            page_no: 1,
+            display_blocks: [
+              {
+                type: "image",
+                title: "Figure 1",
+                url: "/source-assets/uploads/team_a/regression/paper.assets/page-1-image-1.png?tenant_id=team_a",
+              },
+            ],
           },
-        ],
-        trace: {},
-      },
+          text_preview: "Figure evidence",
+        },
+      ],
+      trace: {},
+    };
+    await route.fulfill({
+      contentType: "application/x-ndjson",
+      body: `${JSON.stringify(result)}\n`,
     });
   });
 
-  await page.goto("/");
+  await page.goto("/#token=test-session");
+  await expect(page.getByPlaceholder("提问或创作内容")).toBeVisible();
   await page.getByRole("button", { name: "上传图片提问" }).click();
   await page.locator('.chat-input input[type="file"]').setInputFiles({
     name: "query.png",
@@ -916,9 +1197,16 @@ test("sends an attached chat image as a multimodal query", async ({ page }) => {
     buffer: Buffer.from(ONE_PIXEL_PNG_BASE64, "base64"),
   });
   await expect(page.getByRole("img", { name: "待发送图片" })).toBeVisible();
+  await page.getByRole("img", { name: "待发送图片" }).click();
+  const pendingImageDialog = page.getByRole("dialog", { name: "待发送图片" });
+  await expect(pendingImageDialog).toBeVisible();
+  await expect(pendingImageDialog.getByRole("img", { name: "待发送图片" })).toBeVisible();
+  await pendingImageDialog.getByRole("button", { name: "关闭图片预览" }).click();
+  await expect(pendingImageDialog).toBeHidden();
   await page.getByPlaceholder("提问或创作内容").fill("这张图和论文中哪部分相关？");
   await page.getByRole("button", { name: "发送消息" }).click();
 
+  await expect(page.getByText("已根据图片检索到相关论文图示。")).toBeVisible();
   const sentImage = page.getByRole("img", { name: "发送的图片" });
   await expect(sentImage).toBeVisible();
   await expect.poll(async () => sentImage.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
@@ -928,7 +1216,6 @@ test("sends an attached chat image as a multimodal query", async ({ page }) => {
   await expect(sentImageDialog.getByRole("img", { name: "发送的图片" })).toBeVisible();
   await sentImageDialog.getByRole("button", { name: "关闭图片预览" }).click();
 
-  await expect(page.getByText("已根据图片检索到相关论文图示。")).toBeVisible();
   const citationImage = page.getByRole("img", { name: "Figure 1" });
   await expect(citationImage).toBeVisible();
   await expect(citationImage).toHaveAttribute("src", /\/api\/source-assets\/uploads\/team_a\/regression\/paper\.assets\/page-1-image-1\.png/);

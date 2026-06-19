@@ -22,7 +22,7 @@ TEST_ACCOUNT_PASSWORD = "12345678"
 TEST_ACCOUNT_DISPLAY_NAME = "测试账号"
 TEST_ACCOUNT_TENANT_ID = "tenant-fixed-test"
 TEST_ACCOUNT_SALT = "0123456789abcdeffedcba9876543210"
-TEST_ACCOUNT_CREATED_AT = 1704067200000
+LEGACY_TEST_ACCOUNT_CREATED_AT = 1704067200000
 TEST_ACCOUNT_TOKEN_EXPIRES_AT = 4102444800000
 
 
@@ -185,6 +185,40 @@ def generate_session_token(length: int = 24) -> str:
     return "".join(secrets.choice(SESSION_TOKEN_ALPHABET) for _ in range(length))
 
 
+def refresh_session_token(config: RagConfig, *, current_token: str) -> tuple[User, str, int]:
+    if current_token == config.fixed_test_login_token:
+        raise ValueError("测试账号使用固定登录 token，不能刷新")
+    timestamp = now_ms()
+    expires_at = timestamp + SESSION_TTL_SECONDS * 1000
+    with connect_metadata_db(config) as conn:
+        conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (timestamp,))
+        row = conn.execute(
+            """
+            SELECT users.* FROM sessions
+            JOIN users ON users.id = sessions.user_id
+            WHERE sessions.token = ? AND sessions.expires_at > ?
+            """,
+            (current_token, timestamp),
+        ).fetchone()
+        if row is None:
+            raise ValueError("请先登录")
+        if str(row["status"] or "active") != "active":
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
+            raise ValueError("账号已被封禁")
+        if str(row["username"]) == TEST_ACCOUNT_USERNAME:
+            raise ValueError("测试账号使用固定登录 token，不能刷新")
+
+        token = generate_session_token()
+        while conn.execute("SELECT 1 FROM sessions WHERE token = ?", (token,)).fetchone():
+            token = generate_session_token()
+        conn.execute("DELETE FROM sessions WHERE token = ?", (current_token,))
+        conn.execute(
+            "INSERT INTO sessions(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+            (token, row["id"], expires_at, timestamp),
+        )
+        return user_from_row(row), token, expires_at
+
+
 def logout_user(config: RagConfig, *, token: str) -> None:
     if token == config.fixed_test_login_token:
         return
@@ -194,6 +228,7 @@ def logout_user(config: RagConfig, *, token: str) -> None:
 
 def ensure_default_test_account(config: RagConfig) -> User:
     password_hash = hash_password(TEST_ACCOUNT_PASSWORD, TEST_ACCOUNT_SALT)
+    timestamp = now_ms()
     with connect_metadata_db(config) as conn:
         row = conn.execute("SELECT * FROM users WHERE username = ?", (TEST_ACCOUNT_USERNAME,)).fetchone()
         if row is None:
@@ -214,14 +249,20 @@ def ensure_default_test_account(config: RagConfig) -> User:
                     password_hash,
                     TEST_ACCOUNT_SALT,
                     TEST_ACCOUNT_TENANT_ID,
-                    TEST_ACCOUNT_CREATED_AT,
+                    timestamp,
                 ),
             )
             row = conn.execute("SELECT * FROM users WHERE id = ?", (TEST_ACCOUNT_ID,)).fetchone()
+        elif int(row["created_at"]) == LEGACY_TEST_ACCOUNT_CREATED_AT:
+            conn.execute(
+                "UPDATE users SET created_at = ? WHERE id = ?",
+                (timestamp, row["id"]),
+            )
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
         if str(row["status"] or "active") == "active":
             conn.execute(
                 "INSERT OR REPLACE INTO sessions(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
-                (config.fixed_test_login_token, row["id"], TEST_ACCOUNT_TOKEN_EXPIRES_AT, TEST_ACCOUNT_CREATED_AT),
+                (config.fixed_test_login_token, row["id"], TEST_ACCOUNT_TOKEN_EXPIRES_AT, timestamp),
             )
         return user_from_row(row)
 
@@ -245,6 +286,9 @@ def authenticate_token(config: RagConfig, *, token: str | None) -> User | None:
         if str(row["status"] or "active") != "active":
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
             return None
+        if token == config.fixed_test_login_token and str(row["username"]) == TEST_ACCOUNT_USERNAME:
+            conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (timestamp, row["id"]))
+            return user_from_row(row, last_login_at=timestamp)
         return user_from_row(row)
 
 

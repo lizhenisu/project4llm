@@ -245,8 +245,15 @@ export function ChatPanel({
         />
         {attachedImage ? (
           <div className="chat-image-attachment">
-            <img src={attachedImage} alt="待发送图片" />
-            <button type="button" aria-label="移除图片" onClick={() => setAttachedImage(null)}>
+            <button
+              type="button"
+              className="attachment-preview-button"
+              aria-label="预览待发送图片"
+              onClick={() => setPreviewImage({ url: attachedImage, title: "待发送图片" })}
+            >
+              <img src={attachedImage} alt="待发送图片" />
+            </button>
+            <button className="attachment-remove-button" type="button" aria-label="移除图片" onClick={() => setAttachedImage(null)}>
               <X size={14} />
             </button>
           </div>

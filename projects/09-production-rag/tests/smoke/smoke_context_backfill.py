@@ -37,6 +37,7 @@ def main() -> None:
     test_context_helper_backfills_later_hits()
     test_text_pipeline_backfills_after_doc_limit()
     test_multimodal_pipeline_backfills_after_doc_limit()
+    test_multimodal_image_and_text_query_fuses_then_reranks()
     test_multimodal_image_file_query_uses_image_scores_only()
     print("smoke_context_backfill=ok")
 
@@ -114,6 +115,7 @@ def test_multimodal_pipeline_backfills_after_doc_limit() -> None:
         patch("search_multimodal.hybrid_search", return_value=candidates),
         patch("search_multimodal.image_search", return_value=candidates),
         patch("search_multimodal.reciprocal_rank_fusion", return_value=candidates),
+        patch("search_multimodal.build_reranker", return_value=FakeReranker()),
     ):
         result = retrieve_multimodal(
             "query",
@@ -124,10 +126,59 @@ def test_multimodal_pipeline_backfills_after_doc_limit() -> None:
             request_id="smoke-context-backfill-multimodal",
         )
     assert [hit.doc_id for hit in result.candidates] == ["doc-a", "doc-a", "doc-b"]
+    assert [hit.doc_id for hit in result.reranked] == ["doc-a", "doc-a", "doc-b"]
     assert [hit.doc_id for hit in result.hits] == ["doc-a", "doc-b"]
     assert result.trace.candidate_count == 3
+    assert result.trace.reranked_count == 3
     assert result.trace.context_count == 2
     assert result.trace.dropped_by_doc_limit == 1
+
+
+def test_multimodal_image_and_text_query_fuses_then_reranks() -> None:
+    config = make_config()
+    candidates = make_ranked_hits()
+    with tempfile.TemporaryDirectory() as tmp:
+        image_path = Path(tmp) / "query.png"
+        image_path.write_bytes(b"fake-png")
+        with (
+            patch("search_multimodal.load_config", return_value=config),
+            patch("search_multimodal.connect", return_value=object()),
+            patch("search_multimodal.ensure_collection"),
+            patch("search_multimodal.build_embedding_model", return_value=FakeEmbeddingModel()),
+            patch(
+                "search_multimodal.build_image_embedding_model",
+                return_value=FakeImageEmbeddingModel(),
+            ),
+            patch(
+                "search_multimodal.rewrite_query",
+                return_value=RewriteResult("query", "query", "llm"),
+            ),
+            patch("search_multimodal.mentions_other_tenant", return_value=False),
+            patch("search_multimodal.load_current_versions", return_value={}),
+            patch("search_multimodal.build_filter_expr", return_value='tenant_id == "team_a"'),
+            patch("search_multimodal.hybrid_search", return_value=candidates) as hybrid,
+            patch("search_multimodal.image_search", return_value=candidates) as image,
+            patch("search_multimodal.reciprocal_rank_fusion", return_value=candidates) as fusion,
+            patch("search_multimodal.build_reranker", return_value=FakeReranker()) as reranker,
+        ):
+            result = retrieve_multimodal(
+                text_query="query",
+                image_query_path=image_path,
+                tenant_id="team_a",
+                acl_groups=["ops"],
+                candidate_limit=3,
+                context_limit=2,
+                request_id="smoke-image-text-query",
+            )
+    hybrid.assert_called_once()
+    image.assert_called_once()
+    fusion.assert_called_once()
+    reranker.assert_called_once()
+    assert result.trace.retrieval_mode == "multimodal_text_image_file_fusion_rerank"
+    assert result.trace.stage_latency_ms["text_embedding"] >= 0
+    assert result.trace.stage_latency_ms["image_embedding"] >= 0
+    assert result.trace.reranked_count == 3
+    assert [hit.doc_id for hit in result.hits] == ["doc-a", "doc-b"]
 
 
 def test_multimodal_image_file_query_uses_image_scores_only() -> None:

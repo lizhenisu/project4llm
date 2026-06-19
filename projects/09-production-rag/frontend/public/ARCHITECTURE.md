@@ -892,6 +892,8 @@ Stage 2: 归一化
 
 ## 16. 评估框架与发布门禁
 
+项目测评记录见 [PROJECT_EVALUATION.md](/project-evaluation)，其中包含 retrieval recall、后续压测等项目级结果。
+
 ### 16.1 检索评估 (eval_retrieval.py)
 
 ```

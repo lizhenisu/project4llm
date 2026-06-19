@@ -39,6 +39,7 @@ def retrieve_and_rerank(
     doc_version: int | None = None,
     doc_ids: list[str] | None = None,
     source_types: list[str] | None = None,
+    include_all_sources: bool = False,
     history: list[str] | None = None,
     request_id: str | None = None,
     stage_callback: StageCallback | None = None,
@@ -48,7 +49,7 @@ def retrieve_and_rerank(
     client = connect(config)
     ensure_collection(client, config, reset=False)
     embedding_model = build_embedding_model(config)
-    current_versions = (
+    current_versions = None if include_all_sources else (
         {}
         if doc_version is not None
         else load_current_versions(config.object_store_dir, tenant_id=tenant_id)
@@ -103,7 +104,7 @@ def retrieve_and_rerank(
             tenant_id=tenant_id,
             acl_groups=acl_groups or [],
             doc_version=doc_version,
-            current_versions={},
+            current_versions=current_versions or {},
             embedding_model=embedding_model.model_name,
             source_types=source_types or [],
             doc_ids=doc_ids or [],
@@ -238,7 +239,7 @@ def retrieve_and_rerank(
         tenant_id=tenant_id,
         acl_groups=acl_groups or [],
         doc_version=doc_version,
-        current_versions=current_versions,
+        current_versions=current_versions or {},
         embedding_model=embedding_model.model_name,
         source_types=source_types or [],
         doc_ids=doc_ids or [],

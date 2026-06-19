@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { getCurrentUser, loginAccount, logoutAccount, registerAccount, setUnauthorizedHandler } from "./api";
 import { loadSettings } from "./storage";
-import type { AuthUser } from "./types";
+import type { AuthResponse, AuthUser } from "./types";
 
 type AuthSession = {
   user: AuthUser;
@@ -16,6 +16,7 @@ type AuthContextValue = {
   login: (username: string, password: string) => Promise<void>;
   register: (username: string, password: string, displayName: string) => Promise<void>;
   loginWithToken: (token: string) => Promise<void>;
+  replaceSession: (response: AuthResponse) => void;
   setUser: (user: AuthUser) => void;
   logout: () => Promise<void>;
 };
@@ -75,6 +76,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSession(response);
       },
       loginWithToken,
+      replaceSession(response) {
+        persistAuthSession(response);
+        setSession(response);
+      },
       setUser(user) {
         setSession((current) => {
           if (!current) return current;
