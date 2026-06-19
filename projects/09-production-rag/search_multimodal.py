@@ -46,6 +46,7 @@ def retrieve_multimodal(
     doc_version: int | None = None,
     doc_ids: list[str] | None = None,
     source_types: list[str] | None = None,
+    include_all_sources: bool = False,
     history: list[str] | None = None,
     request_id: str | None = None,
     stage_callback: StageCallback | None = None,
@@ -129,7 +130,7 @@ def retrieve_multimodal(
     text_source_types = source_types
     image_source_types = source_types or ["image"]
     trace_source_types = source_types or []
-    current_versions = (
+    current_versions = None if include_all_sources else (
         {}
         if doc_version is not None
         else load_current_versions(config.object_store_dir, tenant_id=tenant_id)
@@ -335,7 +336,7 @@ def retrieve_multimodal(
         tenant_id=tenant_id,
         acl_groups=acl_groups or [],
         doc_version=doc_version,
-        current_versions=current_versions,
+        current_versions=current_versions or {},
         embedding_model=text_model.model_name,
         source_types=trace_source_types,
         doc_ids=doc_ids or [],
@@ -406,6 +407,7 @@ def run_multimodal_search(
     doc_version: int | None = None,
     doc_ids: list[str] | None = None,
     source_types: list[str] | None = None,
+    include_all_sources: bool = False,
     history: list[str] | None = None,
 ) -> list[SearchHit]:
     result = retrieve_multimodal(
@@ -417,6 +419,7 @@ def run_multimodal_search(
         doc_version=doc_version,
         doc_ids=doc_ids,
         source_types=source_types,
+        include_all_sources=include_all_sources,
         history=history,
     )
     return result.hits

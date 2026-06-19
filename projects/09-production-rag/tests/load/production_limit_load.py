@@ -51,28 +51,34 @@ def main() -> None:
     health = check_health(args.base_url, timeout=args.health_timeout)
     version = detect_version(args.base_url)
     inventory = collect_source_inventory(args)
+    enforce_rag_inventory(inventory)
     metadata = collect_metadata(args, version=version, started_at=started_at, inventory=inventory)
 
     results: list[StageResult] = []
-    print(f"Load-test target: {args.base_url}")
-    print(f"Output directory: {output_dir}")
-    print(f"Health: {health}")
-    print(f"Concurrency levels: {', '.join(str(level) for level in levels)}")
-    print()
-
-    for concurrency in levels:
-        result = run_stage(args, output_dir=output_dir, concurrency=concurrency)
-        results.append(result)
-        status = "usable" if result.usable else "unusable"
+    print(f"Load-test target: {args.base_url}", flush=True)
+    print(f"Output directory: {output_dir}", flush=True)
+    print(f"Health: {health}", flush=True)
+    if args.search_limit:
         print(
-            f"concurrency={concurrency} {status} "
-            f"success={result.summary['success']}/{result.summary['requests']} "
-            f"p95={result.summary['latency_ms']['p95']}ms "
-            f"rps={result.summary['throughput_rps']} "
-            f"reasons={'; '.join(result.reasons) or '-'}"
+            "Concurrency search: "
+            f"{args.search_min_concurrency}..{args.search_max_concurrency} "
+            f"(precision {args.search_precision})",
+            flush=True,
         )
-        if args.stop_after_first_unusable and not result.usable:
-            break
+    else:
+        print(f"Concurrency levels: {', '.join(str(level) for level in levels)}", flush=True)
+    for warning in inventory.get("warnings") or []:
+        print(f"Data inventory warning: {warning}", flush=True)
+    print(flush=True)
+
+    if args.search_limit:
+        results = run_search_limit(args, output_dir=output_dir)
+    else:
+        for concurrency in levels:
+            result = run_and_print_stage(args, output_dir=output_dir, concurrency=concurrency)
+            results.append(result)
+            if args.stop_after_first_unusable and not result.usable:
+                break
 
     report_path = output_dir / "report.md"
     report_path.write_text(
@@ -101,6 +107,7 @@ def main() -> None:
                     for result in results
                 ],
                 "best_usable": best_usable_payload(results),
+                "limit_summary": limit_summary_payload(results),
             },
             ensure_ascii=False,
             indent=2,
@@ -108,9 +115,10 @@ def main() -> None:
         + "\n",
         encoding="utf-8",
     )
-    print()
-    print(f"Report: {report_path}")
-    print(f"Summary JSON: {machine_path}")
+    print(flush=True)
+    print_final_summary(results, search_limit=args.search_limit)
+    print(f"Report: {report_path}", flush=True)
+    print(f"Summary JSON: {machine_path}", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -137,6 +145,29 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--doc-id", action="append", default=[])
     parser.add_argument("--doc-version", type=int)
+    parser.add_argument(
+        "--current-only",
+        action="store_false",
+        dest="include_all_sources",
+        default=True,
+        help=(
+            "Use only current documents. By default load tests use all visible ready sources."
+        ),
+    )
+    parser.add_argument(
+        "--include-source-identifiers",
+        action="store_true",
+        help=(
+            "Include a limited doc_id/doc_version inventory in the report. "
+            "Disabled by default because doc_id may contain filenames or private labels."
+        ),
+    )
+    parser.add_argument(
+        "--source-identifier-limit",
+        type=int,
+        default=20,
+        help="Maximum source identifiers to include when --include-source-identifiers is set.",
+    )
     parser.add_argument("--question", default=os.environ.get("RAG_LOAD_QUESTION", "总结这些资料的核心内容"))
     parser.add_argument("--questions-file", type=Path)
     parser.add_argument("--candidate-limit", type=int, default=20)
@@ -146,12 +177,42 @@ def parse_args() -> argparse.Namespace:
         default=",".join(str(level) for level in DEFAULT_LEVELS),
         help="Comma-separated concurrency levels, default: 1,2,4,8,16,32,64.",
     )
+    parser.add_argument(
+        "--search-limit",
+        action="store_true",
+        help="Find an approximate concurrency limit with exponential probing and binary search.",
+    )
+    parser.add_argument("--search-min-concurrency", type=int, default=1)
+    parser.add_argument("--search-max-concurrency", type=int, default=64)
+    parser.add_argument(
+        "--search-precision",
+        type=int,
+        default=1,
+        help="Stop binary search when the unusable/usable boundary is within this concurrency gap.",
+    )
     parser.add_argument("--requests-per-concurrency", type=int, default=5)
     parser.add_argument("--min-requests", type=int, default=20)
-    parser.add_argument("--max-requests", type=int, default=320)
+    parser.add_argument(
+        "--max-requests",
+        type=int,
+        default=0,
+        help="Maximum requests per concurrency level. Use 0 to disable the cap. Default: 0.",
+    )
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--health-timeout", type=float, default=5.0)
+    parser.add_argument(
+        "--inventory-timeout",
+        type=float,
+        default=15.0,
+        help="Timeout for the preflight /sources request used to verify RAG data.",
+    )
+    parser.add_argument(
+        "--inventory-retries",
+        type=int,
+        default=3,
+        help="Retry count for the preflight /sources request before aborting.",
+    )
     parser.add_argument("--max-failure-rate", type=float, default=0.01)
     parser.add_argument("--max-p95-ms", type=float, default=30000.0)
     parser.add_argument("--max-first-event-p95-ms", type=float, default=5000.0)
@@ -262,12 +323,19 @@ def collect_metadata(
             "min_throughput_rps": args.min_throughput_rps,
             "require_citations": not args.allow_zero_citations,
         },
+        "search": {
+            "enabled": bool(args.search_limit),
+            "min_concurrency": args.search_min_concurrency,
+            "max_concurrency": args.search_max_concurrency,
+            "precision": args.search_precision,
+        },
         "request": {
             "question": args.question,
             "questions_file": str(args.questions_file) if args.questions_file else "",
             "source_types": selected_source_types(args),
             "doc_ids": args.doc_id,
             "doc_version": args.doc_version,
+            "include_all_sources": args.include_all_sources,
             "candidate_limit": args.candidate_limit,
             "context_limit": args.context_limit,
         },
@@ -285,13 +353,24 @@ def collect_source_inventory(args: argparse.Namespace) -> dict[str, Any]:
     if args.acl_group:
         headers["X-RAG-ACL-Groups"] = ",".join(args.acl_group)
 
-    try:
-        with urlopen(Request(url, headers=headers, method="GET"), timeout=args.health_timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+    body: dict[str, Any] = {}
+    last_error: Exception | None = None
+    attempts = max(1, int(args.inventory_retries))
+    for attempt in range(attempts):
+        try:
+            with urlopen(Request(url, headers=headers, method="GET"), timeout=args.inventory_timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+            break
+        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(2)
+    else:
+        error = str(last_error or "unknown inventory error")
         return {
             "ok": False,
-            "error": str(exc),
+            "error": error,
+            "warnings": [f"Could not fetch /sources inventory: {error}"],
             "total_sources": 0,
             "in_scope_sources": 0,
             "ready_in_scope_sources": 0,
@@ -314,12 +393,27 @@ def collect_source_inventory(args: argparse.Namespace) -> dict[str, Any]:
             selected_types=selected_types,
             selected_doc_ids=selected_doc_ids,
             doc_version=args.doc_version,
+            include_all_sources=args.include_all_sources,
         )
     ]
     ready_in_scope = [source for source in in_scope if source.get("status") == "ready"]
+    warnings = source_inventory_warnings(
+        sources=sources,
+        in_scope=in_scope,
+        ready_in_scope=ready_in_scope,
+        doc_version=args.doc_version,
+        selected_doc_ids=selected_doc_ids,
+        include_all_sources=args.include_all_sources,
+    )
+    identifiers = (
+        source_identifiers(sources, limit=args.source_identifier_limit)
+        if args.include_source_identifiers
+        else []
+    )
     return {
         "ok": True,
         "error": "",
+        "warnings": warnings,
         "total_sources": len(sources),
         "in_scope_sources": len(in_scope),
         "ready_in_scope_sources": len(ready_in_scope),
@@ -336,8 +430,79 @@ def collect_source_inventory(args: argparse.Namespace) -> dict[str, Any]:
             "source_types": sorted(selected_types),
             "doc_ids": len(selected_doc_ids),
             "doc_version": args.doc_version,
+            "include_all_sources": args.include_all_sources,
         },
+        "identifiers_included": bool(args.include_source_identifiers),
+        "source_identifier_limit": args.source_identifier_limit,
+        "source_identifiers": identifiers,
     }
+
+
+def source_inventory_warnings(
+    *,
+    sources: list[dict[str, Any]],
+    in_scope: list[dict[str, Any]],
+    ready_in_scope: list[dict[str, Any]],
+    doc_version: int | None,
+    selected_doc_ids: set[str],
+    include_all_sources: bool,
+) -> list[str]:
+    warnings: list[str] = []
+    current_sources = [source for source in sources if source.get("current")]
+    if not include_all_sources and sources and not current_sources and doc_version is None:
+        warnings.append(
+            "current_sources=0: --current-only was set, but no visible document is current."
+        )
+    if sources and not in_scope:
+        if selected_doc_ids or doc_version is not None:
+            warnings.append(
+                "in_scope_sources=0: the selected --doc-id/--doc-version/source-type filters match no visible source for this token."
+            )
+        else:
+            warnings.append(
+                "in_scope_sources=0: no visible source matches the default source-type filters. "
+                "Run with --include-source-identifiers to inspect doc_id/doc_version."
+            )
+    elif in_scope and not ready_in_scope:
+        warnings.append(
+            "ready_in_scope_sources=0: matching sources exist but none are ready, so retrieval pressure testing will not exercise ready document chunks."
+        )
+    return warnings
+
+
+def source_identifiers(sources: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    safe_limit = max(0, limit)
+    identifiers: list[dict[str, Any]] = []
+    for source in sources[:safe_limit]:
+        identifiers.append(
+            {
+                "doc_id": str(source.get("doc_id") or ""),
+                "doc_version": source.get("doc_version"),
+                "source_type": str(source.get("source_type") or ""),
+                "status": str(source.get("status") or ""),
+                "current": bool(source.get("current")),
+                "chunk_count": int(source.get("chunk_count") or 0),
+            }
+        )
+    return identifiers
+
+
+def enforce_rag_inventory(inventory: dict[str, Any]) -> None:
+    if not inventory.get("ok"):
+        raise SystemExit(
+            "RAG load test aborted: could not verify /sources inventory. "
+            f"Reason: {inventory.get('error') or 'unknown error'}"
+        )
+    if int(inventory.get("in_scope_sources") or 0) <= 0:
+        raise SystemExit(
+            "RAG load test aborted: in_scope_sources=0, so this run would not exercise RAG retrieval. "
+            "Check that this token can see at least one ready source."
+        )
+    if int(inventory.get("ready_in_scope_sources") or 0) <= 0:
+        raise SystemExit(
+            "RAG load test aborted: ready_in_scope_sources=0, so no ready document can be retrieved. "
+            "Wait for ingestion to finish or choose filters that include at least one ready source."
+        )
 
 
 def source_matches_request(
@@ -346,14 +511,30 @@ def source_matches_request(
     selected_types: set[str],
     selected_doc_ids: set[str],
     doc_version: int | None,
+    include_all_sources: bool,
+) -> bool:
+    if not source_matches_filters(
+        source,
+        selected_types=selected_types,
+        selected_doc_ids=selected_doc_ids,
+    ):
+        return False
+    if doc_version is not None and source.get("doc_version") != doc_version:
+        return False
+    if not include_all_sources and doc_version is None and not source.get("current", False):
+        return False
+    return True
+
+
+def source_matches_filters(
+    source: dict[str, Any],
+    *,
+    selected_types: set[str],
+    selected_doc_ids: set[str],
 ) -> bool:
     if selected_types and source.get("source_type") not in selected_types:
         return False
     if selected_doc_ids and source.get("doc_id") not in selected_doc_ids:
-        return False
-    if doc_version is not None and source.get("doc_version") != doc_version:
-        return False
-    if doc_version is None and not source.get("current", False):
         return False
     return True
 
@@ -387,11 +568,79 @@ def selected_source_types(args: argparse.Namespace) -> list[str]:
     return args.source_type or DEFAULT_SOURCE_TYPES
 
 
-def run_stage(args: argparse.Namespace, *, output_dir: Path, concurrency: int) -> StageResult:
-    requests = min(
-        args.max_requests,
-        max(args.min_requests, concurrency * args.requests_per_concurrency),
+def run_and_print_stage(args: argparse.Namespace, *, output_dir: Path, concurrency: int) -> StageResult:
+    result = run_stage(args, output_dir=output_dir, concurrency=concurrency)
+    status = "usable" if result.usable else "unusable"
+    print(
+        f"concurrency={concurrency} {status} "
+        f"success={result.summary['success']}/{result.summary['requests']} "
+        f"p95={result.summary['latency_ms']['p95']}ms "
+        f"rps={result.summary['throughput_rps']} "
+        f"reasons={'; '.join(result.reasons) or '-'}",
+        flush=True,
     )
+    return result
+
+
+def run_search_limit(args: argparse.Namespace, *, output_dir: Path) -> list[StageResult]:
+    low = max(1, int(args.search_min_concurrency))
+    high_limit = max(low, int(args.search_max_concurrency))
+    precision = max(1, int(args.search_precision))
+    results: list[StageResult] = []
+    tested: dict[int, StageResult] = {}
+
+    def run_once(concurrency: int) -> StageResult:
+        if concurrency in tested:
+            return tested[concurrency]
+        result = run_and_print_stage(args, output_dir=output_dir, concurrency=concurrency)
+        tested[concurrency] = result
+        results.append(result)
+        return result
+
+    print("Search phase: exponential probe", flush=True)
+    first = run_once(low)
+    if not first.usable:
+        return results
+
+    best_good = low
+    first_bad: int | None = None
+    current = low
+    while current < high_limit:
+        current = min(high_limit, current * 2)
+        result = run_once(current)
+        if result.usable:
+            best_good = current
+            if current == high_limit:
+                return results
+            continue
+        first_bad = current
+        break
+
+    if first_bad is None:
+        return results
+
+    print(
+        f"Search phase: binary search between usable={best_good} and unusable={first_bad}",
+        flush=True,
+    )
+    while first_bad - best_good > precision:
+        midpoint = (best_good + first_bad) // 2
+        if midpoint in (best_good, first_bad):
+            break
+        result = run_once(midpoint)
+        if result.usable:
+            best_good = midpoint
+        else:
+            first_bad = midpoint
+    print(
+        f"Approximate concurrency limit: highest usable={best_good}, first unusable={first_bad}",
+        flush=True,
+    )
+    return results
+
+
+def run_stage(args: argparse.Namespace, *, output_dir: Path, concurrency: int) -> StageResult:
+    requests = request_count(args, concurrency)
     json_path = output_dir / f"concurrency-{concurrency}.json"
     stdout_path = output_dir / f"concurrency-{concurrency}.stdout"
     stderr_path = output_dir / f"concurrency-{concurrency}.stderr"
@@ -401,7 +650,7 @@ def run_stage(args: argparse.Namespace, *, output_dir: Path, concurrency: int) -
         requests=requests,
         json_path=json_path,
     )
-    print(f"Running: {' '.join(shlex.quote(part) for part in command)}")
+    print(f"Running: {' '.join(shlex.quote(part) for part in command)}", flush=True)
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
         completed = subprocess.run(
             command,
@@ -479,6 +728,8 @@ def stage_command(
         command.extend(["--questions-file", str(args.questions_file)])
     if args.doc_version is not None:
         command.extend(["--doc-version", str(args.doc_version)])
+    if args.include_all_sources:
+        command.append("--include-all-sources")
     for source_type in selected_source_types(args):
         command.extend(["--source-type", source_type])
     for doc_id in args.doc_id:
@@ -552,7 +803,7 @@ def render_report(
             "",
             "## Method",
             "",
-            "This test ramps concurrency until the configured levels are exhausted or an unusable level is reached.",
+            method_description(metadata),
             "A level is considered usable only when all configured thresholds pass.",
             "",
             "Thresholds:",
@@ -691,6 +942,15 @@ def render_inventory_section(inventory: dict[str, Any]) -> list[str]:
             f"| Chunks matching filters | {inventory['in_scope_chunks']} |",
             f"| Ready chunks matching filters | {inventory['ready_in_scope_chunks']} |",
             "",
+        ]
+    )
+    warnings = inventory.get("warnings") or []
+    if warnings:
+        lines.extend(["Warnings:", ""])
+        lines.extend(f"- {warning}" for warning in warnings)
+        lines.append("")
+    lines.extend(
+        [
             "By source type:",
             "",
             "| Source type | Visible sources | In-scope sources |",
@@ -739,10 +999,65 @@ def render_inventory_section(inventory: dict[str, Any]) -> list[str]:
             f"- Source types: `{', '.join(filters.get('source_types') or [])}`",
             f"- Explicit doc id count: `{filters.get('doc_ids', 0)}`",
             f"- Doc version: `{filters.get('doc_version')}`",
+            f"- Include all visible sources: `{filters.get('include_all_sources')}`",
             "",
         ]
     )
+    identifiers = inventory.get("source_identifiers") or []
+    if identifiers:
+        lines.extend(
+            [
+                "Source identifiers:",
+                "",
+                "| doc_id | doc_version | source_type | status | current | chunks |",
+                "| --- | ---: | --- | --- | --- | ---: |",
+            ]
+        )
+        for item in identifiers:
+            lines.append(
+                "| "
+                f"`{markdown_cell(item.get('doc_id') or '')}` | "
+                f"{item.get('doc_version')} | "
+                f"{markdown_cell(item.get('source_type') or '')} | "
+                f"{markdown_cell(item.get('status') or '')} | "
+                f"{item.get('current')} | "
+                f"{item.get('chunk_count')} |"
+            )
+        limit = inventory.get("source_identifier_limit")
+        total = inventory.get("total_sources")
+        lines.extend(
+            [
+                "",
+                f"Only the first `{limit}` of `{total}` visible sources are listed.",
+                "",
+            ]
+        )
+    elif inventory.get("identifiers_included"):
+        lines.extend(["Source identifiers were requested, but no visible sources were returned.", ""])
+    else:
+        lines.extend(
+            [
+                "Doc identifiers are omitted by default. Re-run with `--include-source-identifiers` to include a limited doc_id/doc_version table in the report.",
+                "",
+            ]
+        )
     return lines
+
+
+def method_description(metadata: dict[str, Any]) -> str:
+    search = metadata.get("search") or {}
+    if search.get("enabled"):
+        return (
+            "This test first probes concurrency exponentially, then binary-searches the "
+            f"usable/unusable boundary up to `{search.get('max_concurrency')}` "
+            f"with precision `{search.get('precision')}`."
+        )
+    return "This test ramps concurrency through the configured levels."
+
+
+def markdown_cell(value: object) -> str:
+    text = str(value)
+    return text.replace("|", "\\|").replace("\n", " ")
 
 
 def metric(payload: dict[str, Any], key: str) -> float:
@@ -768,12 +1083,79 @@ def best_usable_payload(results: list[StageResult]) -> dict[str, Any] | None:
     }
 
 
+def first_unusable(results: list[StageResult]) -> StageResult | None:
+    return next((result for result in sorted(results, key=lambda item: item.concurrency) if not result.usable), None)
+
+
+def limit_summary_payload(results: list[StageResult]) -> dict[str, Any]:
+    best = best_usable(results)
+    bad = first_unusable(results)
+    return {
+        "highest_usable_concurrency": best.concurrency if best else None,
+        "first_unusable_concurrency": bad.concurrency if bad else None,
+        "limit_reached": bad is not None,
+        "highest_tested_concurrency": max((result.concurrency for result in results), default=None),
+    }
+
+
+def print_final_summary(results: list[StageResult], *, search_limit: bool) -> None:
+    best = best_usable(results)
+    bad = first_unusable(results)
+    print("Final load-test result:", flush=True)
+    if best is None:
+        print("- Highest usable concurrency: none", flush=True)
+        if bad is not None:
+            print(f"- First unusable concurrency: {bad.concurrency}", flush=True)
+            print(f"- Reasons: {'; '.join(bad.reasons) or '-'}", flush=True)
+        return
+
+    print(f"- Highest usable concurrency: {best.concurrency}", flush=True)
+    print(f"- At that level: requests={best.summary.get('requests')}, success={best.summary.get('success')}, failed={best.summary.get('failed')}", flush=True)
+    print(f"- P95 latency: {(best.summary.get('latency_ms') or {}).get('p95')} ms", flush=True)
+    print(f"- Throughput: {best.summary.get('throughput_rps')} rps", flush=True)
+    print(f"- Citations avg: {(best.summary.get('citations') or {}).get('avg')}", flush=True)
+    if bad is not None:
+        print(f"- First unusable concurrency: {bad.concurrency}", flush=True)
+        print(f"- Approximate limit: {best.concurrency} usable, {bad.concurrency} unusable", flush=True)
+    elif search_limit:
+        print("- First unusable concurrency: not found in configured search range", flush=True)
+        print(f"- Approximate limit: >= {best.concurrency}", flush=True)
+
+
 def print_dry_run(args: argparse.Namespace, *, output_dir: Path, levels: list[int]) -> None:
-    print(f"Output directory: {output_dir}")
+    print(f"Output directory: {output_dir}", flush=True)
+    if args.search_limit:
+        print(
+            "Adaptive search mode: exponential probing followed by binary search. "
+            "Binary-search commands depend on previous pass/fail results.",
+            flush=True,
+        )
+        levels = exponential_probe_preview(
+            min_concurrency=args.search_min_concurrency,
+            max_concurrency=args.search_max_concurrency,
+        )
     for level in levels:
-        requests = min(args.max_requests, max(args.min_requests, level * args.requests_per_concurrency))
+        requests = request_count(args, level)
         command = stage_command(args, concurrency=level, requests=requests, json_path=output_dir / f"concurrency-{level}.json")
-        print(" ".join(shlex.quote(part) for part in command))
+        print(" ".join(shlex.quote(part) for part in command), flush=True)
+
+
+def request_count(args: argparse.Namespace, concurrency: int) -> int:
+    requests = max(args.min_requests, concurrency * args.requests_per_concurrency)
+    if args.max_requests and args.max_requests > 0:
+        return min(args.max_requests, requests)
+    return requests
+
+
+def exponential_probe_preview(*, min_concurrency: int, max_concurrency: int) -> list[int]:
+    low = max(1, int(min_concurrency))
+    high = max(low, int(max_concurrency))
+    levels = [low]
+    current = low
+    while current < high:
+        current = min(high, current * 2)
+        levels.append(current)
+    return levels
 
 
 def run_command(command: list[str], *, cwd: Path) -> str:

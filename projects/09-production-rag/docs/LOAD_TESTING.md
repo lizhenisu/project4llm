@@ -1,174 +1,94 @@
-# Production RAG Load Testing
+# Production RAG Pressure Test
 
-This project has two load-test modes:
-
-- **mock external API mode**: test the RAG service, Milvus, streaming events, and UI-facing behavior with controllable LLM / embedding / rerank latency.
-- **real external API mode**: run a small number of end-to-end requests against the real model providers to validate timeout, rate-limit, and user-visible behavior.
-
-Use mock mode for normal pressure testing. Use real mode only with low concurrency because external model APIs add cost, provider-side rate limits, and network noise.
-
-## 1. Start The Mock External API
-
-From the repository root:
+Run one command from the repository root:
 
 ```bash
-source .venv/bin/activate
-cd projects/09-production-rag
-uvicorn tests.load.mock_external_api:app --host 127.0.0.1 --port 18080
+projects/09-production-rag/scripts/deploy_and_load_test_2c2g.sh \
+  --min-concurrency 1 \
+  --max-concurrency 64 \
+  --include-source-identifiers
 ```
 
-Useful knobs:
+This command deploys the project in production-container mode, replaces external LLM / embedding / rerank calls with local mock services, tests the machine's RAG serving capacity, prints the final limit in the terminal, writes a report, and then stops the test containers.
 
-```bash
-MOCK_LLM_LATENCY_MS=1200
-MOCK_EMBEDDING_LATENCY_MS=200
-MOCK_RERANK_LATENCY_MS=500
-MOCK_LLM_ERROR_RATE=0.01
-MOCK_EMBEDDING_ERROR_RATE=0.01
-MOCK_RERANK_ERROR_RATE=0.01
-MOCK_EMBEDDING_DIM=1024
-```
+The only script options are:
 
-## 2. Start The Backend Against The Mock API
+- `--min-concurrency N`: lowest concurrency to start from. Default: `1`.
+- `--max-concurrency N`: highest concurrency to search up to. Default: `64`.
+- `--include-source-identifiers`: include limited `doc_id` / `doc_version` details in the report for debugging. Do not commit reports containing identifiers.
 
-Use the normal development backend, but point external calls to the mock service:
+## Method
 
-```bash
-source ../../.venv/bin/activate
-NEW_API_URL=http://127.0.0.1:18080/v1 \
-NEW_API_KEY=mock-key \
-SILICONFLOW_URL=http://127.0.0.1:18080 \
-SILICONFLOW_API_KEY=mock-key \
-uvicorn serve:app --host 0.0.0.0 --port 8008
-```
+The test only measures the RAG query path. Before pressure testing, the script checks `/sources` with the test token and aborts if no ready document can be retrieved.
 
-For stable load-test measurements, avoid `--reload`.
+By default the load test uses all visible ready documents for the test user, not only documents marked current. If the user can see 20 ready PDFs, the RAG request is allowed to retrieve from all 20.
 
-## 3. Run Query Load
+The test uses adaptive concurrency search:
 
-Direct LLM mode, without retrieval:
+1. Probe upward by doubling concurrency: `1, 2, 4, 8...`.
+2. Stop when the first unusable level appears or `--max-concurrency` is reached.
+3. Binary-search between the last usable level and the first unusable level.
+4. Print the approximate highest usable concurrency.
 
-```bash
-python tests/load/rag_query_load.py \
-  --base-url http://127.0.0.1:8008 \
-  --token production-rag-fixed-test-login-token \
-  --external-mode mock \
-  --concurrency 5 \
-  --requests 50 \
-  --question "总结这些资料的核心内容"
-```
-
-RAG retrieval mode requires selecting documents by doc id, source type, or doc version. Without a document filter, the backend intentionally uses direct LLM chat mode.
-
-```bash
-python tests/load/rag_query_load.py \
-  --base-url http://127.0.0.1:8008 \
-  --token production-rag-fixed-test-login-token \
-  --external-mode mock \
-  --concurrency 5 \
-  --requests 50 \
-  --source-type pdf \
-  --question "总结这些资料的核心内容"
-```
-
-The summary includes:
-
-- `latency_ms`: end-to-end `/query/stream` latency.
-- `first_event_ms`: time until the first NDJSON event arrives.
-- `stage_latency_ms`: backend-reported stage latency.
-- `external_latency_ms.llm`: query rewrite plus final answer generation.
-- `external_latency_ms.embedding`: text/image embedding stage latency.
-- `external_latency_ms.rerank`: rerank stage latency.
-- `unattributed_ms`: total latency minus reported stage latency, useful for queueing, HTTP overhead, and missing instrumentation.
-
-## 4. Real External API Sanity Check
-
-Keep this small:
-
-```bash
-python tests/load/rag_query_load.py \
-  --base-url http://127.0.0.1:8008 \
-  --token production-rag-fixed-test-login-token \
-  --external-mode real \
-  --concurrency 1 \
-  --requests 5 \
-  --question "总结这些资料的核心内容"
-```
-
-Then try concurrency `2` and `3` if provider limits and cost allow it. Do not use the real provider for high-concurrency pressure tests.
-
-## 5. Deployed 2C2G Limit Test
-
-When the project is already deployed with containers on a real 2-core / 2GB server, run the limit test script from the repository root:
-
-```bash
-source .venv/bin/activate
-export RAG_LOAD_TEST_TOKEN="production-rag-fixed-test-login-token"
-
-projects/09-production-rag/scripts/run_2c2g_load_test.sh \
-  --base-url http://127.0.0.1:8008 \
-  --question "总结这些资料的核心内容"
-```
-
-The script ramps through concurrency levels instead of doing a tiny smoke check. Defaults:
+Each concurrency level sends:
 
 ```text
-1, 2, 4, 8, 16, 32, 64
+requests = max(20, concurrency * 5)
 ```
 
-For each level it runs:
+There is no default request cap. This keeps the target concurrency meaningful. For example, concurrency `10000` sends `50000` requests.
+
+## Pass Criteria
+
+A concurrency level is usable only when all checks pass:
 
 ```text
-max(20, concurrency * 5) requests, capped at 320 requests
+failure_rate <= 1%
+p95_latency_ms <= 30000
+first_event_p95_ms <= 5000
+citations_avg > 0
 ```
 
-A level is considered usable only when:
+The citation check is required so the test cannot accidentally measure direct chat or an empty knowledge base and call it RAG pressure testing.
 
-- failure rate is at most `1%`
-- P95 request latency is at most `30000 ms`
-- P95 first event latency is at most `5000 ms`
-- average citation count is greater than `0`
+## Metrics
 
-The citation requirement is intentional: it avoids accidentally measuring direct chat mode or an empty knowledge base while calling it a RAG pressure test.
+The final terminal output reports:
 
-Before ramping concurrency, the script calls `/sources` with the same token and records the visible data scale:
+- `Highest usable concurrency`: highest concurrency level that passed all checks.
+- `First unusable concurrency`: first concurrency level that failed, if found.
+- `P95 latency`: 95% of requests completed within this latency.
+- `Throughput`: completed requests per second.
+- `Citations avg`: average number of citations returned per request.
+- `Report`: Markdown report path.
+- `Summary JSON`: machine-readable result path.
 
-- total visible sources and chunks
-- visible sources by `source_type`, such as `pdf`, `txt`, `md`
-- visible sources by status, such as `ready`, `processing`, `failed`
-- how many sources/chunks match the current `source_type`, `doc_id`, and `doc_version` filters
-
-Only counts are written to the report. Source titles and filenames are intentionally omitted.
-
-To push harder:
-
-```bash
-projects/09-production-rag/scripts/run_2c2g_load_test.sh \
-  --base-url http://127.0.0.1:8008 \
-  --concurrency-levels 1,2,4,8,16,32,64,96,128 \
-  --requests-per-concurrency 8 \
-  --max-requests 512 \
-  --max-p95-ms 45000
-```
-
-To target specific documents:
-
-```bash
-projects/09-production-rag/scripts/run_2c2g_load_test.sh \
-  --base-url http://127.0.0.1:8008 \
-  --doc-id "your-doc-id"
-```
-
-By default, the script uses common text/document source types:
+Metric formulas:
 
 ```text
-pdf, txt, md, html, table, csv, tsv
+success_rate = success / requests
+failure_rate = failed / requests
+throughput_rps = success / wall_time_seconds
+latency_ms = request_end_time - request_start_time
+p95_latency_ms = 95th percentile of latency_ms
+first_event_ms = first_stream_event_time - request_start_time
+first_event_p95_ms = 95th percentile of first_event_ms
+citations_avg = total_citations / successful_requests
 ```
 
-Raw JSON, stdout/stderr per stage, and the Markdown report are written to:
+## Output
+
+Results are written to:
 
 ```text
 projects/09-production-rag/docs/load-tests/production-limit-YYYYMMDD-HHMMSS/
 ```
 
-Use `--dry-run` to inspect the exact commands before starting the test.
+The directory contains:
+
+- `report.md`: human-readable report.
+- `summary.json`: machine-readable summary.
+- `concurrency-*.json`: result for each tested concurrency level.
+- `concurrency-*.stdout` and `concurrency-*.stderr`: raw runner logs for each level.
+
+The report directory is runtime output. Do not commit it if it contains source identifiers, filenames, or other user-private data.

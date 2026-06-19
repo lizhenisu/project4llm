@@ -77,6 +77,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--doc-version", type=int)
     parser.add_argument("--doc-id", action="append", default=[])
     parser.add_argument("--source-type", action="append", default=[])
+    parser.add_argument(
+        "--include-all-sources",
+        action="store_true",
+        help="Exercise all visible ready sources instead of only current documents.",
+    )
     parser.add_argument("--history", action="append", default=[])
     parser.add_argument(
         "--query-mode",
@@ -182,6 +187,7 @@ def send_stream_request(
         "doc_version": args.doc_version,
         "doc_ids": args.doc_id,
         "source_types": args.source_type,
+        "include_all_sources": args.include_all_sources,
         "candidate_limit": args.candidate_limit,
         "context_limit": args.context_limit,
         "request_id": request_id,

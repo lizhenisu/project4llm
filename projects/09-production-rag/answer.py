@@ -31,12 +31,13 @@ def answer_query(
     doc_version: int | None = None,
     doc_ids: list[str] | None = None,
     source_types: list[str] | None = None,
+    include_all_sources: bool = False,
     history: list[str] | None = None,
     request_id: str | None = None,
     stage_callback: StageCallback | None = None,
 ) -> AnswerResult:
     config = load_config()
-    has_doc_filter = bool(doc_ids or source_types or doc_version)
+    has_doc_filter = bool(doc_ids or source_types or doc_version or include_all_sources)
     if not has_doc_filter:
         # Pure LLM chat mode — no Milvus retrieval
         return answer_query_without_retrieval(
@@ -54,6 +55,7 @@ def answer_query(
         doc_version=doc_version,
         doc_ids=doc_ids,
         source_types=source_types,
+        include_all_sources=include_all_sources,
         history=history,
         request_id=request_id,
         stage_callback=stage_callback,

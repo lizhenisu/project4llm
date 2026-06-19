@@ -88,6 +88,7 @@ class QueryRequest(BaseModel):
     doc_version: int | None = None
     doc_ids: list[str] = Field(default_factory=list)
     source_types: list[str] = Field(default_factory=list)
+    include_all_sources: bool = False
     candidate_limit: int = Field(default=20, ge=1, le=100)
     context_limit: int = Field(default=5, ge=1, le=20)
     request_id: str | None = None
@@ -1510,6 +1511,7 @@ def resolve_search_result(request: SearchRequest, auth_context):
             doc_version=request.doc_version,
             doc_ids=request.doc_ids or None,
             source_types=request.source_types or None,
+            include_all_sources=request.include_all_sources,
             history=request.history,
             request_id=request.request_id,
         )
@@ -1522,6 +1524,7 @@ def resolve_search_result(request: SearchRequest, auth_context):
         doc_version=request.doc_version,
         doc_ids=request.doc_ids or None,
         source_types=request.source_types or None,
+        include_all_sources=request.include_all_sources,
         history=request.history,
         request_id=request.request_id,
     )
@@ -1541,6 +1544,7 @@ def resolve_answer_result(request: QueryRequest, auth_context, stage_callback=No
             doc_version=request.doc_version,
             doc_ids=request.doc_ids or None,
             source_types=request.source_types or None,
+            include_all_sources=request.include_all_sources,
             history=request.history,
             request_id=request.request_id,
             answer_query=request.query,
@@ -1555,6 +1559,7 @@ def resolve_answer_result(request: QueryRequest, auth_context, stage_callback=No
         doc_version=request.doc_version,
         doc_ids=request.doc_ids or None,
         source_types=request.source_types or None,
+        include_all_sources=request.include_all_sources,
         history=request.history,
         request_id=request.request_id,
         stage_callback=stage_callback,

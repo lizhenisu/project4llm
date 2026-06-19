@@ -33,7 +33,7 @@ def create_app() -> FastAPI:
     @app.post("/v1/chat/completions")
     def chat_completions(payload: dict[str, Any]) -> dict[str, Any]:
         maybe_fail("MOCK_LLM_ERROR_RATE")
-        sleep_ms(env_int("MOCK_LLM_LATENCY_MS", 800))
+        sleep_ms(env_int("MOCK_LLM_LATENCY_MS", 10000))
         content = mock_chat_content(payload)
         prompt_tokens = count_prompt_tokens(payload.get("messages", []))
         completion_tokens = max(8, min(env_int("MOCK_LLM_COMPLETION_TOKENS", 128), 2048))
@@ -63,6 +63,7 @@ def create_app() -> FastAPI:
         sleep_ms(env_int("MOCK_EMBEDDING_LATENCY_MS", 120))
         inputs = normalize_inputs(payload.get("input", []))
         dim = int(payload.get("dimensions") or env_int("MOCK_EMBEDDING_DIM", 1024))
+        embedding_mode = os.environ.get("MOCK_EMBEDDING_MODE", "random").lower()
         return {
             "object": "list",
             "model": payload.get("model") or "mock-embedding",
@@ -70,7 +71,7 @@ def create_app() -> FastAPI:
                 {
                     "object": "embedding",
                     "index": index,
-                    "embedding": deterministic_vector(input_item, dim=dim),
+                    "embedding": mock_embedding(input_item, dim=dim, mode=embedding_mode),
                 }
                 for index, input_item in enumerate(inputs)
             ],
@@ -85,14 +86,8 @@ def create_app() -> FastAPI:
         documents = list(payload.get("documents") or [])
         top_n = int(payload.get("top_n") or len(documents))
         query = str(payload.get("query") or "")
-        scored = [
-            {
-                "index": index,
-                "relevance_score": relevance_score(query, str(document), index),
-            }
-            for index, document in enumerate(documents)
-        ]
-        scored.sort(key=lambda item: item["relevance_score"], reverse=True)
+        rerank_mode = os.environ.get("MOCK_RERANK_MODE", "identity").lower()
+        scored = mock_rerank_results(query, documents, mode=rerank_mode)
         return {
             "id": "mock-rerank",
             "results": scored[:top_n],
@@ -120,10 +115,13 @@ def normalize_inputs(raw_input: Any) -> list[Any]:
 
 
 def mock_chat_content(payload: dict[str, Any]) -> str:
+    mode = os.environ.get("MOCK_LLM_MODE", "echo").lower()
     messages = payload.get("messages") or []
     user_text = ""
     if messages:
         user_text = str(messages[-1].get("content") or "")
+    if mode == "echo":
+        return extract_original_query(user_text) or user_text
     max_tokens = int(payload.get("max_tokens") or env_int("MOCK_LLM_COMPLETION_TOKENS", 128))
     if max_tokens <= 64:
         return user_text[:160] or "mock rewritten query"
@@ -131,6 +129,33 @@ def mock_chat_content(payload: dict[str, Any]) -> str:
         "这是 mock 外部大模型返回的压测回答。"
         "它用于稳定测量 Production RAG 的并发、流式事件和检索链路。"
     )
+
+
+def extract_original_query(prompt: str) -> str:
+    for marker, end_marker in (
+        ("当前问题:\n", None),
+        ("问题:\n", "\n\n当前系统日期:"),
+    ):
+        start = prompt.rfind(marker)
+        if start < 0:
+            continue
+        value = prompt[start + len(marker) :]
+        if end_marker and end_marker in value:
+            value = value.split(end_marker, 1)[0]
+        return value.strip()
+    return prompt.strip()
+
+
+def mock_embedding(value: Any, *, dim: int, mode: str) -> list[float]:
+    if mode == "hash":
+        return deterministic_vector(value, dim=dim)
+    if mode == "zero":
+        return [0.0] * dim
+    return random_vector(dim=dim)
+
+
+def random_vector(*, dim: int) -> list[float]:
+    return [round(random.uniform(-1.0, 1.0), 6) for _index in range(dim)]
 
 
 def deterministic_vector(value: Any, *, dim: int) -> list[float]:
@@ -141,6 +166,26 @@ def deterministic_vector(value: Any, *, dim: int) -> list[float]:
         byte = digest[index % len(digest)]
         vector.append(round((byte / 255.0) * 2 - 1, 6))
     return vector
+
+
+def mock_rerank_results(query: str, documents: list[Any], *, mode: str) -> list[dict[str, float | int]]:
+    if mode == "lexical":
+        scored = [
+            {
+                "index": index,
+                "relevance_score": relevance_score(query, str(document), index),
+            }
+            for index, document in enumerate(documents)
+        ]
+        scored.sort(key=lambda item: item["relevance_score"], reverse=True)
+        return scored
+    return [
+        {
+            "index": index,
+            "relevance_score": round(1.0 - (index * 0.000001), 6),
+        }
+        for index, _document in enumerate(documents)
+    ]
 
 
 def relevance_score(query: str, document: str, index: int) -> float:

@@ -59,6 +59,13 @@ services:
       RAG_QUERY_REWRITE_HISTORY_TURNS: "6"
       RAG_QUERY_REWRITE_MAX_TOKENS: "256"
       RAG_ANSWER_BACKEND: ${RAG_ANSWER_BACKEND:-llm}
+      NEW_API_URL: ${NEW_API_URL:-}
+      NEW_API_KEY: ${NEW_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gemini-3-flash-preview}
+      SILICONFLOW_URL: ${SILICONFLOW_URL:-https://api.siliconflow.cn}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
+      RAG_EMBEDDING_BACKEND: ${RAG_EMBEDDING_BACKEND:-siliconflow}
+      RAG_RERANK_BACKEND: ${RAG_RERANK_BACKEND:-siliconflow}
     ports:
       - "8008:8008"
     volumes:
@@ -84,6 +91,30 @@ services:
     depends_on:
       rag-api:
         condition: service_healthy
+
+  rag-mock-external-api:
+    build:
+      context: ../..
+      dockerfile: projects/09-production-rag/Dockerfile
+    container_name: rag-mock-external-api
+    profiles: ["load-test"]
+    command: ["uvicorn", "tests.load.mock_external_api:app", "--host", "0.0.0.0", "--port", "18080"]
+    environment:
+      MOCK_LLM_LATENCY_MS: ${MOCK_LLM_LATENCY_MS:-10000}
+      MOCK_LLM_MODE: ${MOCK_LLM_MODE:-echo}
+      MOCK_EMBEDDING_LATENCY_MS: ${MOCK_EMBEDDING_LATENCY_MS:-120}
+      MOCK_EMBEDDING_MODE: ${MOCK_EMBEDDING_MODE:-random}
+      MOCK_EMBEDDING_DIM: ${MOCK_EMBEDDING_DIM:-1024}
+      MOCK_RERANK_LATENCY_MS: ${MOCK_RERANK_LATENCY_MS:-180}
+      MOCK_RERANK_MODE: ${MOCK_RERANK_MODE:-identity}
+    ports:
+      - "18080:18080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18080/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   rag-ingest:
     build:
