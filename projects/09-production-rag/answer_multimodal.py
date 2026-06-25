@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
 
 from rag_core.answering import generate_answer
 from rag_core.config import load_config
+from rag_core.io import PdfImageCaptioner, detect_text_language
 from rag_core.pipeline import StageCallback, emit_stage
 from rag_core.types import SearchHit, TraceInfo
 from search_multimodal import retrieve_multimodal
@@ -57,6 +59,16 @@ def answer_multimodal_query(
         stage_callback=stage_callback,
     )
     config = load_config()
+    final_answer_query = answer_query or resolved_text_query or retrieval.trace.rewritten_query
+    query_image_caption = describe_query_image_for_answer(
+        image_query_path=image_query_path,
+        query=final_answer_query,
+    )
+    if query_image_caption:
+        final_answer_query = multimodal_answer_query_with_image_description(
+            query=final_answer_query,
+            image_description=query_image_caption,
+        )
     emit_stage(
         stage_callback,
         "answer",
@@ -66,7 +78,7 @@ def answer_multimodal_query(
     )
     generation = generate_answer(
         config,
-        multimodal_answer_query(answer_query or resolved_text_query or retrieval.trace.rewritten_query),
+        multimodal_answer_query(final_answer_query),
         retrieval.hits,
     )
     emit_stage(
@@ -95,6 +107,27 @@ def multimodal_answer_query(query: str) -> str:
         "下面的证据是与该图片或问题最相关的相似图片/文档片段。"
         "请基于证据回答用户，不要说你无法查看图片；如果证据不足，就说明相似图片证据不足。"
         f"\n\n用户问题: {query}"
+    )
+
+
+def multimodal_answer_query_with_image_description(*, query: str, image_description: str) -> str:
+    return (
+        f"{query}\n\n"
+        "用户上传图片的文字化描述:\n"
+        f"{image_description}"
+    )
+
+
+def describe_query_image_for_answer(*, image_query_path: str | None, query: str) -> str:
+    if not image_query_path:
+        return ""
+    captioner = PdfImageCaptioner.from_query_env()
+    if captioner is None:
+        return ""
+    return captioner.caption_image_path(
+        Path(image_query_path),
+        query=query,
+        language_hint=detect_text_language(query),
     )
 
 

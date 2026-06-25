@@ -957,7 +957,7 @@ release_gate.py
 | `NEW_API_URL` | — | OpenAI 兼容端点 |
 | `NEW_API_KEY` | — | OpenAI 兼容 Key |
 | `SILICONFLOW_URL` | `https://api.siliconflow.cn` | SiliconFlow 嵌入/重排/视觉描述端点 |
-| `SILICONFLOW_API_KEY` | — | SiliconFlow 嵌入、重排、PDF 图片描述 Key |
+| `SILICONFLOW_API_KEY` | — | SiliconFlow 嵌入、重排、PDF/用户提问图片描述 Key |
 
 #### 嵌入配置
 
@@ -1017,6 +1017,8 @@ release_gate.py
 | `RAG_PDF_IMAGE_CAPTION_BACKEND` | `siliconflow` | 图片描述后端 |
 | `RAG_PDF_IMAGE_CAPTION_MODEL` | `Qwen/Qwen3-VL-8B-Instruct` | 视觉描述模型 |
 | `RAG_PDF_CAPTION_MAX_IMAGES` | `24` | 每 PDF 最多描述图片数 |
+| `RAG_QUERY_IMAGE_CAPTION_BACKEND` | `siliconflow` | 用户提问图片描述后端 |
+| `RAG_QUERY_IMAGE_CAPTION_MODEL` | `Qwen/Qwen3-VL-8B-Instruct` | 用户提问图片描述模型 |
 | `RAG_PII_POLICY` | `warn` | PII 策略 (warn/redact/fail) |
 
 ### 17.2 SiliconFlow API 端点
