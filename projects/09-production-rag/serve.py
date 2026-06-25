@@ -40,16 +40,15 @@ from rag_core.conversations import (
     save_conversation,
 )
 from rag_core.events import append_event, hit_event_summaries
+from rag_core.ingestion_jobs import submit_upload_ingestion_job
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.readiness import readiness_report
 from rag_core.sources import (
     create_source_task,
     delete_source,
-    delete_source_task,
     fail_source_task,
     get_source,
     get_source_content,
-    ingest_uploaded_path,
     list_sources,
     rename_source,
     resolve_metadata_display_block_urls,
@@ -631,7 +630,6 @@ def create_app():
 
     @app.post("/sources/upload", response_model=SourceUploadResponse)
     def upload_source(
-        background_tasks: BackgroundTasks,
         file: UploadFile = File(...),
         tenant_id: str = Form("team_a"),
         acl_groups: str = Form("engineering"),
@@ -665,15 +663,22 @@ def create_app():
                 acl_groups=auth_context.acl_groups or body_acl_groups or ["engineering"],
                 doc_version=doc_version,
             )
-            background_tasks.add_task(
-                ingest_upload_background,
-                pending_source,
-                saved_path,
-                auth_context.tenant_id,
-                auth_context.acl_groups or body_acl_groups or ["engineering"],
-                doc_version,
-                language,
+            accepted = submit_upload_ingestion_job(
+                pending_source=pending_source,
+                saved_path=saved_path,
+                tenant_id=auth_context.tenant_id,
+                acl_groups=auth_context.acl_groups or body_acl_groups or ["engineering"],
+                doc_version=doc_version,
+                language=language,
             )
+            if not accepted:
+                fail_source_task(
+                    config=config,
+                    tenant_id=auth_context.tenant_id,
+                    source=pending_source,
+                    error="Ingestion queue is full. Please retry later.",
+                )
+                raise HTTPException(status_code=503, detail="Ingestion queue is full. Please retry later.")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return SourceUploadResponse(
@@ -1405,29 +1410,6 @@ def build_table_background(artifact: MindMapArtifact) -> None:
         )
     except Exception as exc:
         fail_metadata_artifact(config, artifact, str(exc))
-
-
-def ingest_upload_background(
-    pending_source,
-    saved_path,
-    tenant_id: str,
-    acl_groups: list[str],
-    doc_version: int | None,
-    language: str,
-) -> None:
-    config = load_config()
-    try:
-        ingest_uploaded_path(
-            config=config,
-            path=saved_path,
-            tenant_id=tenant_id,
-            acl_groups=acl_groups,
-            doc_version=doc_version,
-            language=language,
-        )
-        delete_source_task(config=config, tenant_id=tenant_id, task_id=pending_source.doc_id)
-    except Exception as exc:
-        fail_source_task(config=config, tenant_id=tenant_id, source=pending_source, error=str(exc))
 
 
 def migrate_legacy_artifacts(config, *, tenant_id: str) -> None:
