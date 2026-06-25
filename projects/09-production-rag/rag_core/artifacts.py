@@ -19,6 +19,7 @@ from rag_core.prompts import (
     build_partial_mindmap_prompt,
 )
 from rag_core.database import connect_metadata_db
+from rag_core.model_api_retry import call_model_api_with_retries
 from rag_core.object_store import load_archived_source_documents
 from rag_core.text_utils import now_ms
 
@@ -475,13 +476,16 @@ def call_json_llm(*, config: RagConfig, system_prompt: str, user_prompt: str) ->
     from openai import OpenAI
 
     client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
-    response = client.chat.completions.create(
-        model=config.llm_model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.2,
+    response = call_model_api_with_retries(
+        "artifact_json_generation",
+        lambda: client.chat.completions.create(
+            model=config.llm_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        ),
     )
     content = response.choices[0].message.content or ""
     return parse_mindmap_json(content)

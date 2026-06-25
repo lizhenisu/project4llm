@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from rag_core.config import RagConfig, _resolve_model_path
+from rag_core.model_api_retry import call_model_api_with_retries
 
 
 class EmbeddingModel(Protocol):
@@ -440,6 +441,13 @@ def siliconflow_url(base_url: str, path: str) -> str:
 
 
 def post_json(url: str, *, api_key: str, payload: dict) -> dict:
+    return call_model_api_with_retries(
+        "siliconflow_post_json",
+        lambda: post_json_once(url, api_key=api_key, payload=payload),
+    )
+
+
+def post_json_once(url: str, *, api_key: str, payload: dict) -> dict:
     body = json.dumps(payload).encode("utf-8")
     request = Request(
         url,

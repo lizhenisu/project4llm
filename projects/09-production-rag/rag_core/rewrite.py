@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from rag_core.config import RagConfig
+from rag_core.model_api_retry import call_model_api_with_retries
 from rag_core.prompts import QUERY_REWRITE_SYSTEM_PROMPT, build_query_rewrite_prompt
 from rag_core.text_utils import normalize_text
 from rag_core.types import RewriteResult
@@ -37,23 +38,26 @@ def llm_rewrite(query: str, history: list[str], source_summaries: list[str], con
     history_text = "\n".join(selected_history)
     source_summary_text = "\n".join(source_summaries[:20])
     client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
-    response = client.chat.completions.create(
-        model=config.llm_model,
-        messages=[
-            {
-                "role": "system",
-                "content": QUERY_REWRITE_SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": build_query_rewrite_prompt(
-                    source_summary_text=source_summary_text,
-                    history_text=history_text,
-                    query=query,
-                ),
-            },
-        ],
-        max_tokens=max(1, config.query_rewrite_max_tokens),
+    response = call_model_api_with_retries(
+        "query_rewrite",
+        lambda: client.chat.completions.create(
+            model=config.llm_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": QUERY_REWRITE_SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": build_query_rewrite_prompt(
+                        source_summary_text=source_summary_text,
+                        history_text=history_text,
+                        query=query,
+                    ),
+                },
+            ],
+            max_tokens=max(1, config.query_rewrite_max_tokens),
+        ),
     )
     rewritten = response.choices[0].message.content or ""
     if not rewritten.strip():

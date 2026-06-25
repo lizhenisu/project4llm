@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from time import perf_counter
 
 from rag_core.config import RagConfig
+from rag_core.model_api_retry import call_model_api_with_retries
 from rag_core.prompts import ANSWER_SYSTEM_PROMPT
 from rag_core.prompts import build_answer_prompt
 from rag_core.prompts import format_evidence_header as prompt_evidence_header
@@ -37,15 +38,18 @@ def generate_answer(config: RagConfig, query: str, hits: list[SearchHit]) -> Ans
     from openai import OpenAI
 
     client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
-    response = client.chat.completions.create(
-        model=config.llm_model,
-        messages=[
-            {
-                "role": "system",
-                "content": ANSWER_SYSTEM_PROMPT,
-            },
-            {"role": "user", "content": prompt},
-        ],
+    response = call_model_api_with_retries(
+        "answer_generation",
+        lambda: client.chat.completions.create(
+            model=config.llm_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": ANSWER_SYSTEM_PROMPT,
+                },
+                {"role": "user", "content": prompt},
+            ],
+        ),
     )
     answer = response.choices[0].message.content or ""
     if not answer.strip():
@@ -72,9 +76,12 @@ def generate_chat(config: RagConfig, messages: list[dict[str, str]]) -> AnswerGe
     from openai import OpenAI
 
     client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
-    response = client.chat.completions.create(
-        model=config.llm_model,
-        messages=messages,
+    response = call_model_api_with_retries(
+        "chat_generation",
+        lambda: client.chat.completions.create(
+            model=config.llm_model,
+            messages=messages,
+        ),
     )
     answer = response.choices[0].message.content or ""
     if not answer.strip():
