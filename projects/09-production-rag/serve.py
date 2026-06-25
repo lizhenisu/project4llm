@@ -682,7 +682,7 @@ def create_app():
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return SourceUploadResponse(
-            status="processing",
+            status="queued",
             sources=[source_to_response(pending_source)],
             document_count=0,
             chunk_count=0,

@@ -94,7 +94,7 @@ export function SourcePanel({
             <input type="checkbox" checked={allSelected} onChange={toggleAll} />
           </label>
           {sources.map((source) => {
-            const activeTask = source.status === "uploading" || source.status === "processing";
+            const activeTask = source.status === "uploading" || source.status === "queued" || source.status === "processing";
             const sourceKey = sourceInstanceKey(source);
             const isEditing = editingSourceId === sourceKey;
             return (
@@ -127,6 +127,7 @@ export function SourcePanel({
                 )}
                 <small>
                   {source.source_type} · {source.chunk_count} chunks
+                  {source.status !== "ready" ? ` · ${sourceStatusLabel(source.status)}` : ""}
                 </small>
                 {source.error ? <small className="error-text">{source.error}</small> : null}
               </div>
@@ -245,6 +246,14 @@ export function SourcePanel({
 
 function sourceInstanceKey(source: SourceItem) {
   return `${source.doc_id}::${source.doc_version}`;
+}
+
+function sourceStatusLabel(status: SourceItem["status"]) {
+  if (status === "queued") return "排队中";
+  if (status === "processing") return "处理中";
+  if (status === "uploading") return "上传中";
+  if (status === "failed") return "失败";
+  return "已就绪";
 }
 
 function SourceReader({

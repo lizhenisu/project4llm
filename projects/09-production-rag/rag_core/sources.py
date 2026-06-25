@@ -143,7 +143,7 @@ def create_source_task(
         doc_version=doc_version or 1,
         chunk_count=0,
         acl_groups=acl_groups,
-        status="processing",
+        status="queued",
         current=False,
         created_at=timestamp,
         updated_at=timestamp,
@@ -192,6 +192,19 @@ def delete_source_task(*, config: RagConfig, tenant_id: str, task_id: str) -> No
 def fail_source_task(*, config: RagConfig, tenant_id: str, source: SourceSummary, error: str) -> None:
     failed = replace(source, status="failed", updated_at=now_ms())
     save_source_task_for_tenant(config=config, tenant_id=tenant_id, source=failed, error=error[:500])
+
+
+def update_source_task_status(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    source: SourceSummary,
+    status: str,
+    error: str = "",
+) -> SourceSummary:
+    updated = replace(source, status=status, updated_at=now_ms())
+    save_source_task_for_tenant(config=config, tenant_id=tenant_id, source=updated, error=error[:500])
+    return updated
 
 
 def load_documents_for_path(

@@ -10,6 +10,7 @@ from rag_core.sources import SourceSummary
 from rag_core.sources import delete_source_task
 from rag_core.sources import fail_source_task
 from rag_core.sources import ingest_uploaded_path
+from rag_core.sources import update_source_task_status
 
 
 _RUNNER_LOCK = threading.Lock()
@@ -17,10 +18,13 @@ _RUNNER: IngestionJobRunner | None = None
 
 
 class IngestionJobRunner:
-    def __init__(self, *, workers: int, queue_limit: int) -> None:
+    def __init__(self, *, workers: int, queue_limit: int, tenant_queue_limit: int | None = None) -> None:
         self.workers = max(1, workers)
         self.queue_limit = max(self.workers, queue_limit)
+        self.tenant_queue_limit = max(1, tenant_queue_limit or self.queue_limit)
         self._slots = threading.BoundedSemaphore(self.queue_limit)
+        self._tenant_slots: dict[str, threading.BoundedSemaphore] = {}
+        self._tenant_slots_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="rag-ingest")
 
     def submit_upload(
@@ -34,6 +38,10 @@ class IngestionJobRunner:
         language: str,
     ) -> bool:
         if not self._slots.acquire(blocking=False):
+            return False
+        tenant_slot = self._tenant_slot(tenant_id)
+        if not tenant_slot.acquire(blocking=False):
+            self._slots.release()
             return False
         self._executor.submit(
             self._run_upload,
@@ -55,8 +63,15 @@ class IngestionJobRunner:
         doc_version: int | None,
         language: str,
     ) -> None:
+        active_source = pending_source
         try:
             config = load_config()
+            active_source = update_source_task_status(
+                config=config,
+                tenant_id=tenant_id,
+                source=pending_source,
+                status="processing",
+            )
             ingest_uploaded_path(
                 config=config,
                 path=saved_path,
@@ -65,12 +80,21 @@ class IngestionJobRunner:
                 doc_version=doc_version,
                 language=language,
             )
-            delete_source_task(config=config, tenant_id=tenant_id, task_id=pending_source.doc_id)
+            delete_source_task(config=config, tenant_id=tenant_id, task_id=active_source.doc_id)
         except Exception as exc:  # noqa: BLE001 - background job must persist failures.
             config = load_config()
-            fail_source_task(config=config, tenant_id=tenant_id, source=pending_source, error=str(exc))
+            fail_source_task(config=config, tenant_id=tenant_id, source=active_source, error=str(exc))
         finally:
+            self._tenant_slot(tenant_id).release()
             self._slots.release()
+
+    def _tenant_slot(self, tenant_id: str) -> threading.BoundedSemaphore:
+        with self._tenant_slots_lock:
+            slot = self._tenant_slots.get(tenant_id)
+            if slot is None:
+                slot = threading.BoundedSemaphore(self.tenant_queue_limit)
+                self._tenant_slots[tenant_id] = slot
+            return slot
 
 
 def ingestion_job_runner() -> IngestionJobRunner:
@@ -81,6 +105,7 @@ def ingestion_job_runner() -> IngestionJobRunner:
                 _RUNNER = IngestionJobRunner(
                     workers=env_int("RAG_INGEST_WORKERS", 2),
                     queue_limit=env_int("RAG_INGEST_QUEUE_LIMIT", 32),
+                    tenant_queue_limit=env_int("RAG_INGEST_TENANT_QUEUE_LIMIT", 8),
                 )
     return _RUNNER
 

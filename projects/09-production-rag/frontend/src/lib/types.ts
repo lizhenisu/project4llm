@@ -1,4 +1,4 @@
-export type SourceStatus = "uploading" | "processing" | "ready" | "failed";
+export type SourceStatus = "uploading" | "queued" | "processing" | "ready" | "failed";
 
 export type SourceItem = {
   doc_id: string;
