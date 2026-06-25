@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from typing import Any
 
@@ -218,11 +219,27 @@ def upsert_entities(
     *,
     collection_name: str,
     entities: list[dict[str, Any]],
+    batch_size: int | None = None,
 ) -> int:
     if not entities:
         return 0
-    result = client.upsert(collection_name=collection_name, data=entities)
-    return int(result.get("upsert_count", result.get("insert_count", len(entities))))
+    resolved_batch_size = batch_size or env_int("RAG_MILVUS_UPSERT_BATCH_SIZE", 512)
+    total = 0
+    for start in range(0, len(entities), resolved_batch_size):
+        batch = entities[start : start + resolved_batch_size]
+        result = client.upsert(collection_name=collection_name, data=batch)
+        total += int(result.get("upsert_count", result.get("insert_count", len(batch))))
+    return total
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return default
 
 
 def _hit_to_search_hit(hit: dict[str, Any]) -> SearchHit:
