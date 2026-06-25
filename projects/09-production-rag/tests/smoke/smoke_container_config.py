@@ -57,18 +57,27 @@ def main() -> None:
         "HF_PARALLEL_LOADING_WORKERS",
         "MINIO_ROOT_USER",
         "MINIO_ROOT_PASSWORD",
+        "POSTGRES_DB",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "RAG_METADATA_DATABASE_URL",
     }
     assert required_env_keys.issubset(env_example.keys())
 
     compose = yaml.safe_load((PROJECT_DIR / "docker-compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
-    assert {"milvus", "rag-api", "rag-ingest", "minio"}.issubset(services.keys())
+    assert {"milvus", "rag-api", "rag-ingest", "minio", "postgres"}.issubset(services.keys())
 
     minio_env = services["minio"]["environment"]
     assert "MINIO_ROOT_USER" in minio_env
     assert "MINIO_ROOT_PASSWORD" in minio_env
     assert "MINIO_ACCESS_KEY" not in minio_env
     assert "MINIO_SECRET_KEY" not in minio_env
+
+    postgres_env = services["postgres"]["environment"]
+    assert postgres_env["POSTGRES_DB"] == "${POSTGRES_DB:-production_rag}"
+    assert postgres_env["POSTGRES_USER"] == "${POSTGRES_USER:-rag}"
+    assert postgres_env["POSTGRES_PASSWORD"] == "${POSTGRES_PASSWORD:-rag_password}"
 
     rag_api = services["rag-api"]
     rag_api_env = rag_api["environment"]
@@ -80,10 +89,11 @@ def main() -> None:
     assert rag_api_env["RAG_QUERY_REWRITE_HISTORY_TURNS"] == "6"
     assert rag_api_env["RAG_QUERY_REWRITE_MAX_TOKENS"] == "256"
     assert rag_api_env["RAG_ANSWER_BACKEND"] == "${RAG_ANSWER_BACKEND:-llm}"
-    assert rag_api_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-none}"
-    assert rag_api_env["NEW_API_URL"] == "${RAG_LLM_BASE_URL:-https://api.siliconflow.cn}"
-    assert rag_api_env["NEW_API_KEY"] == "${RAG_LLM_API_KEY:-${SILICONFLOW_API_KEY:-}}"
-    assert rag_api_env["LLM_MODEL"] == "${LLM_MODEL:-deepseek-ai/DeepSeek-V4-Flash}"
+    assert rag_api_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}"
+    assert rag_api_env["RAG_METADATA_DATABASE_URL"].startswith("postgresql://")
+    assert rag_api_env["NEW_API_URL"] == "${NEW_API_URL:-}"
+    assert rag_api_env["NEW_API_KEY"] == "${NEW_API_KEY:-}"
+    assert rag_api_env["LLM_MODEL"] == "${LLM_MODEL:-gemini-3-flash-preview}"
     assert has_volume(rag_api["volumes"], EXPECTED_OBJECT_STORE_PATH)
     assert has_volume(rag_api["volumes"], EXPECTED_RUNTIME_PATH)
 
@@ -94,7 +104,8 @@ def main() -> None:
     assert "./.env" in rag_ingest.get("env_file", [])
     assert "RAG_TEXT_INPUT" in rag_ingest_env
     assert "RAG_IMAGE_INPUT" in rag_ingest_env
-    assert rag_ingest_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-none}"
+    assert rag_ingest_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}"
+    assert rag_ingest_env["RAG_METADATA_DATABASE_URL"].startswith("postgresql://")
     assert has_volume(rag_ingest["volumes"], EXPECTED_OBJECT_STORE_PATH)
     assert has_volume(rag_ingest["volumes"], "/data")
 

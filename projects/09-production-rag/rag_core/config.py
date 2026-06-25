@@ -118,6 +118,7 @@ class RagConfig:
     reset_collection: bool
     runtime_dir: Path
     object_store_dir: Path
+    metadata_database_url: str | None
     pii_policy: str
     max_context_chars: int
     max_chunks_per_doc: int
@@ -195,6 +196,7 @@ def load_config() -> RagConfig:
         object_store_dir=Path(
             os.environ.get("RAG_OBJECT_STORE_DIR", str(OBJECT_STORE_DIR))
         ),
+        metadata_database_url=os.environ.get("RAG_METADATA_DATABASE_URL") or None,
         pii_policy=os.environ.get("RAG_PII_POLICY", "warn").lower(),
         max_context_chars=_env_int("RAG_MAX_CONTEXT_CHARS", 6000),
         max_chunks_per_doc=_env_int("RAG_MAX_CHUNKS_PER_DOC", 2),

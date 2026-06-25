@@ -24,6 +24,23 @@ services:
     volumes:
       - ./volumes/minio:/minio_data
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: rag-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-production_rag}
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag} -d ${POSTGRES_DB:-production_rag}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   milvus:
     image: milvusdb/milvus:v2.6.13
     container_name: rag-milvus
@@ -55,6 +72,7 @@ services:
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "1024"
       RAG_RUNTIME_DIR: /app/projects/09-production-rag/runtime
+      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@postgres:5432/${POSTGRES_DB:-production_rag}
       RAG_QUERY_REWRITE_BACKEND: ${RAG_QUERY_REWRITE_BACKEND:-llm}
       RAG_QUERY_REWRITE_HISTORY_TURNS: "6"
       RAG_QUERY_REWRITE_MAX_TOKENS: "256"
@@ -73,7 +91,10 @@ services:
       - ./volumes/db:/app/projects/09-production-rag/runtime/db
       - ./object_store:/app/projects/09-production-rag/object_store
     depends_on:
-      - milvus
+      milvus:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8008/health"]
       interval: 20s
@@ -134,8 +155,12 @@ services:
       RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "1024"
+      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@postgres:5432/${POSTGRES_DB:-production_rag}
     volumes:
       - ./object_store:/app/projects/09-production-rag/object_store
       - ./ingest:/data:ro
     depends_on:
-      - milvus
+      milvus:
+        condition: service_started
+      postgres:
+        condition: service_healthy

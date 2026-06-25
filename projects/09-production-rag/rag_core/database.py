@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
+import re
 import shutil
+import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from rag_core.config import RagConfig
 
@@ -23,7 +24,18 @@ def metadata_db_path(config: RagConfig) -> Path:
 
 
 @contextmanager
-def connect_metadata_db(config: RagConfig) -> Iterator[sqlite3.Connection]:
+def connect_metadata_db(config: RagConfig) -> Iterator[Any]:
+    metadata_database_url = getattr(config, "metadata_database_url", None)
+    if metadata_database_url:
+        with connect_postgres_metadata_db(metadata_database_url) as conn:
+            yield conn
+        return
+    with connect_sqlite_metadata_db(config) as conn:
+        yield conn
+
+
+@contextmanager
+def connect_sqlite_metadata_db(config: RagConfig) -> Iterator[sqlite3.Connection]:
     path = metadata_db_path(config)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10.0)
@@ -33,7 +45,7 @@ def connect_metadata_db(config: RagConfig) -> Iterator[sqlite3.Connection]:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=10000")
-        initialize_schema(conn)
+        initialize_sqlite_schema(conn)
         yield conn
         conn.commit()
     except Exception:
@@ -43,150 +55,307 @@ def connect_metadata_db(config: RagConfig) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def initialize_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS schema_meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
+@contextmanager
+def connect_postgres_metadata_db(database_url: str) -> Iterator[PostgresConnection]:
+    import psycopg
+    from psycopg.rows import dict_row
 
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            username TEXT NOT NULL UNIQUE,
-            display_name TEXT NOT NULL,
-            password_hash TEXT NOT NULL,
-            salt TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
-            tenant_id TEXT NOT NULL UNIQUE,
-            avatar_url TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'active',
-            profile_name_edit_allowed INTEGER NOT NULL DEFAULT 1,
-            avatar_edit_allowed INTEGER NOT NULL DEFAULT 1,
-            created_at INTEGER NOT NULL,
-            last_login_at INTEGER
-        );
+    raw_conn = psycopg.connect(database_url, row_factory=dict_row, connect_timeout=10)
+    conn = PostgresConnection(raw_conn)
+    try:
+        initialize_postgres_schema(conn)
+        yield conn
+        raw_conn.commit()
+    except Exception:
+        raw_conn.rollback()
+        raise
+    finally:
+        raw_conn.close()
 
-        CREATE TABLE IF NOT EXISTS sessions (
-            token TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            expires_at INTEGER NOT NULL,
-            created_at INTEGER NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-        );
-        CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
-        CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 
-        CREATE TABLE IF NOT EXISTS announcements (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            content TEXT NOT NULL,
-            link_url TEXT NOT NULL DEFAULT '',
-            link_label TEXT NOT NULL DEFAULT '',
-            author_id TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            FOREIGN KEY(author_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_announcements_created_at ON announcements(created_at DESC);
+class PostgresConnection:
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
 
-        CREATE TABLE IF NOT EXISTS conversations (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            source_doc_ids TEXT NOT NULL DEFAULT '[]',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_conversations_tenant_updated ON conversations(tenant_id, updated_at DESC);
+    def execute(self, sql: str, params: tuple | list = ()) -> Any:
+        cursor = self._conn.execute(translate_sqlite_sql(sql), params)
+        return PostgresCursor(cursor)
 
-        CREATE TABLE IF NOT EXISTS messages (
-            id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            status TEXT NOT NULL,
-            request_id TEXT,
-            citations TEXT NOT NULL DEFAULT '[]',
-            image_data_url TEXT,
-            created_at INTEGER NOT NULL,
-            FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-        );
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at);
+    def executescript(self, script: str) -> None:
+        for statement in split_sql_script(script):
+            self.execute(statement)
 
-        CREATE TABLE IF NOT EXISTS artifacts (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL,
-            workspace_id TEXT NOT NULL DEFAULT '',
-            title TEXT NOT NULL,
-            status TEXT NOT NULL,
-            artifact_type TEXT NOT NULL DEFAULT 'mindmap',
-            source_doc_ids TEXT NOT NULL DEFAULT '[]',
-            root TEXT,
-            table_json TEXT,
-            error TEXT NOT NULL DEFAULT '',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_updated ON artifacts(tenant_id, updated_at DESC);
+    def commit(self) -> None:
+        self._conn.commit()
 
-        CREATE TABLE IF NOT EXISTS source_tasks (
-            id TEXT PRIMARY KEY,
-            tenant_id TEXT NOT NULL,
-            doc_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            source_uri TEXT NOT NULL,
-            doc_version INTEGER NOT NULL,
-            acl_groups TEXT NOT NULL DEFAULT '[]',
-            status TEXT NOT NULL,
-            error TEXT NOT NULL DEFAULT '',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_source_tasks_tenant_updated ON source_tasks(tenant_id, updated_at DESC);
+    def rollback(self) -> None:
+        self._conn.rollback()
 
-        CREATE TABLE IF NOT EXISTS source_title_overrides (
-            tenant_id TEXT NOT NULL,
-            doc_id TEXT NOT NULL,
-            doc_version INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            updated_at INTEGER NOT NULL,
-            PRIMARY KEY(tenant_id, doc_id, doc_version)
-        );
-        CREATE INDEX IF NOT EXISTS idx_source_title_overrides_tenant ON source_title_overrides(tenant_id);
+    def close(self) -> None:
+        self._conn.close()
 
-        CREATE TABLE IF NOT EXISTS current_source_versions (
-            tenant_id TEXT NOT NULL,
-            doc_id TEXT NOT NULL,
-            doc_version INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            PRIMARY KEY(tenant_id, doc_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_current_source_versions_tenant ON current_source_versions(tenant_id);
-        """
-    )
+
+def translate_sqlite_sql(sql: str) -> str:
+    stripped = " ".join(sql.strip().split())
+    if stripped.startswith("INSERT OR REPLACE INTO schema_meta"):
+        converted = re.sub(r"\bINSERT\s+OR\s+REPLACE\b", "INSERT", sql, count=1, flags=re.IGNORECASE)
+        converted = converted.rstrip().rstrip(";")
+        converted += " ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        return replace_qmark_placeholders(converted)
+    if stripped.startswith("INSERT OR REPLACE INTO sessions"):
+        converted = re.sub(r"\bINSERT\s+OR\s+REPLACE\b", "INSERT", sql, count=1, flags=re.IGNORECASE)
+        converted = converted.rstrip().rstrip(";")
+        converted += (
+            " ON CONFLICT(token) DO UPDATE SET "
+            "user_id = excluded.user_id, "
+            "expires_at = excluded.expires_at, "
+            "created_at = excluded.created_at"
+        )
+        return replace_qmark_placeholders(converted)
+    return replace_qmark_placeholders(sql)
+
+
+class CompatRow(dict):
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, int):
+            return list(self.values())[key]
+        return super().__getitem__(key)
+
+
+class PostgresCursor:
+    def __init__(self, cursor: Any) -> None:
+        self._cursor = cursor
+
+    @property
+    def rowcount(self) -> int:
+        return int(self._cursor.rowcount)
+
+    def fetchone(self) -> CompatRow | None:
+        row = self._cursor.fetchone()
+        return compat_row(row)
+
+    def fetchall(self) -> list[CompatRow]:
+        return [item for item in (compat_row(row) for row in self._cursor.fetchall()) if item is not None]
+
+
+def compat_row(row: Any) -> CompatRow | None:
+    if row is None:
+        return None
+    return CompatRow(row)
+
+
+def replace_qmark_placeholders(sql: str) -> str:
+    parts = sql.split("?")
+    if len(parts) == 1:
+        return sql
+    return "%s".join(parts)
+
+
+def split_sql_script(script: str) -> list[str]:
+    return [statement.strip() for statement in script.split(";") if statement.strip()]
+
+
+def initialize_sqlite_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA_SQL)
     conn.execute(
         "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('version', ?)",
         (str(SCHEMA_VERSION),),
     )
-    ensure_column(conn, table="messages", column="request_id", definition="TEXT")
-    ensure_column(conn, table="messages", column="feedback_rating", definition="INTEGER")
-    ensure_column(conn, table="messages", column="image_data_url", definition="TEXT")
-    ensure_column(conn, table="messages", column="rag_progress", definition="TEXT NOT NULL DEFAULT '[]'")
-    ensure_column(conn, table="users", column="avatar_url", definition="TEXT NOT NULL DEFAULT ''")
-    ensure_column(conn, table="users", column="status", definition="TEXT NOT NULL DEFAULT 'active'")
-    ensure_column(conn, table="users", column="profile_name_edit_allowed", definition="INTEGER NOT NULL DEFAULT 1")
-    ensure_column(conn, table="users", column="avatar_edit_allowed", definition="INTEGER NOT NULL DEFAULT 1")
-    ensure_column(conn, table="announcements", column="link_url", definition="TEXT NOT NULL DEFAULT ''")
-    ensure_column(conn, table="announcements", column="link_label", definition="TEXT NOT NULL DEFAULT ''")
-    ensure_column(conn, table="artifacts", column="workspace_id", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_sqlite_columns(conn)
+
+
+def initialize_postgres_schema(conn: PostgresConnection) -> None:
+    conn.executescript(postgres_schema_sql())
+    conn.execute(
+        "INSERT INTO schema_meta(key, value) VALUES ('version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(SCHEMA_VERSION),),
+    )
+    ensure_postgres_columns(conn)
+
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
+    tenant_id TEXT NOT NULL UNIQUE,
+    avatar_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    profile_name_edit_allowed INTEGER NOT NULL DEFAULT 1,
+    avatar_edit_allowed INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    last_login_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS announcements (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    link_url TEXT NOT NULL DEFAULT '',
+    link_label TEXT NOT NULL DEFAULT '',
+    author_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(author_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_announcements_created_at ON announcements(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    source_doc_ids TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_tenant_updated ON conversations(tenant_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL,
+    request_id TEXT,
+    citations TEXT NOT NULL DEFAULT '[]',
+    image_data_url TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    artifact_type TEXT NOT NULL DEFAULT 'mindmap',
+    source_doc_ids TEXT NOT NULL DEFAULT '[]',
+    root TEXT,
+    table_json TEXT,
+    error TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_updated ON artifacts(tenant_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS source_tasks (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_uri TEXT NOT NULL,
+    doc_version INTEGER NOT NULL,
+    acl_groups TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    error TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_tasks_tenant_updated ON source_tasks(tenant_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS source_title_overrides (
+    tenant_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    doc_version INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(tenant_id, doc_id, doc_version)
+);
+CREATE INDEX IF NOT EXISTS idx_source_title_overrides_tenant ON source_title_overrides(tenant_id);
+
+CREATE TABLE IF NOT EXISTS current_source_versions (
+    tenant_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    doc_version INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(tenant_id, doc_id)
+);
+CREATE INDEX IF NOT EXISTS idx_current_source_versions_tenant ON current_source_versions(tenant_id);
+"""
+
+
+def ensure_sqlite_columns(conn: sqlite3.Connection) -> None:
+    ensure_sqlite_column(conn, table="messages", column="request_id", definition="TEXT")
+    ensure_sqlite_column(conn, table="messages", column="feedback_rating", definition="INTEGER")
+    ensure_sqlite_column(conn, table="messages", column="image_data_url", definition="TEXT")
+    ensure_sqlite_column(conn, table="messages", column="rag_progress", definition="TEXT NOT NULL DEFAULT '[]'")
+    ensure_sqlite_column(conn, table="users", column="avatar_url", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_sqlite_column(conn, table="users", column="status", definition="TEXT NOT NULL DEFAULT 'active'")
+    ensure_sqlite_column(conn, table="users", column="profile_name_edit_allowed", definition="INTEGER NOT NULL DEFAULT 1")
+    ensure_sqlite_column(conn, table="users", column="avatar_edit_allowed", definition="INTEGER NOT NULL DEFAULT 1")
+    ensure_sqlite_column(conn, table="announcements", column="link_url", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_sqlite_column(conn, table="announcements", column="link_label", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_sqlite_column(conn, table="artifacts", column="workspace_id", definition="TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
     )
 
 
-def ensure_column(conn: sqlite3.Connection, *, table: str, column: str, definition: str) -> None:
+def ensure_postgres_columns(conn: PostgresConnection) -> None:
+    ensure_postgres_column(conn, table="messages", column="request_id", definition="TEXT")
+    ensure_postgres_column(conn, table="messages", column="feedback_rating", definition="BIGINT")
+    ensure_postgres_column(conn, table="messages", column="image_data_url", definition="TEXT")
+    ensure_postgres_column(conn, table="messages", column="rag_progress", definition="TEXT NOT NULL DEFAULT '[]'")
+    ensure_postgres_column(conn, table="users", column="avatar_url", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_postgres_column(conn, table="users", column="status", definition="TEXT NOT NULL DEFAULT 'active'")
+    ensure_postgres_column(conn, table="users", column="profile_name_edit_allowed", definition="BIGINT NOT NULL DEFAULT 1")
+    ensure_postgres_column(conn, table="users", column="avatar_edit_allowed", definition="BIGINT NOT NULL DEFAULT 1")
+    ensure_postgres_column(conn, table="announcements", column="link_url", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_postgres_column(conn, table="announcements", column="link_label", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_postgres_column(conn, table="artifacts", column="workspace_id", definition="TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
+        "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
+    )
+
+
+def ensure_sqlite_column(conn: sqlite3.Connection, *, table: str, column: str, definition: str) -> None:
     columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def postgres_schema_sql() -> str:
+    return re.sub(r"\bINTEGER\b", "BIGINT", SCHEMA_SQL)
+
+
+def ensure_postgres_column(conn: PostgresConnection, *, table: str, column: str, definition: str) -> None:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = ? AND column_name = ?
+        """,
+        (table, column),
+    ).fetchone()
+    if row is None:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def ensure_column(conn: Any, *, table: str, column: str, definition: str) -> None:
+    if isinstance(conn, PostgresConnection):
+        ensure_postgres_column(conn, table=table, column=column, definition=definition)
+    else:
+        ensure_sqlite_column(conn, table=table, column=column, definition=definition)
