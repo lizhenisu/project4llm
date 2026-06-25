@@ -140,7 +140,7 @@ def build_scope_plan(
     current_versions = (
         {}
         if doc_version is not None
-        else load_current_versions(config.object_store_dir, tenant_id=tenant_id)
+        else load_current_versions(config.object_store_dir, tenant_id=tenant_id, config=config)
     )
     available_guides = load_available_source_guides(
         config=config,

@@ -52,7 +52,7 @@ def retrieve_and_rerank(
     current_versions = None if include_all_sources else (
         {}
         if doc_version is not None
-        else load_current_versions(config.object_store_dir, tenant_id=tenant_id)
+        else load_current_versions(config.object_store_dir, tenant_id=tenant_id, config=config)
     )
     emit_stage(
         stage_callback,

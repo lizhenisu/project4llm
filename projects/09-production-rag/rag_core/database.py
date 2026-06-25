@@ -154,6 +154,15 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY(tenant_id, doc_id, doc_version)
         );
         CREATE INDEX IF NOT EXISTS idx_source_title_overrides_tenant ON source_title_overrides(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS current_source_versions (
+            tenant_id TEXT NOT NULL,
+            doc_id TEXT NOT NULL,
+            doc_version INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(tenant_id, doc_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_current_source_versions_tenant ON current_source_versions(tenant_id);
         """
     )
     conn.execute(

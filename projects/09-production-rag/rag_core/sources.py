@@ -348,7 +348,7 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
     generate_ingested_source_guides(config=config, sources=sources, docs=redacted_docs)
     upsert_entities(client, collection_name=config.collection_name, entities=entities)
     archive_source_documents(config.object_store_dir, canonical_docs)
-    publish_current_versions(config.object_store_dir, canonical_docs)
+    publish_current_versions(config.object_store_dir, canonical_docs, config=config)
     return IngestSummary(
         sources=sources,
         document_count=len(canonical_docs),
@@ -575,7 +575,7 @@ def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
         ],
         limit=10000,
     )
-    current_versions = load_current_versions(config.object_store_dir, tenant_id=tenant_id)
+    current_versions = load_current_versions(config.object_store_dir, tenant_id=tenant_id, config=config)
     grouped: dict[tuple[str, int], dict] = defaultdict(
         lambda: {"chunk_keys": set(), "child_doc_ids": set(), "acl_groups": set()}
     )
@@ -812,6 +812,7 @@ def delete_source(
             tenant_id=tenant_id,
             doc_id=target_doc_id,
             doc_version=effective_version,
+            config=config,
         )
         for target_doc_id in target_doc_ids
     }
@@ -865,7 +866,7 @@ def delete_source(
 
 
 def next_doc_version(config: RagConfig, *, tenant_id: str, doc_id: str) -> int:
-    current = load_current_versions(config.object_store_dir, tenant_id=tenant_id)
+    current = load_current_versions(config.object_store_dir, tenant_id=tenant_id, config=config)
     return int(current.get(doc_id, 0)) + 1
 
 
@@ -895,7 +896,7 @@ def next_source_doc_version(config: RagConfig, docs: list[SourceDocument]) -> in
         if (archived.tenant_id, document_id) in identities:
             max_version = max(max_version, int(archived.doc_version))
     for doc in docs:
-        current = load_current_versions(config.object_store_dir, tenant_id=doc.tenant_id)
+        current = load_current_versions(config.object_store_dir, tenant_id=doc.tenant_id, config=config)
         max_version = max(max_version, int(current.get(doc.doc_id, 0)))
     return max_version + 1
 

@@ -133,7 +133,7 @@ def retrieve_multimodal(
     current_versions = None if include_all_sources else (
         {}
         if doc_version is not None
-        else load_current_versions(config.object_store_dir, tenant_id=tenant_id)
+        else load_current_versions(config.object_store_dir, tenant_id=tenant_id, config=config)
     )
     text_filter_expr = build_filter_expr(
         tenant_id=tenant_id,
