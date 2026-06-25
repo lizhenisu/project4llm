@@ -68,6 +68,12 @@ services:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
       RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
+      RAG_OBJECT_STORE_BACKEND: ${RAG_OBJECT_STORE_BACKEND:-s3}
+      RAG_S3_ENDPOINT_URL: ${RAG_S3_ENDPOINT_URL:-http://minio:9000}
+      RAG_S3_ACCESS_KEY_ID: ${RAG_S3_ACCESS_KEY_ID:-minioadmin}
+      RAG_S3_SECRET_ACCESS_KEY: ${RAG_S3_SECRET_ACCESS_KEY:-minioadmin}
+      RAG_S3_BUCKET: ${RAG_S3_BUCKET:-production-rag}
+      RAG_S3_PREFIX: ${RAG_S3_PREFIX:-app}
       RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "1024"
@@ -150,6 +156,12 @@ services:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
       RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
+      RAG_OBJECT_STORE_BACKEND: ${RAG_OBJECT_STORE_BACKEND:-s3}
+      RAG_S3_ENDPOINT_URL: ${RAG_S3_ENDPOINT_URL:-http://minio:9000}
+      RAG_S3_ACCESS_KEY_ID: ${RAG_S3_ACCESS_KEY_ID:-minioadmin}
+      RAG_S3_SECRET_ACCESS_KEY: ${RAG_S3_SECRET_ACCESS_KEY:-minioadmin}
+      RAG_S3_BUCKET: ${RAG_S3_BUCKET:-production-rag}
+      RAG_S3_PREFIX: ${RAG_S3_PREFIX:-app}
       RAG_TEXT_INPUT: ${RAG_TEXT_INPUT:-}
       RAG_IMAGE_INPUT: ${RAG_IMAGE_INPUT:-}
       RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}

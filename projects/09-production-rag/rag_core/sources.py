@@ -3,6 +3,8 @@ from __future__ import annotations
 import shutil
 import hashlib
 import json
+import mimetypes
+import os
 import uuid
 from collections import Counter
 from collections import defaultdict
@@ -15,6 +17,12 @@ from rag_core.config import RagConfig
 from rag_core.database import connect_metadata_db
 from rag_core.embeddings import build_embedding_model, build_image_embedding_model, zero_image_vector
 from rag_core.io import image_bytes_are_informative, load_file_documents, load_table_documents
+from rag_core.jsonl_store import (
+    object_store_backend,
+    object_uri_for_relative_path,
+    quote_object_uri,
+    upload_file_to_object_store,
+)
 from rag_core.milvus_store import (
     chunk_to_entity,
     connect,
@@ -92,11 +100,19 @@ def save_uploaded_file(
     if suffix not in SUPPORTED_FILE_SUFFIXES:
         raise ValueError(f"Unsupported source file type: {suffix or '<none>'}")
     safe_name = safe_filename(filename)
-    upload_dir = config.object_store_dir / "uploads" / tenant_id / uuid.uuid4().hex
+    upload_id = uuid.uuid4().hex
+    upload_dir = config.object_store_dir / "uploads" / tenant_id / upload_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     target = upload_dir / safe_name
     with target.open("wb") as file:
         shutil.copyfileobj(content, file)
+    if object_store_backend() == "s3":
+        relative_path = Path("uploads") / tenant_id / upload_id / safe_name
+        upload_file_to_object_store(
+            target,
+            relative_path,
+            content_type=mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
+        )
     return target
 
 
@@ -119,10 +135,77 @@ def ingest_uploaded_path(
         language=language,
     )
     docs = apply_uploaded_content_identity(docs, path=path, input_dir=input_dir)
+    docs = apply_object_store_source_uris(config=config, docs=docs, path=path, input_dir=input_dir)
     if doc_version is None:
         version = next_source_doc_version(config, docs)
         docs = [replace(doc, doc_version=version) for doc in docs]
     return ingest_source_documents(config=config, docs=docs)
+
+
+def apply_object_store_source_uris(
+    *,
+    config: RagConfig,
+    docs: list[SourceDocument],
+    path: Path,
+    input_dir: Path,
+) -> list[SourceDocument]:
+    if object_store_backend() != "s3":
+        return docs
+    relative_upload_path = relative_upload_object_path(config=config, path=path)
+    if relative_upload_path is None:
+        return docs
+    source_uri = object_uri_for_relative_path(relative_upload_path)
+    return [
+        replace(
+            doc,
+            source_uri=source_uri,
+            metadata={
+                **doc.metadata,
+                "source_uri_local_work_path": str(path),
+                "display_blocks": rewrite_display_blocks_to_object_store(
+                    config=config,
+                    input_dir=input_dir,
+                    blocks=doc.metadata.get("display_blocks") or [],
+                ),
+            },
+        )
+        for doc in docs
+    ]
+
+
+def rewrite_display_blocks_to_object_store(
+    *,
+    config: RagConfig,
+    input_dir: Path,
+    blocks: list,
+) -> list:
+    rewritten: list = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "image":
+            rewritten.append(block)
+            continue
+        image_path = Path(str(block.get("path") or block.get("image_uri") or ""))
+        if not image_path.is_file():
+            rewritten.append(block)
+            continue
+        try:
+            relative_path = relative_upload_object_path(config=config, path=image_path)
+            if relative_path is None:
+                relative_path = Path("uploads") / image_path.relative_to(input_dir).as_posix()
+        except ValueError:
+            rewritten.append(block)
+            continue
+        media_type = str(block.get("media_type") or mimetypes.guess_type(image_path.name)[0] or "application/octet-stream")
+        object_uri = upload_file_to_object_store(image_path, relative_path, content_type=media_type)
+        rewritten.append({**block, "path": object_uri, "image_uri": object_uri})
+    return rewritten
+
+
+def relative_upload_object_path(*, config: RagConfig, path: Path) -> Path | None:
+    try:
+        return path.resolve().relative_to(config.object_store_dir.resolve())
+    except ValueError:
+        return None
 
 
 def create_source_task(
@@ -1073,6 +1156,8 @@ def image_block_url(*, config: RagConfig | None, tenant_id: str, block: dict[str
     raw_path = str(block.get("path") or block.get("image_uri") or "").strip()
     if not raw_path:
         return ""
+    if raw_path.startswith("s3://"):
+        return f"/source-assets/__s3__/{quote_object_uri(raw_path)}?tenant_id={quote(tenant_id)}"
     try:
         image_path = Path(raw_path).expanduser().resolve()
         object_store_dir = config.object_store_dir.expanduser().resolve()

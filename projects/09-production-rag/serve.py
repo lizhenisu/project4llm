@@ -11,7 +11,7 @@ from queue import Queue
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from answer import answer_query
@@ -41,6 +41,7 @@ from rag_core.conversations import (
 )
 from rag_core.events import append_event, hit_event_summaries
 from rag_core.ingestion_jobs import submit_upload_ingestion_job
+from rag_core.jsonl_store import read_object_bytes_by_uri, unquote_object_uri
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.readiness import readiness_report
 from rag_core.sources import (
@@ -720,8 +721,18 @@ def create_app():
     def source_asset(
         asset_path: str,
         tenant_id: str = "team_a",
-    ) -> FileResponse:
+    ) -> Response:
         config = load_config()
+        if asset_path.startswith("__s3__/"):
+            object_uri = unquote_object_uri(asset_path[len("__s3__/") :])
+            try:
+                body = read_object_bytes_by_uri(object_uri)
+            except Exception:
+                raise HTTPException(status_code=404, detail="Asset not found") from None
+            media_type = mimetypes.guess_type(object_uri)[0] or "application/octet-stream"
+            if not media_type.startswith("image/"):
+                raise HTTPException(status_code=404, detail="Asset not found")
+            return Response(content=body, media_type=media_type)
         asset_parts = asset_path.split("/")
         if len(asset_parts) < 3 or asset_parts[0] != "uploads":
             raise HTTPException(status_code=404, detail="Asset not found")

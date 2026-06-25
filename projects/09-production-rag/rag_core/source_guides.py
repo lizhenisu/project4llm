@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rag_core.config import RagConfig
-from rag_core.io import read_jsonl, write_jsonl
+from rag_core.jsonl_store import object_exists, read_object_jsonl, write_object_jsonl
 from rag_core.model_api_retry import call_model_api_with_retries
 from rag_core.prompts import SOURCE_GUIDE_SYSTEM_PROMPT
 from rag_core.prompts import build_source_guide_prompt as prompt_source_guide
@@ -211,10 +211,9 @@ def load_source_guide_full(
     source_doc_id: str,
     doc_version: int,
 ) -> SourceGuideResult | None:
-    path = object_store_dir / SOURCE_GUIDES_PATH
-    if not path.exists():
+    if not object_exists(object_store_dir, SOURCE_GUIDES_PATH):
         return None
-    for row in read_jsonl(path):
+    for row in read_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH):
         if (
             str(row.get("tenant_id")) == tenant_id
             and str(row.get("source_doc_id")) == source_doc_id
@@ -233,10 +232,9 @@ def load_source_guide(
     source_doc_id: str,
     doc_version: int,
 ) -> str | None:
-    path = object_store_dir / SOURCE_GUIDES_PATH
-    if not path.exists():
+    if not object_exists(object_store_dir, SOURCE_GUIDES_PATH):
         return None
-    for row in read_jsonl(path):
+    for row in read_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH):
         if (
             str(row.get("tenant_id")) == tenant_id
             and str(row.get("source_doc_id")) == source_doc_id
@@ -259,11 +257,10 @@ def load_source_guides_for_rewrite(
     current_doc_versions: dict[str, int] | None = None,
     limit: int = 20,
 ) -> list[str]:
-    path = object_store_dir / SOURCE_GUIDES_PATH
-    if not path.exists():
+    if not object_exists(object_store_dir, SOURCE_GUIDES_PATH):
         return []
     allowed_doc_ids = set(doc_ids or [])
-    rows = read_jsonl(path)
+    rows = read_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH)
     matched = source_guide_rows_for_rewrite(
         rows,
         tenant_id=tenant_id,
@@ -357,10 +354,8 @@ def save_source_guide(
     guide: str,
     model: str,
 ) -> None:
-    path = object_store_dir / SOURCE_GUIDES_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
     with SOURCE_GUIDES_LOCK:
-        rows = read_jsonl(path) if path.exists() else []
+        rows = read_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH)
         row = {
             "tenant_id": tenant_id,
             "source_doc_id": source_doc_id,
@@ -374,7 +369,7 @@ def save_source_guide(
             source_guide_key(item): item
             for item in [*rows, row]
         }
-        write_jsonl(path, merged.values())
+        write_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH, merged.values())
 
 
 def delete_source_guides(
@@ -384,11 +379,10 @@ def delete_source_guides(
     source_doc_ids: set[str],
     doc_version: int | None = None,
 ) -> int:
-    path = object_store_dir / SOURCE_GUIDES_PATH
-    if not path.exists() or not source_doc_ids:
+    if not object_exists(object_store_dir, SOURCE_GUIDES_PATH) or not source_doc_ids:
         return 0
     with SOURCE_GUIDES_LOCK:
-        rows = read_jsonl(path)
+        rows = read_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH)
         remaining = [
             row
             for row in rows
@@ -401,7 +395,7 @@ def delete_source_guides(
         ]
         removed = len(rows) - len(remaining)
         if removed:
-            write_jsonl(path, remaining)
+            write_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH, remaining)
         return removed
 
 

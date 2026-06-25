@@ -18,6 +18,12 @@ def main() -> None:
         "MILVUS_TOKEN",
         "RAG_COLLECTION",
         "RAG_OBJECT_STORE_DIR",
+        "RAG_OBJECT_STORE_BACKEND",
+        "RAG_S3_ENDPOINT_URL",
+        "RAG_S3_ACCESS_KEY_ID",
+        "RAG_S3_SECRET_ACCESS_KEY",
+        "RAG_S3_BUCKET",
+        "RAG_S3_PREFIX",
         "RAG_RUNTIME_DIR",
         "RAG_TEXT_INPUT",
         "RAG_IMAGE_INPUT",
@@ -83,6 +89,9 @@ def main() -> None:
     rag_api_env = rag_api["environment"]
     assert rag_api_env["MILVUS_URI"] == "http://milvus:19530"
     assert rag_api_env["RAG_OBJECT_STORE_DIR"] == EXPECTED_OBJECT_STORE_PATH
+    assert rag_api_env["RAG_OBJECT_STORE_BACKEND"] == "${RAG_OBJECT_STORE_BACKEND:-s3}"
+    assert rag_api_env["RAG_S3_ENDPOINT_URL"] == "${RAG_S3_ENDPOINT_URL:-http://minio:9000}"
+    assert rag_api_env["RAG_S3_BUCKET"] == "${RAG_S3_BUCKET:-production-rag}"
     assert rag_api_env["RAG_RUNTIME_DIR"] == EXPECTED_RUNTIME_PATH
     assert "./.env" in rag_api.get("env_file", [])
     assert rag_api_env["RAG_QUERY_REWRITE_BACKEND"] == "${RAG_QUERY_REWRITE_BACKEND:-llm}"
@@ -101,6 +110,9 @@ def main() -> None:
     rag_ingest_env = rag_ingest["environment"]
     assert rag_ingest_env["MILVUS_URI"] == "http://milvus:19530"
     assert rag_ingest_env["RAG_OBJECT_STORE_DIR"] == EXPECTED_OBJECT_STORE_PATH
+    assert rag_ingest_env["RAG_OBJECT_STORE_BACKEND"] == "${RAG_OBJECT_STORE_BACKEND:-s3}"
+    assert rag_ingest_env["RAG_S3_ENDPOINT_URL"] == "${RAG_S3_ENDPOINT_URL:-http://minio:9000}"
+    assert rag_ingest_env["RAG_S3_BUCKET"] == "${RAG_S3_BUCKET:-production-rag}"
     assert "./.env" in rag_ingest.get("env_file", [])
     assert "RAG_TEXT_INPUT" in rag_ingest_env
     assert "RAG_IMAGE_INPUT" in rag_ingest_env

@@ -118,6 +118,12 @@ class RagConfig:
     reset_collection: bool
     runtime_dir: Path
     object_store_dir: Path
+    object_store_backend: str
+    s3_endpoint_url: str | None
+    s3_access_key_id: str | None
+    s3_secret_access_key: str | None
+    s3_bucket: str
+    s3_prefix: str
     metadata_database_url: str | None
     pii_policy: str
     max_context_chars: int
@@ -196,6 +202,12 @@ def load_config() -> RagConfig:
         object_store_dir=Path(
             os.environ.get("RAG_OBJECT_STORE_DIR", str(OBJECT_STORE_DIR))
         ),
+        object_store_backend=os.environ.get("RAG_OBJECT_STORE_BACKEND", "local").lower(),
+        s3_endpoint_url=os.environ.get("RAG_S3_ENDPOINT_URL") or None,
+        s3_access_key_id=os.environ.get("RAG_S3_ACCESS_KEY_ID") or None,
+        s3_secret_access_key=os.environ.get("RAG_S3_SECRET_ACCESS_KEY") or None,
+        s3_bucket=os.environ.get("RAG_S3_BUCKET", "production-rag"),
+        s3_prefix=os.environ.get("RAG_S3_PREFIX", "").strip("/"),
         metadata_database_url=os.environ.get("RAG_METADATA_DATABASE_URL") or None,
         pii_policy=os.environ.get("RAG_PII_POLICY", "warn").lower(),
         max_context_chars=_env_int("RAG_MAX_CONTEXT_CHARS", 6000),
