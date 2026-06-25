@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from rag_core.answering import build_prompt, generate_answer, generate_chat
 from rag_core.config import load_config
+from rag_core.document_scope import answer_document_scope, build_scope_plan
 from rag_core.pipeline import StageCallback, emit_stage, retrieve_and_rerank
 from rag_core.types import SearchHit, TraceInfo
 
@@ -46,6 +47,45 @@ def answer_query(
             request_id=request_id,
             stage_callback=stage_callback,
         )
+    scope_plan = build_scope_plan(
+        config=config,
+        tenant_id=tenant_id,
+        query=query,
+        doc_ids=doc_ids,
+        doc_version=doc_version,
+        include_all_sources=include_all_sources,
+    )
+    emit_stage(
+        stage_callback,
+        "intent_router",
+        "done",
+        "意图与范围识别",
+        scope_plan.route.reason,
+        **scope_plan.route.as_dict(),
+    )
+    emit_stage(
+        stage_callback,
+        "scope_resolution",
+        "done",
+        "文档范围解析",
+        f"已解析 {len(scope_plan.resolved_doc_ids)} 个文档，覆盖要求为 {scope_plan.route.coverage_required}。",
+        selected_doc_ids=scope_plan.selected_doc_ids,
+        resolved_doc_ids=scope_plan.resolved_doc_ids,
+        missing_or_skipped_doc_ids=scope_plan.missing_doc_ids,
+        coverage_required=scope_plan.route.coverage_required,
+    )
+    if scope_plan.should_use_document_pipeline:
+        return answer_document_scope(
+            config=config,
+            query=query,
+            tenant_id=tenant_id,
+            acl_groups=acl_groups,
+            plan=scope_plan,
+            request_id=request_id,
+            stage_callback=stage_callback,
+        )
+    if scope_plan.route.explicit_doc_refs:
+        doc_ids = scope_plan.resolved_doc_ids
     retrieval = retrieve_and_rerank(
         query,
         tenant_id=tenant_id,
