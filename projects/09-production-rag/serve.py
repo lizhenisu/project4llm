@@ -68,6 +68,7 @@ from rag_core.sources import (
     count_source_tasks_by_status,
     create_source_task,
     delete_source,
+    discard_uploaded_file,
     fail_source_task,
     get_source,
     get_source_content,
@@ -80,7 +81,14 @@ from rag_core.sources import (
     source_task_lease_metrics_snapshot,
     source_task_recovery_metrics_snapshot,
     retry_failed_source_task,
+    UploadReservationLostError,
     UploadTooLargeError,
+)
+from rag_core.upload_admission import (
+    acquire_upload_admission_reservation,
+    release_upload_admission_reservation,
+    UploadAdmissionRejected,
+    upload_admission_metrics_snapshot,
 )
 from rag_core.user_auth import (
     authenticate_token,
@@ -241,6 +249,10 @@ def ingest_backlog_limit() -> int:
 
 def ingest_tenant_backlog_limit() -> int:
     return env_int("RAG_INGEST_TENANT_BACKLOG_LIMIT", 1_000)
+
+
+def ingest_upload_reservation_ms() -> int:
+    return env_int("RAG_INGEST_UPLOAD_RESERVATION_MS", 15 * 60 * 1000)
 
 
 def max_upload_request_bytes(config) -> int:
@@ -476,6 +488,7 @@ def prometheus_metrics_text(config) -> str:
     ingestion = count_source_tasks_by_status(config=config, tenant_id=None)
     ingestion_leases = source_task_lease_metrics_snapshot(config=config, tenant_id=None)
     ingestion_recovery = source_task_recovery_metrics_snapshot(config=config, tenant_id=None)
+    upload_admission = upload_admission_metrics_snapshot(config=config)
     shared_query_admission = query_admission_metrics_snapshot(config=config)
     lines = [
         "# HELP rag_http_active_requests Current in-flight HTTP requests.",
@@ -697,6 +710,20 @@ def prometheus_metrics_text(config) -> str:
             f'rag_ingestion_task_recovery{{state="retry_waiting"}} {ingestion_recovery["retry_waiting"]}',
             f'rag_ingestion_task_recovery{{state="dead_lettered"}} {ingestion_recovery["dead_lettered"]}',
             f'rag_ingestion_task_recovery{{state="retries_recorded"}} {ingestion_recovery["retries_recorded"]}',
+            "# HELP rag_ingestion_upload_reservations Current shared upload admission reservations.",
+            "# TYPE rag_ingestion_upload_reservations gauge",
+            (
+                'rag_ingestion_upload_reservations{scope="global"} '
+                f'{upload_admission["global_reservations"]}'
+            ),
+            (
+                'rag_ingestion_upload_reservations{scope="tenant"} '
+                f'{upload_admission["tenant_reservations"]}'
+            ),
+            (
+                'rag_ingestion_upload_reservations{scope="expired"} '
+                f'{upload_admission["expired_reservations"]}'
+            ),
         ]
     )
     return "\n".join(lines) + "\n"
@@ -1160,6 +1187,10 @@ def create_app():
                 "source_tasks_by_status": count_source_tasks_by_status(config=config, tenant_id=tenant_id),
                 "task_leases": source_task_lease_metrics_snapshot(config=config, tenant_id=tenant_id),
                 "task_recovery": source_task_recovery_metrics_snapshot(config=config, tenant_id=tenant_id),
+                "upload_admission": {
+                    "reservation_ms": ingest_upload_reservation_ms(),
+                    **upload_admission_metrics_snapshot(config=config),
+                },
                 "active_source_tasks": count_active_source_tasks(config=config, tenant_id=None),
                 "tenant_active_source_tasks": count_active_source_tasks(config=config, tenant_id=tenant_id),
                 "backlog_limit": ingest_backlog_limit(),
@@ -1424,29 +1455,36 @@ def create_app():
             tenant_id=tenant_id,
             acl_groups=body_acl_groups,
         )
-        active_backlog = count_active_source_tasks(config=config, tenant_id=None)
         backlog_limit = ingest_backlog_limit()
-        if active_backlog >= backlog_limit:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Ingestion backlog is full. Please retry later. "
-                    f"active_source_tasks={active_backlog} "
-                    f"RAG_INGEST_BACKLOG_LIMIT={backlog_limit}"
-                ),
-            )
-        tenant_active_backlog = count_active_source_tasks(config=config, tenant_id=auth_context.tenant_id)
         tenant_backlog_limit = ingest_tenant_backlog_limit()
-        if tenant_active_backlog >= tenant_backlog_limit:
+        try:
+            reservation = acquire_upload_admission_reservation(
+                config=config,
+                tenant_id=auth_context.tenant_id,
+                global_limit=backlog_limit,
+                tenant_limit=tenant_backlog_limit,
+                lease_ms=ingest_upload_reservation_ms(),
+            )
+        except UploadAdmissionRejected as exc:
+            limit_name = (
+                "RAG_INGEST_TENANT_BACKLOG_LIMIT"
+                if exc.kind == "tenant"
+                else "RAG_INGEST_BACKLOG_LIMIT"
+            )
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "Ingestion backlog is full for this tenant. Please retry later. "
-                    f"tenant_id={auth_context.tenant_id} "
-                    f"tenant_active_source_tasks={tenant_active_backlog} "
-                    f"RAG_INGEST_TENANT_BACKLOG_LIMIT={tenant_backlog_limit}"
+                    f"Ingestion {exc.kind} backlog is full. Please retry later. "
+                    f"active_source_tasks={exc.active_tasks} "
+                    f"{limit_name}={exc.limit}"
                 ),
-            )
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Ingestion admission is unavailable. Please retry later.",
+            ) from exc
+        saved_path = None
         try:
             saved_path = save_uploaded_file(
                 config=config,
@@ -1460,7 +1498,25 @@ def create_app():
                 path=saved_path,
                 acl_groups=auth_context.acl_groups or body_acl_groups or ["engineering"],
                 doc_version=doc_version,
+                upload_reservation_owner=reservation.owner,
             )
+            reservation = None
+        except Exception as exc:
+            if saved_path is not None:
+                discard_uploaded_file(config=config, path=saved_path)
+            if reservation is not None:
+                release_upload_admission_reservation(config=config, reservation=reservation)
+            if isinstance(exc, UploadTooLargeError):
+                raise HTTPException(status_code=413, detail=str(exc)) from exc
+            if isinstance(exc, UploadReservationLostError):
+                raise HTTPException(
+                    status_code=503,
+                    detail="Upload reservation expired. Please retry.",
+                ) from exc
+            if isinstance(exc, ValueError):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise
+        try:
             submit_upload_ingestion_job(
                 pending_source=pending_source,
                 saved_path=saved_path,
@@ -1469,8 +1525,6 @@ def create_app():
                 doc_version=doc_version,
                 language=language,
             )
-        except UploadTooLargeError as exc:
-            raise HTTPException(status_code=413, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return SourceUploadResponse(
@@ -1599,15 +1653,42 @@ def create_app():
             acl_groups=[],
         )
         try:
+            reservation = acquire_upload_admission_reservation(
+                config=config,
+                tenant_id=auth_context.tenant_id,
+                global_limit=ingest_backlog_limit(),
+                tenant_limit=ingest_tenant_backlog_limit(),
+                lease_ms=ingest_upload_reservation_ms(),
+            )
+        except UploadAdmissionRejected as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Ingestion {exc.kind} backlog is full. Please retry later.",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Ingestion admission is unavailable. Please retry later.",
+            ) from exc
+        try:
             queued = retry_failed_source_task(
                 config=config,
                 tenant_id=auth_context.tenant_id,
                 task_id=doc_id,
+                upload_reservation_owner=reservation.owner,
             )
         except SourceTaskNotFoundError as exc:
+            release_upload_admission_reservation(config=config, reservation=reservation)
             raise HTTPException(status_code=404, detail="Source task not found") from exc
         except SourceTaskNotRetryableError as exc:
+            release_upload_admission_reservation(config=config, reservation=reservation)
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except UploadReservationLostError as exc:
+            release_upload_admission_reservation(config=config, reservation=reservation)
+            raise HTTPException(
+                status_code=503,
+                detail="Retry reservation expired. Please retry.",
+            ) from exc
         source = queued.source
         submit_upload_ingestion_job(
             pending_source=source,

@@ -456,6 +456,25 @@ ON query_admission_slots(lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_query_admission_slots_owner
 ON query_admission_slots(lease_owner);
 
+CREATE TABLE IF NOT EXISTS upload_admission_slots (
+    scope_type TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    slot_index INTEGER NOT NULL,
+    reservation_owner TEXT NOT NULL,
+    lease_expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(scope_type, scope_key, slot_index)
+);
+CREATE INDEX IF NOT EXISTS idx_upload_admission_slots_expiry
+ON upload_admission_slots(lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_upload_admission_slots_owner
+ON upload_admission_slots(reservation_owner);
+
+CREATE TABLE IF NOT EXISTS admission_locks (
+    name TEXT PRIMARY KEY,
+    updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS source_catalog (
     tenant_id TEXT NOT NULL,
     doc_id TEXT NOT NULL,

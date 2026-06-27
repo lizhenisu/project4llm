@@ -72,6 +72,7 @@ docker compose up -d --scale rag-worker=3
 # 多 API 副本必须共享同一个 RAG_METADATA_DATABASE_URL。
 # RAG_QUERY_SHARED_ADMISSION=1（默认）会用数据库租约统一约束
 # 全局、租户和用户/API-token 的流式查询容量。
+# 上传接口也会先预留共享的全局/租户 backlog 槽，再原子转换为摄取任务。
 
 # 4. 一键配置 HTTPS（自动获取 Let's Encrypt 证书）
 sudo bash scripts/setup_caddy.sh your-domain.com

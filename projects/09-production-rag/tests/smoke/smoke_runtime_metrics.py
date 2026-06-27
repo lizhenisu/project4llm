@@ -120,6 +120,12 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
         "dead_lettered": 0,
         "retries_recorded": 0,
     }
+    assert body["ingestion"]["upload_admission"] == {
+        "reservation_ms": 900000,
+        "global_reservations": 0,
+        "tenant_reservations": 0,
+        "expired_reservations": 0,
+    }
     assert body["ingestion"]["active_source_tasks"] >= 1
     assert body["ingestion"]["tenant_active_source_tasks"] == 1
     assert body["ingestion"]["backlog_limit"] >= 1

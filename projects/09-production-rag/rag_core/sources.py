@@ -20,6 +20,7 @@ from rag_core.database import connect_metadata_db
 from rag_core.embeddings import build_embedding_model, build_image_embedding_model, zero_image_vector
 from rag_core.io import image_bytes_are_informative, load_file_documents, load_table_documents
 from rag_core.jsonl_store import (
+    delete_object,
     object_store_backend,
     object_uri_for_relative_path,
     quote_object_uri,
@@ -43,6 +44,7 @@ from rag_core.section_summaries import delete_source_section_summaries, save_sou
 from rag_core.source_guides import delete_source_guides, get_or_create_source_guide, load_source_guide, load_source_guide_full
 from rag_core.text_utils import chunk_document, now_ms
 from rag_core.types import Chunk, SourceDocument
+from rag_core.upload_admission import lock_upload_admission
 from rag_core.versioning import load_current_versions, publish_current_versions, unpublish_current_version
 
 MIN_EMBEDDABLE_IMAGE_SIDE = 8
@@ -70,6 +72,10 @@ class SourceTaskNotFoundError(LookupError):
 
 
 class SourceTaskNotRetryableError(ValueError):
+    pass
+
+
+class UploadReservationLostError(RuntimeError):
     pass
 
 
@@ -168,6 +174,21 @@ def copy_uploaded_file_limited(content: BinaryIO, target: BinaryIO, *, max_bytes
         if copied > max_bytes:
             raise UploadTooLargeError(size_bytes=copied, limit_bytes=max_bytes)
         target.write(chunk)
+
+
+def discard_uploaded_file(*, config: RagConfig, path: Path) -> None:
+    if object_store_backend() == "s3":
+        relative_path = relative_upload_object_path(config=config, path=path)
+        if relative_path is not None:
+            try:
+                delete_object(config.object_store_dir, relative_path)
+            except Exception:
+                pass
+    path.unlink(missing_ok=True)
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
 
 
 def ingest_uploaded_path(
@@ -269,6 +290,7 @@ def create_source_task(
     path: Path,
     acl_groups: list[str],
     doc_version: int | None,
+    upload_reservation_owner: str | None = None,
 ) -> SourceSummary:
     timestamp = now_ms()
     doc_id = f"upload-{uuid.uuid4().hex[:12]}"
@@ -291,6 +313,7 @@ def create_source_task(
         tenant_id=tenant_id,
         source=source,
         requested_doc_version=doc_version,
+        upload_reservation_owner=upload_reservation_owner,
     )
     return source
 
@@ -302,6 +325,7 @@ def save_source_task_for_tenant(
     source: SourceSummary,
     error: str = "",
     requested_doc_version: int | None | object = _REQUESTED_DOC_VERSION_UNSET,
+    upload_reservation_owner: str | None = None,
 ) -> None:
     resolved_requested_version = (
         source.doc_version
@@ -309,6 +333,8 @@ def save_source_task_for_tenant(
         else requested_doc_version
     )
     with connect_metadata_db(config) as conn:
+        if upload_reservation_owner:
+            lock_upload_admission(conn)
         conn.execute(
             """
             INSERT INTO source_tasks(
@@ -344,6 +370,15 @@ def save_source_task_for_tenant(
                 source.updated_at or now_ms(),
             ),
         )
+        if upload_reservation_owner:
+            cursor = conn.execute(
+                "DELETE FROM upload_admission_slots WHERE reservation_owner = ?",
+                (upload_reservation_owner,),
+            )
+            if int(cursor.rowcount or 0) != 2:
+                raise UploadReservationLostError(
+                    "Upload admission reservation expired before task creation"
+                )
     invalidate_source_list_cache(config=config, tenant_id=tenant_id)
 
 
@@ -595,9 +630,12 @@ def retry_failed_source_task(
     config: RagConfig,
     tenant_id: str,
     task_id: str,
+    upload_reservation_owner: str | None = None,
 ) -> QueuedSourceTask:
     timestamp = now_ms()
     with connect_metadata_db(config) as conn:
+        if upload_reservation_owner:
+            lock_upload_admission(conn, timestamp=timestamp)
         row = conn.execute(
             """
             SELECT tenant_id, doc_id, title, source_type, source_uri, doc_version,
@@ -623,6 +661,15 @@ def retry_failed_source_task(
         )
         if int(cursor.rowcount or 0) != 1:
             raise SourceTaskNotRetryableError("Source task state changed before retry")
+        if upload_reservation_owner:
+            reservation_cursor = conn.execute(
+                "DELETE FROM upload_admission_slots WHERE reservation_owner = ?",
+                (upload_reservation_owner,),
+            )
+            if int(reservation_cursor.rowcount or 0) != 2:
+                raise UploadReservationLostError(
+                    "Upload admission reservation expired before task retry"
+                )
     invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     source = SourceSummary(
         doc_id=str(row["doc_id"]),

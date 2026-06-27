@@ -18,6 +18,7 @@ from rag_core.config import load_config  # noqa: E402
 from rag_core.database import connect_metadata_db  # noqa: E402
 from rag_core.sources import SourceSummary, save_source_task_for_tenant  # noqa: E402
 from rag_core.text_utils import now_ms  # noqa: E402
+from rag_core.upload_admission import upload_admission_metrics_snapshot  # noqa: E402
 
 
 def main() -> None:
@@ -95,6 +96,11 @@ def test_retry_failed_task_is_tenant_scoped_and_atomic() -> None:
     )
     assert cross_tenant.status_code == 404
     assert foreign.doc_id not in cross_tenant.text
+    assert upload_admission_metrics_snapshot(config=config) == {
+        "global_reservations": 0,
+        "tenant_reservations": 0,
+        "expired_reservations": 0,
+    }
 
 
 def save_failed_task(config, tenant_id: str, label: str) -> SourceSummary:

@@ -15,6 +15,7 @@ if str(PROJECT_DIR) not in sys.path:
 import serve
 from rag_core.auth import AuthContext
 from rag_core.sources import SourceSummary
+from rag_core.upload_admission import UploadAdmissionReservation
 from serve import (
     ArtifactListResponse,
     DeleteArtifactResponse,
@@ -152,8 +153,13 @@ def main() -> None:
         created_at=1,
         updated_at=1,
     )
+    upload_reservation = UploadAdmissionReservation(
+        owner="web-contract-upload-reservation",
+        tenant_id="team_a",
+        expires_at=9999999999999,
+    )
     with (
-        patch("serve.count_active_source_tasks", return_value=0),
+        patch("serve.acquire_upload_admission_reservation", return_value=upload_reservation),
         patch("serve.save_uploaded_file", return_value=Path("/tmp/upload.txt")) as save_uploaded,
         patch("serve.create_source_task", return_value=queued_source) as create_task,
         patch("serve.submit_upload_ingestion_job") as submit_job,
@@ -170,6 +176,7 @@ def main() -> None:
     assert upload_response.json()["sources"][0]["status"] == "queued"
     save_uploaded.assert_called_once()
     create_task.assert_called_once()
+    assert create_task.call_args.kwargs["upload_reservation_owner"] == upload_reservation.owner
     submit_job.assert_called_once()
 
     old_runtime_dir = os.environ.get("RAG_RUNTIME_DIR")

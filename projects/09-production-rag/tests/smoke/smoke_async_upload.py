@@ -14,6 +14,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 import serve
 from rag_core.sources import SourceSummary
+from rag_core.upload_admission import UploadAdmissionReservation
 
 
 def main() -> None:
@@ -40,10 +41,15 @@ def main() -> None:
         )
         try:
             api = TestClient(serve.create_app())
+            reservation = UploadAdmissionReservation(
+                owner="async-upload-reservation",
+                tenant_id="team_a",
+                expires_at=9999999999999,
+            )
             with (
-                patch("serve.count_active_source_tasks", return_value=0),
+                patch("serve.acquire_upload_admission_reservation", return_value=reservation),
                 patch("serve.save_uploaded_file", return_value=Path(pending_source.source_uri)),
-                patch("serve.create_source_task", return_value=pending_source),
+                patch("serve.create_source_task", return_value=pending_source) as create_task,
                 patch("serve.submit_upload_ingestion_job") as submit_job,
             ):
                 response = api.post(
@@ -60,6 +66,7 @@ def main() -> None:
             body = response.json()
             assert body["status"] == "queued"
             assert body["sources"][0]["status"] == "queued"
+            assert create_task.call_args.kwargs["upload_reservation_owner"] == reservation.owner
             submit_job.assert_called_once()
             assert submit_job.call_args.kwargs["tenant_id"] == "team_a"
         finally:
