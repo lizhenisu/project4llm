@@ -12,6 +12,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from rag_core.object_store import archive_source_documents, load_archived_source_documents, purge_source_documents
+from rag_core.document_scope import build_scope_plan
 from rag_core.jsonl_store import read_object_bytes_by_relative_path
 from rag_core.sources import save_uploaded_file
 from rag_core.source_guides import load_source_guide, save_source_guide
@@ -42,7 +43,11 @@ def main() -> None:
         os.environ["RAG_S3_PREFIX"] = prefix
         with tempfile.TemporaryDirectory() as tmp:
             object_store_dir = Path(tmp) / "object_store"
-            config = SimpleNamespace(object_store_dir=object_store_dir)
+            config = SimpleNamespace(
+                object_store_dir=object_store_dir,
+                max_context_chars=20_000,
+                max_upload_bytes=10 * 1024 * 1024,
+            )
             uploaded = save_uploaded_file(
                 config=config,
                 tenant_id=tenant_id,
@@ -84,6 +89,17 @@ def main() -> None:
                 source_doc_id="doc-a",
                 doc_version=1,
             ) or "")
+            scope_plan = build_scope_plan(
+                config=config,
+                tenant_id=tenant_id,
+                query="总结这份资料",
+                doc_ids=["doc-a"],
+                doc_version=1,
+                include_all_sources=False,
+            )
+            assert scope_plan.route.coverage_required is True
+            assert scope_plan.coverage()["covered_doc_count"] == 1
+            assert scope_plan.guides[0].guide == "This guide is stored in S3."
             purged = purge_source_documents(
                 object_store_dir,
                 tenant_id=tenant_id,

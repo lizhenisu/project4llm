@@ -8,7 +8,7 @@ from typing import Iterable
 
 from rag_core.answering import AnswerGeneration, generate_answer
 from rag_core.config import RagConfig
-from rag_core.io import read_jsonl
+from rag_core.jsonl_store import object_exists, read_object_jsonl
 from rag_core.object_store import load_archived_source_documents
 from rag_core.pipeline import StageCallback, emit_stage
 from rag_core.source_guides import SOURCE_GUIDES_PATH, current_source_guide_version
@@ -497,11 +497,10 @@ def load_available_source_guides(
     doc_version: int | None,
     current_versions: dict[str, int] | None,
 ) -> list[SourceGuideRecord]:
-    path = config.object_store_dir / SOURCE_GUIDES_PATH
-    if not path.exists():
+    if not object_exists(config.object_store_dir, SOURCE_GUIDES_PATH):
         return []
     guides_by_source: dict[str, SourceGuideRecord] = {}
-    for row in read_jsonl(path):
+    for row in read_object_jsonl(config.object_store_dir, SOURCE_GUIDES_PATH):
         if str(row.get("tenant_id")) != tenant_id:
             continue
         source_doc_id = str(row.get("source_doc_id") or "")

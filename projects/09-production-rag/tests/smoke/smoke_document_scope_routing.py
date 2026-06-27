@@ -27,6 +27,7 @@ from rag_core.types import SearchHit, SourceDocument, TraceInfo
 
 def main() -> None:
     test_router_requires_coverage_for_selected_doc_summary()
+    test_scope_plan_reads_guides_through_object_store_backend()
     test_page_ids_collapse_to_unique_uploaded_documents()
     test_ambiguous_risk_question_requires_selected_doc_coverage()
     test_missing_source_guides_fall_back_to_archived_documents()
@@ -35,6 +36,37 @@ def main() -> None:
     test_zero_document_open_chat_skips_retrieval()
     test_large_scope_uses_map_reduce_when_guides_exceed_budget()
     print("smoke_document_scope_routing=ok")
+
+
+def test_scope_plan_reads_guides_through_object_store_backend() -> None:
+    rows = [
+        {
+            "tenant_id": "team_a",
+            "source_doc_id": "s3-doc",
+            "doc_version": 1,
+            "title": "S3 Document",
+            "guide": "Guide loaded through the object-store abstraction.",
+        }
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        config = fake_config(tmp)
+        with (
+            patch("rag_core.document_scope.object_exists", return_value=True) as exists,
+            patch("rag_core.document_scope.read_object_jsonl", return_value=rows) as read_rows,
+        ):
+            plan = build_scope_plan(
+                config=config,
+                tenant_id="team_a",
+                query="总结这份资料",
+                doc_ids=["s3-doc"],
+                doc_version=1,
+                include_all_sources=False,
+            )
+    exists.assert_called_once_with(config.object_store_dir, Path("canonical/source_guides.jsonl"))
+    read_rows.assert_called_once_with(config.object_store_dir, Path("canonical/source_guides.jsonl"))
+    assert plan.route.coverage_required is True
+    assert plan.coverage()["covered_doc_count"] == 1
+    assert plan.guides[0].guide == "Guide loaded through the object-store abstraction."
 
 
 def test_router_requires_coverage_for_selected_doc_summary() -> None:
