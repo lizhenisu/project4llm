@@ -23,6 +23,22 @@ def default_text_units(text: str) -> int:
     return len(text)
 
 
+def logical_source_id(hit: SearchHit) -> str:
+    metadata_source_id = str(
+        hit.metadata.get("retrieval_source_id")
+        or hit.metadata.get("source_doc_id")
+        or "",
+    ).strip()
+    return root_source_id(metadata_source_id or hit.doc_id)
+
+
+def root_source_id(doc_id: str) -> str:
+    normalized = str(doc_id or "")
+    if "/page-" in normalized:
+        return normalized.split("/page-", 1)[0]
+    return normalized
+
+
 def pack_context(
     hits: list[SearchHit],
     *,
@@ -63,6 +79,7 @@ def explain_context_packing(
 
     for hit in hits:
         text_len = count_text_units(hit.text)
+        source_id = logical_source_id(hit)
         if (
             min_rerank_score is not None
             and hit.rerank_score is not None
@@ -90,7 +107,7 @@ def explain_context_packing(
                 )
             )
             continue
-        if per_doc[hit.doc_id] >= max_chunks_per_doc:
+        if per_doc[source_id] >= max_chunks_per_doc:
             dropped_by_doc_limit += 1
             decisions.append(
                 packing_decision(
@@ -117,7 +134,7 @@ def explain_context_packing(
             continue
         if not selected and text_len > max_chars:
             selected.append(hit)
-            per_doc[hit.doc_id] += 1
+            per_doc[source_id] += 1
             used_chars += text_len
             decisions.append(
                 packing_decision(
@@ -131,7 +148,7 @@ def explain_context_packing(
             continue
 
         selected.append(hit)
-        per_doc[hit.doc_id] += 1
+        per_doc[source_id] += 1
         used_chars += text_len
         decisions.append(
             packing_decision(

@@ -267,6 +267,96 @@ test.describe("browser-level frontend load smoke", () => {
     await expect(page.locator(".source-row", { hasText: "bulk-source-119.txt" })).toBeVisible();
   });
 
+  test("sends every selected PDF child document to retrieval", async ({ page, baseURL }) => {
+    const now = Date.now();
+    const sources = ["attention", "autoformer", "third-paper"].map((sourceId, index) => ({
+      doc_id: sourceId,
+      title: `${sourceId}.pdf`,
+      source_type: "pdf",
+      source_uri: `mock://${sourceId}.pdf`,
+      doc_version: 1,
+      chunk_count: 2,
+      acl_groups: ["engineering"],
+      status: "ready",
+      current: true,
+      created_at: now + index,
+      updated_at: now + index,
+      child_doc_ids: [`${sourceId}/page-1`, `${sourceId}/page-2`],
+    }));
+    let requestedDocIds: string[] = [];
+
+    await seedBrowserSession(page, 902);
+    await mockStartupApi(page);
+    await page.route("**/api/sources**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ sources }),
+      });
+    });
+    await page.unroute("**/api/conversations**");
+    await page.route("**/api/conversations**", async (route) => {
+      const request = route.request();
+      if (request.method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ conversations: [] }),
+        });
+        return;
+      }
+      const body = JSON.parse(request.postData() || "{}") as {
+        title?: string;
+        messages?: unknown[];
+        source_doc_ids?: string[];
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "multi-source-selection-conversation",
+          tenant_id: "queued-upload-tenant",
+          title: body.title || "Multi source selection",
+          messages: body.messages || [],
+          source_doc_ids: body.source_doc_ids || [],
+          created_at: now,
+          updated_at: Date.now(),
+        }),
+      });
+    });
+    await page.route("**/api/query/stream", async (route) => {
+      const body = JSON.parse(route.request().postData() || "{}") as { doc_ids?: string[] };
+      requestedDocIds = body.doc_ids || [];
+      await route.fulfill({
+        status: 200,
+        contentType: "application/x-ndjson",
+        body: `${JSON.stringify({
+          type: "result",
+          request_id: "multi-source-selection-request",
+          answer: "All selected documents reached retrieval.",
+          citations: [],
+          trace: {},
+        })}\n`,
+      });
+    });
+
+    await page.goto(`${(baseURL || "http://127.0.0.1:5173").replace(/\/$/, "")}/#token=browser-load-token-902`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(page.locator(".source-row input[type='checkbox']:checked")).toHaveCount(3);
+    await page.locator("#chat-input-textarea").fill("查找跨文档事实");
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.getByText("All selected documents reached retrieval.")).toBeVisible();
+    await expect.poll(() => requestedDocIds).toEqual([
+      "attention/page-1",
+      "attention/page-2",
+      "autoformer/page-1",
+      "autoformer/page-2",
+      "third-paper/page-1",
+      "third-paper/page-2",
+    ]);
+  });
+
   test("renders long conversation histories incrementally", async ({ page, baseURL }) => {
     const now = Date.now();
     const messages = Array.from({ length: 120 }, (_, index) => ({

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from rag_core.context import explain_context_packing
 from rag_core.pipeline import retrieve_and_rerank
+from rag_core.retrieval_scope import group_selected_doc_ids, round_robin_hit_groups
 from rag_core.types import RewriteResult, SearchHit
 from search_multimodal import retrieve_multimodal
 
@@ -33,8 +34,20 @@ class FakeReranker:
         return scored[:limit]
 
 
+class IdentityReranker:
+    def rerank(self, query: str, hits: list[SearchHit], *, limit: int) -> list[SearchHit]:
+        return [
+            replace(hit, rerank_score=1.0 - index * 0.01)
+            for index, hit in enumerate(hits[:limit])
+        ]
+
+
 def main() -> None:
     test_context_helper_backfills_later_hits()
+    test_context_limit_counts_pdf_pages_as_one_source()
+    test_selected_doc_groups_round_robin_across_sources()
+    test_text_pipeline_fans_out_small_multi_source_scope()
+    test_multimodal_fans_out_small_multi_source_scope()
     test_text_pipeline_backfills_after_doc_limit()
     test_multimodal_pipeline_backfills_after_doc_limit()
     test_multimodal_image_and_text_query_fuses_then_reranks()
@@ -58,6 +71,164 @@ def test_context_helper_backfills_later_hits() -> None:
         "max_chunks_per_doc",
         "fits_budget",
     ]
+
+
+def test_context_limit_counts_pdf_pages_as_one_source() -> None:
+    hits = [
+        make_hit("attention/page-1", 0, score=1.0),
+        make_hit("attention/page-2", 0, score=0.9),
+        make_hit("autoformer/page-1", 0, score=0.8),
+    ]
+    selected, stats, _ = explain_context_packing(
+        hits,
+        max_selected=3,
+        max_chars=10_000,
+        max_chunks_per_doc=1,
+        min_rerank_score=None,
+    )
+    assert [hit.doc_id for hit in selected] == ["attention/page-1", "autoformer/page-1"]
+    assert stats.dropped_by_doc_limit == 1
+
+
+def test_selected_doc_groups_round_robin_across_sources() -> None:
+    groups = group_selected_doc_ids([
+        "attention/page-1",
+        "attention/page-2",
+        "autoformer/page-1",
+        "third-paper/page-1/image-1",
+    ])
+    assert groups == [
+        ("attention", ["attention/page-1", "attention/page-2"]),
+        ("autoformer", ["autoformer/page-1"]),
+        ("third-paper", ["third-paper/page-1/image-1"]),
+    ]
+    interleaved = round_robin_hit_groups([
+        [make_hit("attention/page-1", 0, score=1.0), make_hit("attention/page-2", 0, score=0.9)],
+        [make_hit("autoformer/page-1", 0, score=0.8)],
+        [make_hit("third-paper/page-1", 0, score=0.7)],
+    ])
+    assert [hit.doc_id for hit in interleaved] == [
+        "attention/page-1",
+        "autoformer/page-1",
+        "third-paper/page-1",
+        "attention/page-2",
+    ]
+
+
+def test_multimodal_fans_out_small_multi_source_scope() -> None:
+    config = make_config()
+    selected_ids = [
+        "attention/page-1",
+        "attention/page-2",
+        "autoformer/page-1",
+        "third-paper/page-1",
+    ]
+
+    def scoped_hits(*args, filter_expr: str, **kwargs):
+        if '"attention/page-1"' in filter_expr:
+            return [
+                make_hit("attention/page-1", 0, score=0.99),
+                make_hit("attention/page-2", 0, score=0.98),
+            ]
+        if '"autoformer/page-1"' in filter_expr:
+            return [make_hit("autoformer/page-1", 0, score=0.80)]
+        if '"third-paper/page-1"' in filter_expr:
+            return [make_hit("third-paper/page-1", 0, score=0.70)]
+        raise AssertionError(filter_expr)
+
+    with (
+        patch("search_multimodal.load_config", return_value=config),
+        patch("search_multimodal.connect", return_value=object()),
+        patch("search_multimodal.ensure_collection"),
+        patch("search_multimodal.build_embedding_model", return_value=FakeEmbeddingModel()),
+        patch("search_multimodal.build_image_embedding_model", return_value=FakeImageEmbeddingModel()),
+        patch("search_multimodal.rewrite_query", return_value=RewriteResult("query", "query", "llm")),
+        patch("search_multimodal.mentions_other_tenant", return_value=False),
+        patch("search_multimodal.load_current_versions", return_value={}),
+        patch("search_multimodal.hybrid_search", side_effect=scoped_hits) as hybrid,
+        patch("search_multimodal.image_search", side_effect=scoped_hits) as image,
+        patch("search_multimodal.build_reranker", return_value=IdentityReranker()),
+    ):
+        result = retrieve_multimodal(
+            "query",
+            tenant_id="team_a",
+            acl_groups=["ops"],
+            doc_ids=selected_ids,
+            candidate_limit=3,
+            context_limit=3,
+            request_id="smoke-multi-source-fanout",
+        )
+
+    assert hybrid.call_count == 3
+    assert image.call_count == 3
+    assert {hit.metadata["retrieval_source_id"] for hit in result.candidates} == {
+        "attention",
+        "autoformer",
+        "third-paper",
+    }
+    assert [hit.doc_id for hit in result.hits] == [
+        "attention/page-1",
+        "autoformer/page-1",
+        "third-paper/page-1",
+    ]
+    assert result.trace.retrieval_mode.endswith("_source_fanout")
+
+
+def test_text_pipeline_fans_out_small_multi_source_scope() -> None:
+    config = make_config()
+    selected_ids = [
+        "attention/page-1",
+        "attention/page-2",
+        "autoformer/page-1",
+        "third-paper/page-1",
+    ]
+
+    def scoped_hits(*args, filter_expr: str, **kwargs):
+        if '"attention/page-1"' in filter_expr:
+            return [
+                make_hit("attention/page-1", 0, score=0.99),
+                make_hit("attention/page-2", 0, score=0.98),
+            ]
+        if '"autoformer/page-1"' in filter_expr:
+            return [make_hit("autoformer/page-1", 0, score=0.80)]
+        if '"third-paper/page-1"' in filter_expr:
+            return [make_hit("third-paper/page-1", 0, score=0.70)]
+        raise AssertionError(filter_expr)
+
+    with (
+        patch("rag_core.pipeline.load_config", return_value=config),
+        patch("rag_core.pipeline.connect", return_value=object()),
+        patch("rag_core.pipeline.ensure_collection"),
+        patch("rag_core.pipeline.build_embedding_model", return_value=FakeEmbeddingModel()),
+        patch("rag_core.pipeline.rewrite_query", return_value=RewriteResult("query", "query", "llm")),
+        patch("rag_core.pipeline.mentions_other_tenant", return_value=False),
+        patch("rag_core.pipeline.load_current_versions", return_value={}),
+        patch("rag_core.pipeline.load_source_guides_for_rewrite", return_value=[]),
+        patch("rag_core.pipeline.hybrid_search", side_effect=scoped_hits) as hybrid,
+        patch("rag_core.pipeline.build_reranker", return_value=IdentityReranker()),
+    ):
+        result = retrieve_and_rerank(
+            "query",
+            tenant_id="team_a",
+            acl_groups=["ops"],
+            doc_ids=selected_ids,
+            candidate_limit=3,
+            context_limit=3,
+            request_id="smoke-text-multi-source-fanout",
+        )
+
+    assert hybrid.call_count == 3
+    assert {hit.metadata["retrieval_source_id"] for hit in result.candidates} == {
+        "attention",
+        "autoformer",
+        "third-paper",
+    }
+    assert [hit.doc_id for hit in result.hits] == [
+        "attention/page-1",
+        "autoformer/page-1",
+        "third-paper/page-1",
+    ]
+    assert result.trace.retrieval_mode == "hybrid_dense_sparse_source_fanout_rerank"
 
 
 def test_text_pipeline_backfills_after_doc_limit() -> None:

@@ -20,6 +20,13 @@ from rag_core.milvus_store import (
 from rag_core.multimodal import reciprocal_rank_fusion
 from rag_core.pipeline import StageCallback, elapsed_ms, emit_stage
 from rag_core.rerankers import build_reranker
+from rag_core.retrieval_scope import (
+    annotate_retrieval_source,
+    group_selected_doc_ids,
+    per_source_candidate_limit,
+    round_robin_hit_groups,
+    should_fan_out_source_retrieval,
+)
 from rag_core.rewrite import rewrite_query
 from rag_core.types import SearchHit, TraceInfo
 from rag_core.versioning import load_current_versions
@@ -153,6 +160,9 @@ def retrieve_multimodal(
         doc_ids=doc_ids,
         source_types=image_source_types,
     )
+    selected_source_groups = group_selected_doc_ids(doc_ids or [])
+    use_source_fanout = should_fan_out_source_retrieval(selected_source_groups)
+    per_source_limit = per_source_candidate_limit(candidate_limit, len(selected_source_groups))
     text_embedding_ms = 0.0
     text_search_ms = 0.0
     text_hits: list[SearchHit] = []
@@ -183,14 +193,39 @@ def retrieve_multimodal(
             "正在检索 OCR、标题和文本证据。",
         )
         text_search_start = perf_counter()
-        text_hits = hybrid_search(
-            client,
-            collection_name=config.collection_name,
-            query_vector=text_query_vector,
-            query_text=rewritten_query,
-            filter_expr=text_filter_expr,
-            limit=max(candidate_limit, 10),
-        )
+        if use_source_fanout:
+            text_hit_groups = [
+                annotate_retrieval_source(
+                    hybrid_search(
+                        client,
+                        collection_name=config.collection_name,
+                        query_vector=text_query_vector,
+                        query_text=rewritten_query,
+                        filter_expr=build_filter_expr(
+                            tenant_id=tenant_id,
+                            allowed_acl_groups=acl_groups,
+                            doc_version=doc_version,
+                            current_doc_versions=current_versions,
+                            embedding_model=text_model.model_name,
+                            doc_ids=group_doc_ids,
+                            source_types=text_source_types,
+                        ),
+                        limit=per_source_limit,
+                    ),
+                    source_id,
+                )
+                for source_id, group_doc_ids in selected_source_groups
+            ]
+            text_hits = round_robin_hit_groups(text_hit_groups)
+        else:
+            text_hits = hybrid_search(
+                client,
+                collection_name=config.collection_name,
+                query_vector=text_query_vector,
+                query_text=rewritten_query,
+                filter_expr=text_filter_expr,
+                limit=max(candidate_limit, 10),
+            )
         text_search_ms = elapsed_ms(text_search_start)
         emit_stage(
             stage_callback,
@@ -200,6 +235,8 @@ def retrieve_multimodal(
             f"已召回 {len(text_hits)} 个文本候选。",
             latency_ms=text_search_ms,
             candidate_count=len(text_hits),
+            source_group_count=len(selected_source_groups),
+            source_fanout=use_source_fanout,
         )
     emit_stage(
         stage_callback,
@@ -230,13 +267,43 @@ def retrieve_multimodal(
         "正在检索相似图片和多模态证据。",
     )
     image_search_start = perf_counter()
-    image_hits = image_search(
-        client,
-        collection_name=config.collection_name,
-        image_query_vector=image_query_vector,
-        filter_expr=image_filter_expr,
-        limit=max(candidate_limit, 10),
-    )
+    if use_source_fanout:
+        image_hit_groups = [
+            annotate_retrieval_source(
+                image_search(
+                    client,
+                    collection_name=config.collection_name,
+                    image_query_vector=image_query_vector,
+                    filter_expr=build_filter_expr(
+                        tenant_id=tenant_id,
+                        allowed_acl_groups=acl_groups,
+                        doc_version=doc_version,
+                        current_doc_versions=current_versions,
+                        embedding_model=text_model.model_name,
+                        doc_ids=group_doc_ids,
+                        source_types=image_source_types,
+                    ),
+                    limit=per_source_limit,
+                ),
+                source_id,
+            )
+            for source_id, group_doc_ids in selected_source_groups
+        ]
+        image_anchor_hits = sorted(
+            [hit for group in image_hit_groups for hit in group],
+            key=lambda hit: hit.score,
+            reverse=True,
+        )
+        image_hits = round_robin_hit_groups(image_hit_groups)
+    else:
+        image_hits = image_search(
+            client,
+            collection_name=config.collection_name,
+            image_query_vector=image_query_vector,
+            filter_expr=image_filter_expr,
+            limit=max(candidate_limit, 10),
+        )
+        image_anchor_hits = image_hits
     image_search_ms = elapsed_ms(image_search_start)
     emit_stage(
         stage_callback,
@@ -246,6 +313,8 @@ def retrieve_multimodal(
         f"已召回 {len(image_hits)} 个图片候选。",
         latency_ms=image_search_ms,
         candidate_count=len(image_hits),
+        source_group_count=len(selected_source_groups),
+        source_fanout=use_source_fanout,
     )
     emit_stage(
         stage_callback,
@@ -304,7 +373,7 @@ def retrieve_multimodal(
         reranked = candidates
     reranked = anchor_query_image_evidence(
         reranked,
-        image_hits=image_hits,
+        image_hits=image_anchor_hits,
         has_image_file_query=has_image_file_query,
     )
     emit_stage(
@@ -349,6 +418,7 @@ def retrieve_multimodal(
         retrieval_mode=multimodal_retrieval_mode(
             has_text_query=has_text_query,
             has_image_file_query=has_image_file_query,
+            source_fanout=use_source_fanout,
         ),
         candidate_count=len(candidates),
         reranked_count=len(reranked),
@@ -408,12 +478,19 @@ def image_only_candidates(image_hits: list[SearchHit], *, limit: int) -> list[Se
     return candidates
 
 
-def multimodal_retrieval_mode(*, has_text_query: bool, has_image_file_query: bool) -> str:
+def multimodal_retrieval_mode(
+    *,
+    has_text_query: bool,
+    has_image_file_query: bool,
+    source_fanout: bool = False,
+) -> str:
     if has_text_query and has_image_file_query:
-        return "multimodal_text_image_file_fusion_rerank"
-    if has_text_query:
-        return "multimodal_text_image_fusion_rerank"
-    return "image_vector_file_query"
+        mode = "multimodal_text_image_file_fusion_rerank"
+    elif has_text_query:
+        mode = "multimodal_text_image_fusion_rerank"
+    else:
+        mode = "image_vector_file_query"
+    return f"{mode}_source_fanout" if source_fanout else mode
 
 
 def replace_search_hit_metadata(hit: SearchHit, metadata: dict) -> SearchHit:
