@@ -70,7 +70,16 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["query"]["image_payloads"]["accepted_total"] >= 0
     assert body["query"]["image_payloads"]["rejected_oversized_total"] >= 0
     assert body["query"]["image_payloads"]["invalid_total"] >= 0
-    assert body["query"]["image_payloads"]["bucket_limits_bytes"] == [65536, 262144, 1048576, 2097152]
+    assert body["query"]["image_payloads"]["bucket_limits_bytes"] == [
+        65536,
+        262144,
+        1048576,
+        2097152,
+        4194304,
+        8388608,
+        16777216,
+        33554432,
+    ]
     assert body["conversation"]["max_conversation_request_bytes"] >= body["query"]["max_query_request_bytes"]
     assert body["conversation"]["max_conversation_images"] >= 1
     assert body["conversation"]["max_conversation_image_bytes"] >= body["query"]["max_query_image_bytes"]

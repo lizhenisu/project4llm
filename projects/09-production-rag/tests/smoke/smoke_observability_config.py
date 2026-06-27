@@ -68,6 +68,13 @@ def main() -> None:
     assert any("rag_query_stream_events_total" in expression for expression in expressions)
     assert any("rag_model_api_operation_calls_total" in expression for expression in expressions)
     assert any("rag_ingestion_tasks" in expression for expression in expressions)
+    image_size_panel = next(
+        panel for panel in dashboard["panels"]
+        if panel["title"] == "Query Image Payload Size p95"
+    )
+    assert image_size_panel["fieldConfig"]["defaults"]["unit"] == "bytes"
+    assert "rag_query_image_payload_bytes_bucket" in image_size_panel["targets"][0]["expr"]
+    assert "histogram_quantile(0.95" in image_size_panel["targets"][0]["expr"]
     print("smoke_observability_config=ok")
 
 

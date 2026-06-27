@@ -134,7 +134,16 @@ _HTTP_LATENCY_BUCKETS_MS = (
     120_000.0,
 )
 _QUERY_IMAGE_METRICS_LOCK = threading.Lock()
-_QUERY_IMAGE_BUCKET_LIMITS = (64 * 1024, 256 * 1024, 1024 * 1024, 2 * 1024 * 1024)
+_QUERY_IMAGE_BUCKET_LIMITS = (
+    64 * 1024,
+    256 * 1024,
+    1024 * 1024,
+    2 * 1024 * 1024,
+    4 * 1024 * 1024,
+    8 * 1024 * 1024,
+    16 * 1024 * 1024,
+    32 * 1024 * 1024,
+)
 _QUERY_IMAGE_METRICS: dict[str, Any] = {
     "accepted_total": 0,
     "accepted_estimated_bytes_total": 0,
@@ -527,6 +536,37 @@ def prometheus_metrics_text(config) -> str:
                 f'{int(query_images["rejected_oversized_total"])}'
             ),
             f'rag_query_image_payloads_total{{outcome="invalid"}} {int(query_images["invalid_total"])}',
+            "# HELP rag_query_image_payload_bytes Estimated decoded query image payload size.",
+            "# TYPE rag_query_image_payload_bytes histogram",
+        ]
+    )
+    for outcome, prefix, count_key in (
+        ("accepted", "accepted", "accepted_total"),
+        ("rejected_oversized", "rejected", "rejected_oversized_total"),
+    ):
+        cumulative = 0
+        size_buckets = query_images[f"{prefix}_size_buckets"]
+        for upper_bound_bytes in _QUERY_IMAGE_BUCKET_LIMITS:
+            cumulative += int(size_buckets.get(f"le_{upper_bound_bytes}", 0))
+            lines.append(
+                "rag_query_image_payload_bytes_bucket"
+                f'{{outcome="{outcome}",le="{upper_bound_bytes}"}} {cumulative}'
+            )
+        lines.append(
+            "rag_query_image_payload_bytes_bucket"
+            f'{{outcome="{outcome}",le="+Inf"}} {int(query_images[count_key])}'
+        )
+        lines.append(
+            f'rag_query_image_payload_bytes_sum{{outcome="{outcome}"}} '
+            f'{int(query_images[f"{prefix}_estimated_bytes_total"])}'
+        )
+        lines.append(
+            f'rag_query_image_payload_bytes_count{{outcome="{outcome}"}} '
+            f'{int(query_images[count_key])}'
+        )
+
+    lines.extend(
+        [
             "# HELP rag_model_api_active Current external model API calls.",
             "# TYPE rag_model_api_active gauge",
             f"rag_model_api_active {int(model_api['active'])}",

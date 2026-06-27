@@ -22,6 +22,8 @@ def main() -> None:
     with isolated_runtime():
         api = TestClient(serve.create_app())
         assert call_model_api_with_retries("metrics_smoke", lambda: "ok") == "ok"
+        serve.record_query_image_size(64 * 1024, accepted=True)
+        serve.record_query_image_size(3 * 1024 * 1024, accepted=False)
         assert api.get("/health").status_code == 200
         assert api.get("/sources/private-doc@sha256-secret?tenant_id=metrics-smoke").status_code >= 400
         response = api.get("/metrics")
@@ -39,6 +41,11 @@ def main() -> None:
     assert "sha256-secret" not in text
     assert 'rag_query_stream_events_total{event="rejected_user"}' in text
     assert 'rag_query_image_payloads_total{outcome="accepted"}' in text
+    assert "# TYPE rag_query_image_payload_bytes histogram" in text
+    assert 'rag_query_image_payload_bytes_bucket{outcome="accepted",le="65536"}' in text
+    assert 'rag_query_image_payload_bytes_bucket{outcome="rejected_oversized",le="+Inf"}' in text
+    assert 'rag_query_image_payload_bytes_sum{outcome="accepted"}' in text
+    assert 'rag_query_image_payload_bytes_count{outcome="rejected_oversized"}' in text
     assert (
         'rag_model_api_operation_calls_total{operation="metrics_smoke",outcome="success"} 1'
         in text
@@ -48,6 +55,7 @@ def main() -> None:
     assert 'rag_ingestion_tasks{status="queued"}' in text
     validate_metric_lines(text)
     validate_health_histogram(text)
+    validate_query_image_histogram(text)
     print("smoke_prometheus_metrics=ok")
 
 
@@ -72,6 +80,30 @@ def validate_health_histogram(text: str) -> None:
     assert counts
     assert counts == sorted(counts)
     assert counts[-1] == 1
+
+
+def validate_query_image_histogram(text: str) -> None:
+    for outcome in ("accepted", "rejected_oversized"):
+        bucket_pattern = re.compile(
+            rf'^rag_query_image_payload_bytes_bucket\{{outcome="{outcome}",le="([^"]+)"\}}\s+(\d+)$',
+        )
+        buckets = [
+            (match.group(1), int(match.group(2)))
+            for line in text.splitlines()
+            if (match := bucket_pattern.match(line))
+        ]
+        assert buckets[-1][0] == "+Inf"
+        counts = [count for _, count in buckets]
+        assert counts == sorted(counts)
+        count_pattern = re.compile(
+            rf'^rag_query_image_payload_bytes_count\{{outcome="{outcome}"\}}\s+(\d+)$',
+        )
+        count = next(
+            int(match.group(1))
+            for line in text.splitlines()
+            if (match := count_pattern.match(line))
+        )
+        assert counts[-1] == count
 
 
 @contextmanager
