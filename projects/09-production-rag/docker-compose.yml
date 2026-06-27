@@ -41,6 +41,34 @@ services:
       timeout: 5s
       retries: 5
 
+  pgbouncer:
+    build:
+      context: ./ops/pgbouncer
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_password}
+      PGBOUNCER_MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-200}
+      PGBOUNCER_DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
+      PGBOUNCER_RESERVE_POOL_SIZE: ${PGBOUNCER_RESERVE_POOL_SIZE:-5}
+      PGBOUNCER_MAX_DB_CONNECTIONS: ${PGBOUNCER_MAX_DB_CONNECTIONS:-60}
+      PGBOUNCER_SERVER_IDLE_TIMEOUT_SECONDS: ${PGBOUNCER_SERVER_IDLE_TIMEOUT_SECONDS:-600}
+      PGBOUNCER_QUERY_WAIT_TIMEOUT_SECONDS: ${PGBOUNCER_QUERY_WAIT_TIMEOUT_SECONDS:-30}
+    ports:
+      - "6432:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U ${POSTGRES_USER:-rag} -d ${POSTGRES_DB:-production_rag}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
   milvus:
     image: milvusdb/milvus:v2.6.13
     container_name: rag-milvus
@@ -78,7 +106,7 @@ services:
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "1024"
       RAG_RUNTIME_DIR: /app/projects/09-production-rag/runtime
-      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@postgres:5432/${POSTGRES_DB:-production_rag}
+      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@pgbouncer:6432/${POSTGRES_DB:-production_rag}
       NEW_API_URL: ${NEW_API_URL:-}
       NEW_API_KEY: ${NEW_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-gemini-3-flash-preview}
@@ -93,7 +121,7 @@ services:
     depends_on:
       milvus:
         condition: service_started
-      postgres:
+      pgbouncer:
         condition: service_healthy
     restart: unless-stopped
 
@@ -118,7 +146,7 @@ services:
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "1024"
       RAG_RUNTIME_DIR: /app/projects/09-production-rag/runtime
-      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@postgres:5432/${POSTGRES_DB:-production_rag}
+      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@pgbouncer:6432/${POSTGRES_DB:-production_rag}
       RAG_INGEST_EXECUTION_MODE: ${RAG_INGEST_EXECUTION_MODE:-external}
       RAG_QUERY_REWRITE_BACKEND: ${RAG_QUERY_REWRITE_BACKEND:-llm}
       RAG_QUERY_REWRITE_HISTORY_TURNS: "6"
@@ -140,7 +168,7 @@ services:
     depends_on:
       milvus:
         condition: service_started
-      postgres:
+      pgbouncer:
         condition: service_healthy
       rag-worker:
         condition: service_started
@@ -247,14 +275,14 @@ services:
       RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "1024"
-      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@postgres:5432/${POSTGRES_DB:-production_rag}
+      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@pgbouncer:6432/${POSTGRES_DB:-production_rag}
     volumes:
       - ./object_store:/app/projects/09-production-rag/object_store
       - ./ingest:/data:ro
     depends_on:
       milvus:
         condition: service_started
-      postgres:
+      pgbouncer:
         condition: service_healthy
 
 volumes:

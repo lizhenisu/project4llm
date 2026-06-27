@@ -26,8 +26,8 @@ cp .env.example .env
 # 编辑 .env，填入 LLM API Key 等配置
 # 见下方"LLM 配置"节了解必需变量。
 
-# 2. 启动基础设施（Milvus 向量数据库等）
-docker compose up -d milvus
+# 2. 启动基础设施（Milvus + PostgreSQL/PgBouncer）
+docker compose up -d milvus pgbouncer
 
 # 3. 初始化 Schema
 python schema.py --reset
@@ -70,6 +70,8 @@ curl http://localhost:8008/health
 docker compose up -d --scale rag-worker=3
 
 # 多 API 副本必须共享同一个 RAG_METADATA_DATABASE_URL。
+# Compose 中 API/worker/ingest 均通过 PgBouncer transaction pooling
+# 连接 PostgreSQL；宿主机热重载 API 使用 127.0.0.1:6432。
 # RAG_QUERY_SHARED_ADMISSION=1（默认）会用数据库租约统一约束
 # 全局、租户和用户/API-token 的流式查询容量。
 # 上传接口也会先预留共享的全局/租户 backlog 槽，再原子转换为摄取任务。
