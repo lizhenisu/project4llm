@@ -65,6 +65,12 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["query_stream"]["user_queue_limit"] >= 1
     assert body["query_stream"]["event_queue_limit"] >= 1
     assert body["query_stream"]["workers"] >= 1
+    assert isinstance(body["query_shared_admission"]["enabled"], bool)
+    assert body["query_shared_admission"]["lease_ms"] >= 1
+    assert body["query_shared_admission"]["global_slots"] >= 0
+    assert body["query_shared_admission"]["tenant_slots"] >= 0
+    assert body["query_shared_admission"]["user_slots"] >= 0
+    assert body["query_shared_admission"]["expired_slots"] >= 0
     assert body["query"]["max_query_image_bytes"] >= 1
     assert body["query"]["max_query_request_bytes"] >= body["query"]["max_query_image_bytes"]
     assert body["query"]["image_payloads"]["accepted_total"] >= 0
@@ -173,6 +179,10 @@ def test_runtime_metrics_records_query_stream_acceptance_and_completion() -> Non
         assert after["event_queue_limit"] == 1
         assert tenant_id not in after["active_by_tenant"]
         assert f"{tenant_id}:user:user-runtime-query" not in after["active_by_user"]
+        shared_after = api.get("/runtime-metrics").json()["query_shared_admission"]
+        assert shared_after["global_slots"] == 0
+        assert shared_after["tenant_slots"] == 0
+        assert shared_after["user_slots"] == 0
     finally:
         restore_env("RAG_QUERY_STREAM_EVENT_QUEUE_LIMIT", old_event_queue_limit)
 

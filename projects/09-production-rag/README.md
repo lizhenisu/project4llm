@@ -69,6 +69,10 @@ curl http://localhost:8008/health
 # 按处理吞吐需要可横向扩展 worker；数据库租约会协调任务归属。
 docker compose up -d --scale rag-worker=3
 
+# 多 API 副本必须共享同一个 RAG_METADATA_DATABASE_URL。
+# RAG_QUERY_SHARED_ADMISSION=1（默认）会用数据库租约统一约束
+# 全局、租户和用户/API-token 的流式查询容量。
+
 # 4. 一键配置 HTTPS（自动获取 Let's Encrypt 证书）
 sudo bash scripts/setup_caddy.sh your-domain.com
 

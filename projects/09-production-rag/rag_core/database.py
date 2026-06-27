@@ -441,6 +441,21 @@ CREATE TABLE IF NOT EXISTS source_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_source_tasks_tenant_updated ON source_tasks(tenant_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS query_admission_slots (
+    scope_type TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    slot_index INTEGER NOT NULL,
+    lease_owner TEXT NOT NULL,
+    lease_expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(scope_type, scope_key, slot_index)
+);
+CREATE INDEX IF NOT EXISTS idx_query_admission_slots_expiry
+ON query_admission_slots(lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_query_admission_slots_owner
+ON query_admission_slots(lease_owner);
+
 CREATE TABLE IF NOT EXISTS source_catalog (
     tenant_id TEXT NOT NULL,
     doc_id TEXT NOT NULL,

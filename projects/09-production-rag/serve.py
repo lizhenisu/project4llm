@@ -56,6 +56,12 @@ from rag_core.jsonl_store import (
 from rag_core.model_api_retry import model_api_metrics_snapshot
 from rag_core.milvus_store import milvus_client_metrics_snapshot
 from rag_core.pipeline import retrieve_and_rerank
+from rag_core.query_admission import (
+    acquire_query_admission_lease,
+    QueryAdmissionLeaseGuard,
+    QueryAdmissionRejected,
+    query_admission_metrics_snapshot,
+)
 from rag_core.readiness import readiness_report
 from rag_core.sources import (
     count_active_source_tasks,
@@ -219,6 +225,14 @@ def query_stream_user_queue_limit() -> int:
 
 def query_stream_event_queue_limit() -> int:
     return env_int("RAG_QUERY_STREAM_EVENT_QUEUE_LIMIT", 128)
+
+
+def query_shared_admission_enabled() -> bool:
+    return env_bool("RAG_QUERY_SHARED_ADMISSION", True)
+
+
+def query_shared_admission_lease_ms() -> int:
+    return env_int("RAG_QUERY_SHARED_ADMISSION_LEASE_MS", 15 * 60 * 1000)
 
 
 def ingest_backlog_limit() -> int:
@@ -462,6 +476,7 @@ def prometheus_metrics_text(config) -> str:
     ingestion = count_source_tasks_by_status(config=config, tenant_id=None)
     ingestion_leases = source_task_lease_metrics_snapshot(config=config, tenant_id=None)
     ingestion_recovery = source_task_recovery_metrics_snapshot(config=config, tenant_id=None)
+    shared_query_admission = query_admission_metrics_snapshot(config=config)
     lines = [
         "# HELP rag_http_active_requests Current in-flight HTTP requests.",
         "# TYPE rag_http_active_requests gauge",
@@ -533,6 +548,29 @@ def prometheus_metrics_text(config) -> str:
         ("event_queue_backpressure", "event_queue_backpressure_total"),
     ):
         lines.append(f'rag_query_stream_events_total{{event="{event}"}} {int(query_stream[key])}')
+
+    lines.extend(
+        [
+            "# HELP rag_query_shared_admission_slots Current database-backed query admission slots.",
+            "# TYPE rag_query_shared_admission_slots gauge",
+            (
+                'rag_query_shared_admission_slots{scope="global"} '
+                f'{shared_query_admission["global_slots"]}'
+            ),
+            (
+                'rag_query_shared_admission_slots{scope="tenant"} '
+                f'{shared_query_admission["tenant_slots"]}'
+            ),
+            (
+                'rag_query_shared_admission_slots{scope="user"} '
+                f'{shared_query_admission["user_slots"]}'
+            ),
+            (
+                'rag_query_shared_admission_slots{scope="expired"} '
+                f'{shared_query_admission["expired_slots"]}'
+            ),
+        ]
+    )
 
     lines.extend(
         [
@@ -680,6 +718,13 @@ def env_int(name: str, default: int) -> int:
         return max(1, int(value))
     except ValueError:
         return default
+
+
+def env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class QueryRequest(BaseModel):
@@ -1091,6 +1136,11 @@ def create_app():
         return {
             "http": http_metrics_snapshot(),
             "query_stream": query_stream_metrics_snapshot(),
+            "query_shared_admission": {
+                "enabled": query_shared_admission_enabled(),
+                "lease_ms": query_shared_admission_lease_ms(),
+                **query_admission_metrics_snapshot(config=config),
+            },
             "query": {
                 "max_query_image_bytes": config.max_query_image_bytes,
                 "max_query_request_bytes": max_query_request_bytes(config),
@@ -1769,6 +1819,56 @@ def create_app():
                         f"RAG_QUERY_STREAM_USER_QUEUE_LIMIT={query_stream_user_queue_limit()}"
                     ),
                 )
+        shared_guard = None
+        if query_shared_admission_enabled():
+            try:
+                shared_lease = acquire_query_admission_lease(
+                    config=config,
+                    tenant_id=auth_context.tenant_id,
+                    user_key=user_key,
+                    global_limit=query_stream_queue_limit(),
+                    tenant_limit=query_stream_tenant_queue_limit(),
+                    user_limit=query_stream_user_queue_limit(),
+                    lease_ms=query_shared_admission_lease_ms(),
+                )
+            except QueryAdmissionRejected as exc:
+                if user_slot is not None:
+                    user_slot.release()
+                tenant_slot.release()
+                stream_slot.release()
+                record_query_stream_rejected(exc.kind)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Query service shared {exc.kind} capacity is busy. Please retry later.",
+                ) from exc
+            except Exception as exc:
+                if user_slot is not None:
+                    user_slot.release()
+                tenant_slot.release()
+                stream_slot.release()
+                record_query_stream_rejected("global")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Query service shared admission is unavailable. Please retry later.",
+                ) from exc
+            shared_guard = QueryAdmissionLeaseGuard(
+                config=config,
+                lease=shared_lease,
+                lease_ms=query_shared_admission_lease_ms(),
+            )
+            try:
+                shared_guard.start()
+            except Exception as exc:
+                shared_guard.close()
+                if user_slot is not None:
+                    user_slot.release()
+                tenant_slot.release()
+                stream_slot.release()
+                record_query_stream_rejected("global")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Query service shared admission is unavailable. Please retry later.",
+                ) from exc
         record_query_stream_accepted(auth_context.tenant_id)
         record_query_stream_user_accepted(user_key)
 
@@ -1804,6 +1904,8 @@ def create_app():
                         },
                     )
                     result = resolve_answer_result(request, auth_context, stage_callback=emit_stage_event)
+                    if shared_guard is not None and not shared_guard.valid.is_set():
+                        raise RuntimeError("Query admission lease was lost before completion")
                     response = QueryResponse(
                         request_id=result.request_id,
                         answer=result.answer,
@@ -1838,6 +1940,8 @@ def create_app():
                     emit("error", {"detail": str(exc) or exc.__class__.__name__})
                 finally:
                     record_query_stream_finished(auth_context.tenant_id, user_key, errored=errored)
+                    if shared_guard is not None:
+                        shared_guard.close()
                     if user_slot is not None:
                         user_slot.release()
                     tenant_slot.release()
@@ -1848,6 +1952,8 @@ def create_app():
                 query_stream_executor(query_stream_max_workers()).submit(run_query)
             except Exception as exc:  # noqa: BLE001 - streamed API must serialize failures.
                 record_query_stream_finished(auth_context.tenant_id, user_key, errored=True)
+                if shared_guard is not None:
+                    shared_guard.close()
                 if user_slot is not None:
                     user_slot.release()
                 tenant_slot.release()

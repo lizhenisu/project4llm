@@ -40,6 +40,10 @@ def main() -> None:
     assert "private-doc" not in text
     assert "sha256-secret" not in text
     assert 'rag_query_stream_events_total{event="rejected_user"}' in text
+    assert 'rag_query_shared_admission_slots{scope="global"}' in text
+    assert 'rag_query_shared_admission_slots{scope="tenant"}' in text
+    assert 'rag_query_shared_admission_slots{scope="user"}' in text
+    assert 'rag_query_shared_admission_slots{scope="expired"}' in text
     assert 'rag_query_image_payloads_total{outcome="accepted"}' in text
     assert "# TYPE rag_query_image_payload_bytes histogram" in text
     assert 'rag_query_image_payload_bytes_bucket{outcome="accepted",le="65536"}' in text

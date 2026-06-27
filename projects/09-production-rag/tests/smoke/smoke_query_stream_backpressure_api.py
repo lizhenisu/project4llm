@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -14,6 +16,8 @@ if str(PROJECT_DIR) not in sys.path:
 
 import serve
 from rag_core.auth import AuthContext
+from rag_core.config import load_config
+from rag_core.query_admission import acquire_query_admission_lease, release_query_admission_lease
 
 
 def main() -> None:
@@ -22,6 +26,7 @@ def main() -> None:
     test_query_stream_route_returns_503_when_user_slot_is_unavailable()
     test_api_token_auth_context_gets_redacted_credential_principal()
     test_query_stream_route_applies_user_limit_to_api_token_principal()
+    test_query_stream_route_applies_shared_user_limit()
     print("smoke_query_stream_backpressure_api=ok")
 
 
@@ -180,6 +185,70 @@ def test_api_token_auth_context_gets_redacted_credential_principal() -> None:
     assert serve.query_stream_user_key(auth_context).startswith(
         "tenant-api-token-smoke:api_token:"
     )
+
+
+def test_query_stream_route_applies_shared_user_limit() -> None:
+    old_values = {
+        name: os.environ.get(name)
+        for name in (
+            "RAG_QUERY_STREAM_QUEUE_LIMIT",
+            "RAG_QUERY_STREAM_TENANT_QUEUE_LIMIT",
+            "RAG_QUERY_STREAM_USER_QUEUE_LIMIT",
+            "RAG_QUERY_SHARED_ADMISSION",
+        )
+    }
+    os.environ["RAG_QUERY_STREAM_QUEUE_LIMIT"] = "8"
+    os.environ["RAG_QUERY_STREAM_TENANT_QUEUE_LIMIT"] = "8"
+    os.environ["RAG_QUERY_STREAM_USER_QUEUE_LIMIT"] = "1"
+    os.environ["RAG_QUERY_SHARED_ADMISSION"] = "1"
+    auth_context = AuthContext(
+        "tenant-shared-user-smoke",
+        ["engineering"],
+        "smoke",
+        user_id="shared-user-smoke",
+        username="shared_user_smoke",
+    )
+    user_key = serve.query_stream_user_key(auth_context)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = replace(
+                load_config(),
+                metadata_database_url=None,
+                runtime_dir=Path(tmp) / "runtime",
+                object_store_dir=Path(tmp) / "object_store",
+            )
+            occupied = acquire_query_admission_lease(
+                config=config,
+                tenant_id=auth_context.tenant_id,
+                user_key=user_key,
+                global_limit=8,
+                tenant_limit=8,
+                user_limit=1,
+                lease_ms=60_000,
+            )
+            try:
+                with (
+                    patch("serve.resolve_auth_context", return_value=auth_context),
+                    patch("serve.load_config", return_value=config),
+                ):
+                    api = TestClient(serve.create_app())
+                    response = api.post(
+                        "/query/stream",
+                        json={
+                            "query": "smoke shared user admission",
+                            "tenant_id": auth_context.tenant_id,
+                            "acl_groups": ["engineering"],
+                            "request_id": "smoke-shared-user-admission",
+                        },
+                    )
+                assert response.status_code == 503, response.text
+                assert "shared user capacity is busy" in response.text
+                assert user_key not in response.text
+            finally:
+                assert release_query_admission_lease(config=config, lease=occupied)
+    finally:
+        for name, value in old_values.items():
+            restore_env(name, value)
 
 
 def restore_env(name: str, value: str | None) -> None:
