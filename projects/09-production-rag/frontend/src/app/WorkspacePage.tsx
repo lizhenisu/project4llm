@@ -15,6 +15,7 @@ import {
   deleteArtifact,
   renameArtifact,
   renameSource,
+  retrySource,
   getConversation,
   getAdminSettings,
   getArtifact,
@@ -592,6 +593,39 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         { ...source, status: "failed", error: error instanceof Error ? error.message : "删除失败" },
         ...items,
       ]);
+    }
+  }
+
+  async function handleRetrySource(source: SourceItem) {
+    const retryingKey = sourceStateKey(source);
+    setSources((items) =>
+      items.map((item) =>
+        sourceStateKey(item) === retryingKey
+          ? { ...item, status: "queued", error: "", retryable: false, updated_at: Date.now() }
+          : item,
+      ),
+    );
+    try {
+      const response = await retrySource(settings, source.doc_id);
+      setSources((items) =>
+        items.map((item) =>
+          sourceStateKey(item) === retryingKey
+            ? { ...response.source, selected: false }
+            : item,
+        ),
+      );
+    } catch (error) {
+      setSources((items) =>
+        items.map((item) =>
+          sourceStateKey(item) === retryingKey
+            ? {
+                ...source,
+                retryable: true,
+                error: error instanceof Error ? error.message : "重新处理失败",
+              }
+            : item,
+        ),
+      );
     }
   }
 
@@ -1317,6 +1351,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             onSourcesChange={setSources}
             onUpload={handleUpload}
             onDeleteSource={handleDeleteSource}
+            onRetrySource={handleRetrySource}
             onRenameSource={handleRenameSource}
             onOpenSource={handleOpenSource}
             activeContent={activeSourceContent}

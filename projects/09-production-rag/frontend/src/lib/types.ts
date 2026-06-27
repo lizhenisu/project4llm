@@ -15,6 +15,7 @@ export type SourceItem = {
   child_doc_ids?: string[];
   selected?: boolean;
   error?: string;
+  retryable?: boolean;
 };
 
 export type SourceContent = {

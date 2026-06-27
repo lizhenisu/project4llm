@@ -173,6 +173,16 @@ export function renameSource(
   );
 }
 
+export function retrySource(
+  settings: Settings,
+  docId: string,
+): Promise<{ status: string; source: SourceItem }> {
+  return request<{ status: string; source: SourceItem }>(
+    `/sources/${encodeURIComponent(docId)}/retry?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    { method: "POST", settings },
+  );
+}
+
 export function queryRag(
   settings: Settings,
   params: {

@@ -186,6 +186,56 @@ test.describe("browser-level frontend load smoke", () => {
     await expect(row.getByText(/已等待|已处理|完成时间取决于当前队列/)).toHaveCount(0);
   });
 
+  test("requeues a retryable failed ingestion source", async ({ page, baseURL }) => {
+    const failedSource = {
+      ...mockSource("retryable-ingestion.txt", 701, "failed"),
+      retryable: true,
+      error: "Synthetic terminal ingestion failure",
+    };
+    let currentSource = failedSource;
+    let retryRequests = 0;
+    await seedBrowserSession(page, 701);
+    await mockStartupApi(page);
+    await page.route("**/api/sources**", async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (request.method() === "POST" && path.endsWith(`/${failedSource.doc_id}/retry`)) {
+        retryRequests += 1;
+        currentSource = {
+          ...failedSource,
+          status: "queued",
+          retryable: false,
+          error: "",
+          updated_at: Date.now(),
+        };
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ status: "queued", source: currentSource }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ sources: [currentSource] }),
+      });
+    });
+
+    await page.goto(`${(baseURL || "http://127.0.0.1:5173").replace(/\/$/, "")}/#token=browser-load-token-701`, {
+      waitUntil: "domcontentloaded",
+    });
+    const row = page.locator(".source-row", { hasText: failedSource.title });
+    await expect(row).toHaveClass(/status-failed/);
+    await expect(row.getByText("Synthetic terminal ingestion failure")).toBeVisible();
+    await row.locator(".row-icon-more").click();
+    await page.getByRole("button", { name: "重新处理" }).click();
+    await expect.poll(() => retryRequests).toBe(1);
+    await expect(row).toHaveClass(/status-queued/);
+    await expect(row.getByText("排队中")).toBeVisible();
+    await expect(row.getByText("Synthetic terminal ingestion failure")).toHaveCount(0);
+  });
+
   test("queues extra uploads beyond the per-page upload limit", async ({ page, baseURL }) => {
     const names = ["queued-upload-1.txt", "queued-upload-2.txt", "queued-upload-3.txt"];
     const uploadRoutes: Array<{ resolve: () => void }> = [];

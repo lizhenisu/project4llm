@@ -13,6 +13,7 @@ type Props = {
   onSourcesChange: (sources: SourceItem[]) => void;
   onUpload: (file: File) => void;
   onDeleteSource: (source: SourceItem) => void;
+  onRetrySource?: (source: SourceItem) => void;
   onRenameSource?: (source: SourceItem, newTitle: string) => void;
   onOpenSource: (source: SourceItem) => void;
   activeContent: SourceContent | null;
@@ -26,6 +27,7 @@ export function SourcePanel({
   onSourcesChange,
   onUpload,
   onDeleteSource,
+  onRetrySource,
   onRenameSource,
   onOpenSource,
   activeContent,
@@ -176,6 +178,18 @@ export function SourcePanel({
                   <>
                   <div className="dropdown-backdrop" onMouseDown={() => setMenuOpenId(null)} />
                   <div className="dropdown-menu" style={{ top: menuPosition.top, right: menuPosition.right }} onMouseDown={(e) => e.stopPropagation()}>
+                    {source.status === "failed" && source.retryable && onRetrySource ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuOpenId(null);
+                          onRetrySource(source);
+                        }}
+                      >
+                        重新处理
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={(e) => {

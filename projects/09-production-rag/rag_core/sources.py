@@ -65,6 +65,14 @@ class UploadTooLargeError(ValueError):
         )
 
 
+class SourceTaskNotFoundError(LookupError):
+    pass
+
+
+class SourceTaskNotRetryableError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class SourceSummary:
     doc_id: str
@@ -577,6 +585,66 @@ def retry_or_fail_source_task(
         return "lost"
     invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     return outcome
+
+
+def retry_failed_source_task(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    task_id: str,
+) -> QueuedSourceTask:
+    timestamp = now_ms()
+    with connect_metadata_db(config) as conn:
+        row = conn.execute(
+            """
+            SELECT tenant_id, doc_id, title, source_type, source_uri, doc_version,
+                   acl_groups, status, error, requested_doc_version, created_at, updated_at
+            FROM source_tasks
+            WHERE tenant_id = ? AND id = ?
+            """,
+            (tenant_id, task_id),
+        ).fetchone()
+        if row is None:
+            raise SourceTaskNotFoundError("Source task not found")
+        if str(row["status"]) != "failed":
+            raise SourceTaskNotRetryableError("Only failed source tasks can be retried")
+        cursor = conn.execute(
+            """
+            UPDATE source_tasks
+            SET status = 'queued', error = '', updated_at = ?,
+                lease_owner = '', lease_expires_at = 0, attempt_count = 0,
+                next_attempt_at = 0, dead_lettered_at = 0
+            WHERE tenant_id = ? AND id = ? AND status = 'failed'
+            """,
+            (timestamp, tenant_id, task_id),
+        )
+        if int(cursor.rowcount or 0) != 1:
+            raise SourceTaskNotRetryableError("Source task state changed before retry")
+    invalidate_source_list_cache(config=config, tenant_id=tenant_id)
+    source = SourceSummary(
+        doc_id=str(row["doc_id"]),
+        title=str(row["title"]),
+        source_type=str(row["source_type"]),
+        source_uri=str(row["source_uri"]),
+        doc_version=int(row["doc_version"]),
+        chunk_count=0,
+        acl_groups=json.loads(row["acl_groups"] or "[]"),
+        status="queued",
+        current=False,
+        created_at=int(row["created_at"] or 0),
+        updated_at=timestamp,
+        child_doc_ids=[],
+        error="",
+    )
+    return QueuedSourceTask(
+        tenant_id=tenant_id,
+        source=source,
+        requested_doc_version=(
+            int(row["requested_doc_version"])
+            if row["requested_doc_version"] is not None
+            else None
+        ),
+    )
 
 
 def update_source_task_status(

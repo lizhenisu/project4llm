@@ -69,8 +69,11 @@ from rag_core.sources import (
     rename_source,
     resolve_metadata_display_block_urls,
     save_uploaded_file,
+    SourceTaskNotFoundError,
+    SourceTaskNotRetryableError,
     source_task_lease_metrics_snapshot,
     source_task_recovery_metrics_snapshot,
+    retry_failed_source_task,
     UploadTooLargeError,
 )
 from rag_core.user_auth import (
@@ -754,6 +757,7 @@ class SourceResponse(BaseModel):
     updated_at: int | None = None
     child_doc_ids: list[str] = Field(default_factory=list)
     error: str = ""
+    retryable: bool = False
 
 
 class SourceListResponse(BaseModel):
@@ -765,6 +769,11 @@ class SourceUploadResponse(BaseModel):
     sources: list[SourceResponse]
     document_count: int
     chunk_count: int
+
+
+class RetrySourceResponse(BaseModel):
+    status: str
+    source: SourceResponse
 
 
 class SourceContentResponse(BaseModel):
@@ -1518,6 +1527,44 @@ def create_app():
         if source is None:
             raise HTTPException(status_code=404, detail="Source not found")
         return source_to_response(source)
+
+    @app.post("/sources/{doc_id:path}/retry", response_model=RetrySourceResponse)
+    def retry_source_ingestion(
+        doc_id: str,
+        tenant_id: str = "team_a",
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> RetrySourceResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=tenant_id,
+            acl_groups=[],
+        )
+        try:
+            queued = retry_failed_source_task(
+                config=config,
+                tenant_id=auth_context.tenant_id,
+                task_id=doc_id,
+            )
+        except SourceTaskNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Source task not found") from exc
+        except SourceTaskNotRetryableError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        source = queued.source
+        submit_upload_ingestion_job(
+            pending_source=source,
+            saved_path=Path(source.source_uri),
+            tenant_id=auth_context.tenant_id,
+            acl_groups=source.acl_groups,
+            doc_version=queued.requested_doc_version,
+            language="zh",
+        )
+        return RetrySourceResponse(status="queued", source=source_to_response(source))
 
     @app.delete("/sources/{doc_id:path}", response_model=DeleteSourceResponse)
     def remove_source(
@@ -2516,6 +2563,7 @@ def source_to_response(source) -> SourceResponse:
         updated_at=source.updated_at,
         child_doc_ids=source.child_doc_ids,
         error=getattr(source, "error", ""),
+        retryable=source.status == "failed",
     )
 
 
