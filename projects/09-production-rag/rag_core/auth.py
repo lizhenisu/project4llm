@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from rag_core.config import RagConfig
@@ -12,6 +13,7 @@ class AuthContext:
     source: str
     user_id: str = ""
     username: str = ""
+    credential_id: str = ""
 
     def summary(self) -> dict[str, object]:
         return {
@@ -38,6 +40,7 @@ def build_auth_context(
     body_acl_groups: list[str],
     user_id: str = "",
     username: str = "",
+    credential_id: str = "",
 ) -> AuthContext:
     if header_tenant_id:
         return AuthContext(
@@ -46,6 +49,7 @@ def build_auth_context(
             source="headers",
             user_id=user_id,
             username=username,
+            credential_id=credential_id,
         )
 
     if config.require_auth_context:
@@ -59,6 +63,7 @@ def build_auth_context(
         source="request_body_compat",
         user_id=user_id,
         username=username,
+        credential_id=credential_id,
     )
 
 
@@ -72,3 +77,9 @@ def validate_bearer_token(
     expected = f"Bearer {config.api_token}"
     if authorization != expected:
         raise ValueError("Invalid or missing bearer token")
+
+
+def bearer_credential_id(authorization: str | None) -> str:
+    if not authorization:
+        return ""
+    return hashlib.sha256(authorization.encode("utf-8")).hexdigest()[:16]

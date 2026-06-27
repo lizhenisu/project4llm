@@ -36,6 +36,7 @@ def main() -> None:
     test_query_routes_reject_oversized_request_bodies_before_parsing_work()
     test_query_routes_reject_oversized_images_before_rag_work()
     test_query_routes_reject_invalid_image_data_url()
+    test_query_image_metrics_record_accepted_rejected_and_invalid_payloads()
     print("smoke_query_image_limits=ok")
 
 
@@ -107,6 +108,45 @@ def test_query_routes_reject_invalid_image_data_url() -> None:
         response = api.post("/query/stream", json=payload)
     assert response.status_code == 400, response.text
     assert "image_data_url must be a data:image URL" in response.text
+
+
+def test_query_image_metrics_record_accepted_rejected_and_invalid_payloads() -> None:
+    before = serve.query_image_metrics_snapshot()
+    config = type("Config", (), {"max_query_image_bytes": 4})()
+
+    accepted = serve.QueryRequest(
+        query="accepted",
+        image_data_url="data:image/png;base64," + base64.b64encode(b"1234").decode("ascii"),
+    )
+    serve.validate_query_image_data_url(accepted, config)
+
+    rejected = serve.QueryRequest(
+        query="rejected",
+        image_data_url="data:image/png;base64," + base64.b64encode(b"12345").decode("ascii"),
+    )
+    try:
+        serve.validate_query_image_data_url(rejected, config)
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 413
+    else:
+        raise AssertionError("oversized query image was not rejected")
+
+    invalid = serve.QueryRequest(query="invalid", image_data_url="not-a-data-url")
+    try:
+        serve.validate_query_image_data_url(invalid, config)
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 400
+    else:
+        raise AssertionError("invalid query image was not rejected")
+
+    after = serve.query_image_metrics_snapshot()
+    assert after["accepted_total"] == before["accepted_total"] + 1
+    assert after["rejected_oversized_total"] == before["rejected_oversized_total"] + 1
+    assert after["invalid_total"] == before["invalid_total"] + 1
+    assert after["accepted_estimated_bytes_max"] >= 4
+    assert after["rejected_estimated_bytes_max"] >= 5
+    assert after["accepted_size_buckets"]["le_65536"] >= 1
+    assert after["rejected_size_buckets"]["le_65536"] >= 1
 
 
 if __name__ == "__main__":

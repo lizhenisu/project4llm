@@ -6,6 +6,7 @@ import { EmptyState } from "../ui/EmptyState";
 
 const INITIAL_VISIBLE_SOURCE_COUNT = 80;
 const SOURCE_VISIBLE_INCREMENT = 80;
+const PROCESSING_STALE_WARNING_MS = 30 * 60 * 1000;
 
 type Props = {
   sources: SourceItem[];
@@ -108,10 +109,12 @@ export function SourcePanel({
           </label>
           {visibleSources.map((source) => {
             const activeTask = source.status === "uploading" || source.status === "queued" || source.status === "processing";
+            const progressDetail = sourceProgressDetail(source);
+            const staleTask = source.status === "processing" && sourceStatusAgeMs(source) >= PROCESSING_STALE_WARNING_MS;
             const sourceKey = sourceInstanceKey(source);
             const isEditing = editingSourceId === sourceKey;
             return (
-            <div className={`source-row status-${source.status}${activeTask ? " is-active-task" : ""}${isEditing ? " is-editing" : ""}`} key={sourceKey}>
+            <div className={`source-row status-${source.status}${activeTask ? " is-active-task" : ""}${staleTask ? " is-stale-task" : ""}${isEditing ? " is-editing" : ""}`} key={sourceKey}>
               <FileText className="file-type-icon" size={20} />
               
               <div className={`source-title${isEditing ? " is-editing" : ""}`}>
@@ -142,6 +145,9 @@ export function SourcePanel({
                   {source.source_type} · {source.chunk_count} chunks
                   {source.status !== "ready" ? ` · ${sourceStatusLabel(source.status)}` : ""}
                 </small>
+                {progressDetail ? (
+                  <small className={`source-progress${staleTask ? " is-stale" : ""}`}>{progressDetail}</small>
+                ) : null}
                 {source.error ? <small className="error-text">{source.error}</small> : null}
               </div>
 
@@ -278,6 +284,37 @@ function sourceStatusLabel(status: SourceItem["status"]) {
   if (status === "uploading") return "上传中";
   if (status === "failed") return "失败";
   return "已就绪";
+}
+
+function sourceProgressDetail(source: SourceItem) {
+  if (source.status === "queued") {
+    const age = sourceStatusAgeMs(source);
+    return age > 0 ? `已等待 ${formatElapsedDuration(age)}，完成时间取决于当前队列` : "等待后台任务接收";
+  }
+  if (source.status === "processing") {
+    const age = sourceStatusAgeMs(source);
+    if (age >= PROCESSING_STALE_WARNING_MS) {
+      return `已持续 ${formatElapsedDuration(age)}，疑似停滞，系统将自动尝试恢复`;
+    }
+    return age > 0 ? `已处理 ${formatElapsedDuration(age)}` : "后台正在解析和建立索引";
+  }
+  return "";
+}
+
+function sourceStatusAgeMs(source: SourceItem) {
+  const timestamp = source.status === "queued" ? source.created_at : source.updated_at;
+  if (!timestamp || !Number.isFinite(timestamp)) return 0;
+  return Math.max(0, Date.now() - timestamp);
+}
+
+function formatElapsedDuration(durationMs: number) {
+  const totalSeconds = Math.max(1, Math.floor(durationMs / 1000));
+  if (totalSeconds < 60) return `${totalSeconds} 秒`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes} 分钟`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
 }
 
 function SourceReader({

@@ -152,6 +152,29 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
   });
 
+  test("shows elapsed time and recovery guidance for stale ingestion", async ({ page, baseURL }) => {
+    const staleSource = {
+      ...mockSource("stale-ingestion.txt", 700, "processing"),
+      created_at: Date.now() - 35 * 60 * 1000,
+      updated_at: Date.now() - 31 * 60 * 1000,
+    };
+    await seedBrowserSession(page, 700);
+    await mockStartupApi(page);
+    await page.route("**/api/sources**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ sources: [staleSource] }),
+      });
+    });
+
+    await page.goto(baseURL || "http://127.0.0.1:5173", { waitUntil: "domcontentloaded" });
+    const row = page.locator(".source-row.is-stale-task", { hasText: "stale-ingestion.txt" });
+    await expect(row).toBeVisible();
+    await expect(row.getByText(/已持续 31 分钟/)).toBeVisible();
+    await expect(row.getByText("疑似停滞，系统将自动尝试恢复")).toBeVisible();
+  });
+
   test("queues extra uploads beyond the per-page upload limit", async ({ page, baseURL }) => {
     const names = ["queued-upload-1.txt", "queued-upload-2.txt", "queued-upload-3.txt"];
     const uploadRoutes: Array<{ resolve: () => void }> = [];

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -19,6 +20,8 @@ def main() -> None:
     test_query_stream_route_returns_503_when_queue_slot_is_unavailable()
     test_query_stream_route_returns_503_when_tenant_slot_is_unavailable()
     test_query_stream_route_returns_503_when_user_slot_is_unavailable()
+    test_api_token_auth_context_gets_redacted_credential_principal()
+    test_query_stream_route_applies_user_limit_to_api_token_principal()
     print("smoke_query_stream_backpressure_api=ok")
 
 
@@ -117,6 +120,66 @@ def test_query_stream_route_returns_503_when_user_slot_is_unavailable() -> None:
         restore_env("RAG_QUERY_STREAM_QUEUE_LIMIT", old_global_limit)
         restore_env("RAG_QUERY_STREAM_TENANT_QUEUE_LIMIT", old_tenant_limit)
         restore_env("RAG_QUERY_STREAM_USER_QUEUE_LIMIT", old_user_limit)
+
+
+def test_query_stream_route_applies_user_limit_to_api_token_principal() -> None:
+    old_global_limit = os.environ.get("RAG_QUERY_STREAM_QUEUE_LIMIT")
+    old_tenant_limit = os.environ.get("RAG_QUERY_STREAM_TENANT_QUEUE_LIMIT")
+    old_user_limit = os.environ.get("RAG_QUERY_STREAM_USER_QUEUE_LIMIT")
+    os.environ["RAG_QUERY_STREAM_QUEUE_LIMIT"] = "8"
+    os.environ["RAG_QUERY_STREAM_TENANT_QUEUE_LIMIT"] = "8"
+    os.environ["RAG_QUERY_STREAM_USER_QUEUE_LIMIT"] = "1"
+    auth_context = AuthContext(
+        "tenant-api-token-smoke",
+        ["engineering"],
+        "headers",
+        credential_id="0123456789abcdef",
+    )
+    user_key = serve.query_stream_user_key(auth_context)
+    assert user_key == "tenant-api-token-smoke:api_token:0123456789abcdef"
+    semaphore = serve.query_stream_user_semaphore(1, user_key)
+    acquired = semaphore.acquire(blocking=False)
+    assert acquired
+    try:
+        with patch("serve.resolve_auth_context", return_value=auth_context):
+            api = TestClient(serve.create_app())
+            response = api.post(
+                "/query/stream",
+                json={
+                    "query": "smoke api token fairness",
+                    "tenant_id": "tenant-api-token-smoke",
+                    "acl_groups": ["engineering"],
+                    "request_id": "smoke-query-stream-api-token-backpressure",
+                },
+            )
+        assert response.status_code == 503, response.text
+        assert "principal=api_token" in response.text
+        assert "0123456789abcdef" not in response.text
+    finally:
+        semaphore.release()
+        restore_env("RAG_QUERY_STREAM_QUEUE_LIMIT", old_global_limit)
+        restore_env("RAG_QUERY_STREAM_TENANT_QUEUE_LIMIT", old_tenant_limit)
+        restore_env("RAG_QUERY_STREAM_USER_QUEUE_LIMIT", old_user_limit)
+
+
+def test_api_token_auth_context_gets_redacted_credential_principal() -> None:
+    config = SimpleNamespace(api_token="smoke-secret-token", require_auth_context=True)
+    request = serve.QueryRequest(query="smoke", tenant_id="ignored")
+    with patch("serve.authenticate_token", return_value=None):
+        auth_context = serve.resolve_auth_context(
+            config=config,
+            authorization="Bearer smoke-secret-token",
+            x_rag_tenant_id="tenant-api-token-smoke",
+            x_rag_acl_groups="engineering",
+            request=request,
+        )
+    assert auth_context.credential_id
+    assert auth_context.credential_id != "smoke-secret-token"
+    assert "smoke-secret-token" not in str(auth_context.summary())
+    assert "credential_id" not in auth_context.summary()
+    assert serve.query_stream_user_key(auth_context).startswith(
+        "tenant-api-token-smoke:api_token:"
+    )
 
 
 def restore_env(name: str, value: str | None) -> None:

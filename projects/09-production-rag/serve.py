@@ -32,7 +32,7 @@ from rag_core.artifacts import (
     load_metadata_artifact,
     save_metadata_artifact,
 )
-from rag_core.auth import build_auth_context, validate_bearer_token
+from rag_core.auth import bearer_credential_id, build_auth_context, validate_bearer_token
 from rag_core.app_version import app_version
 from rag_core.config import load_config
 from rag_core.conversations import (
@@ -112,6 +112,19 @@ _QUERY_STREAM_ACTIVE_BY_USER: dict[str, int] = {}
 _HTTP_METRICS_LOCK = threading.Lock()
 _HTTP_METRICS: dict[str, dict[str, int | float]] = {}
 _HTTP_ACTIVE_TOTAL = 0
+_QUERY_IMAGE_METRICS_LOCK = threading.Lock()
+_QUERY_IMAGE_BUCKET_LIMITS = (64 * 1024, 256 * 1024, 1024 * 1024, 2 * 1024 * 1024)
+_QUERY_IMAGE_METRICS: dict[str, Any] = {
+    "accepted_total": 0,
+    "accepted_estimated_bytes_total": 0,
+    "accepted_estimated_bytes_max": 0,
+    "accepted_size_buckets": {},
+    "rejected_oversized_total": 0,
+    "rejected_estimated_bytes_total": 0,
+    "rejected_estimated_bytes_max": 0,
+    "rejected_size_buckets": {},
+    "invalid_total": 0,
+}
 
 
 def query_stream_executor(max_workers: int) -> ThreadPoolExecutor:
@@ -212,11 +225,61 @@ def estimate_base64_decoded_bytes(encoded: str) -> int:
     return max(0, (len(stripped) * 3) // 4 - padding)
 
 
+def record_query_image_size(estimated_bytes: int, *, accepted: bool) -> None:
+    prefix = "accepted" if accepted else "rejected"
+    count_key = "accepted_total" if accepted else "rejected_oversized_total"
+    bucket = query_image_size_bucket(estimated_bytes)
+    with _QUERY_IMAGE_METRICS_LOCK:
+        _QUERY_IMAGE_METRICS[count_key] += 1
+        _QUERY_IMAGE_METRICS[f"{prefix}_estimated_bytes_total"] += estimated_bytes
+        _QUERY_IMAGE_METRICS[f"{prefix}_estimated_bytes_max"] = max(
+            int(_QUERY_IMAGE_METRICS[f"{prefix}_estimated_bytes_max"]),
+            estimated_bytes,
+        )
+        buckets = _QUERY_IMAGE_METRICS[f"{prefix}_size_buckets"]
+        buckets[bucket] = int(buckets.get(bucket, 0)) + 1
+
+
+def record_invalid_query_image() -> None:
+    with _QUERY_IMAGE_METRICS_LOCK:
+        _QUERY_IMAGE_METRICS["invalid_total"] += 1
+
+
+def query_image_size_bucket(estimated_bytes: int) -> str:
+    for limit in _QUERY_IMAGE_BUCKET_LIMITS:
+        if estimated_bytes <= limit:
+            return f"le_{limit}"
+    return f"gt_{_QUERY_IMAGE_BUCKET_LIMITS[-1]}"
+
+
+def query_image_metrics_snapshot() -> dict[str, object]:
+    with _QUERY_IMAGE_METRICS_LOCK:
+        snapshot = {
+            key: dict(value) if isinstance(value, dict) else value
+            for key, value in _QUERY_IMAGE_METRICS.items()
+        }
+    accepted = int(snapshot["accepted_total"])
+    rejected = int(snapshot["rejected_oversized_total"])
+    snapshot["accepted_estimated_bytes_avg"] = round(
+        int(snapshot["accepted_estimated_bytes_total"]) / accepted,
+        2,
+    ) if accepted else 0.0
+    snapshot["rejected_estimated_bytes_avg"] = round(
+        int(snapshot["rejected_estimated_bytes_total"]) / rejected,
+        2,
+    ) if rejected else 0.0
+    snapshot["bucket_limits_bytes"] = list(_QUERY_IMAGE_BUCKET_LIMITS)
+    return snapshot
+
+
 def query_stream_user_key(auth_context) -> str:
     user_id = str(getattr(auth_context, "user_id", "") or "").strip()
-    if not user_id:
-        return ""
-    return f"{auth_context.tenant_id}:{user_id}"
+    if user_id:
+        return f"{auth_context.tenant_id}:user:{user_id}"
+    credential_id = str(getattr(auth_context, "credential_id", "") or "").strip()
+    if credential_id:
+        return f"{auth_context.tenant_id}:api_token:{credential_id}"
+    return ""
 
 
 def http_route_key(method: str, path: str) -> str:
@@ -759,6 +822,7 @@ def create_app():
             "query": {
                 "max_query_image_bytes": config.max_query_image_bytes,
                 "max_query_request_bytes": max_query_request_bytes(config),
+                "image_payloads": query_image_metrics_snapshot(),
             },
             "conversation": {
                 "max_conversation_request_bytes": max_conversation_request_bytes(config),
@@ -1382,7 +1446,7 @@ def create_app():
                     status_code=503,
                     detail=(
                         "Query service is busy for this user. Please retry later. "
-                        f"user_id={auth_context.user_id} "
+                        f"principal={'user' if auth_context.user_id else 'api_token'} "
                         f"RAG_QUERY_STREAM_USER_QUEUE_LIMIT={query_stream_user_queue_limit()}"
                     ),
                 )
@@ -1842,6 +1906,7 @@ def resolve_auth_context(
             header_acl_groups=x_rag_acl_groups,
             body_tenant_id=request.tenant_id,
             body_acl_groups=request.acl_groups,
+            credential_id=bearer_credential_id(authorization),
         )
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
@@ -1945,6 +2010,7 @@ def resolve_auth_context_from_values(
             header_acl_groups=x_rag_acl_groups,
             body_tenant_id=tenant_id,
             body_acl_groups=acl_groups,
+            credential_id=bearer_credential_id(authorization),
         )
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
@@ -2004,12 +2070,16 @@ def validate_query_image_data_url(request: QueryRequest, config) -> None:
         return
     prefix, separator, encoded = request.image_data_url.partition(",")
     if separator != "," or not prefix.startswith("data:image/"):
+        record_invalid_query_image()
         raise HTTPException(status_code=400, detail="image_data_url must be a data:image URL")
-    if estimate_base64_decoded_bytes(encoded) > config.max_query_image_bytes:
+    estimated_bytes = estimate_base64_decoded_bytes(encoded)
+    if estimated_bytes > config.max_query_image_bytes:
+        record_query_image_size(estimated_bytes, accepted=False)
         raise HTTPException(
             status_code=413,
             detail=f"Query image is too large. RAG_MAX_QUERY_IMAGE_BYTES={config.max_query_image_bytes}",
         )
+    record_query_image_size(estimated_bytes, accepted=True)
 
 
 def validate_conversation_image_data_urls(request: ConversationUpsertRequest, config) -> None:

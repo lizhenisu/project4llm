@@ -67,6 +67,10 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["query_stream"]["workers"] >= 1
     assert body["query"]["max_query_image_bytes"] >= 1
     assert body["query"]["max_query_request_bytes"] >= body["query"]["max_query_image_bytes"]
+    assert body["query"]["image_payloads"]["accepted_total"] >= 0
+    assert body["query"]["image_payloads"]["rejected_oversized_total"] >= 0
+    assert body["query"]["image_payloads"]["invalid_total"] >= 0
+    assert body["query"]["image_payloads"]["bucket_limits_bytes"] == [65536, 262144, 1048576, 2097152]
     assert body["conversation"]["max_conversation_request_bytes"] >= body["query"]["max_query_request_bytes"]
     assert body["conversation"]["max_conversation_images"] >= 1
     assert body["conversation"]["max_conversation_image_bytes"] >= body["query"]["max_query_image_bytes"]
@@ -143,7 +147,7 @@ def test_runtime_metrics_records_query_stream_acceptance_and_completion() -> Non
         assert after["active"] == before["active"]
         assert after["event_queue_limit"] == 1
         assert tenant_id not in after["active_by_tenant"]
-        assert f"{tenant_id}:user-runtime-query" not in after["active_by_user"]
+        assert f"{tenant_id}:user:user-runtime-query" not in after["active_by_user"]
     finally:
         restore_env("RAG_QUERY_STREAM_EVENT_QUEUE_LIMIT", old_event_queue_limit)
 

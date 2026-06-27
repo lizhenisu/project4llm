@@ -561,6 +561,18 @@ button:not(:disabled):active {
   color: var(--danger);
 }
 
+.source-progress.is-stale {
+  color: #b45309;
+  font-weight: 600;
+}
+
+.source-row.is-stale-task {
+  border-color: color-mix(in srgb, #f59e0b 52%, var(--line));
+  background:
+    linear-gradient(90deg, rgb(245 158 11 / 9%), rgb(251 191 36 / 8%)),
+    var(--surface);
+}
+
 .source-reader-backdrop {
   position: fixed;
   inset: 0;
