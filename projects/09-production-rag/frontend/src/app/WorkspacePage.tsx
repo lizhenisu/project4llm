@@ -754,6 +754,22 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     } catch (error) {
       if (!isCurrentSession()) return;
       if (isFetchInterrupted(error)) {
+        const interruptedMessages = markPendingAnswerInterrupted(baseMessages, pending.id, latestRagProgress);
+        if (isCurrentWorkspace()) {
+          setMessages(interruptedMessages);
+          setTypingMessageId(null);
+        }
+        try {
+          await persistConversation(
+            interruptedMessages,
+            targetConversationId,
+            requestSelectedDocIds,
+            settings,
+            requestWorkspaceId,
+          );
+        } catch {
+          // The initial sending state was already persisted before streaming began.
+        }
         return;
       }
       const failedMessages: ChatMessage[] = baseMessages.map((item) =>
@@ -855,6 +871,26 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     } catch (error) {
       if (!isCurrentSession()) return;
       if (isFetchInterrupted(error)) {
+        const interruptedMessages = markPendingAnswerInterrupted(
+          conversation.messages,
+          pending.id,
+          latestRagProgress,
+        );
+        if (isCurrentWorkspace()) {
+          setMessages(interruptedMessages);
+          setTypingMessageId(null);
+        }
+        try {
+          await persistConversation(
+            interruptedMessages,
+            conversation.id,
+            conversation.source_doc_ids,
+            nextSettings,
+            workspaceId,
+          );
+        } catch {
+          // Keep the server's existing sending state so a later reload can retry recovery.
+        }
         return;
       }
       const failedMessages: ChatMessage[] = conversation.messages.map((item, index) =>
@@ -2218,8 +2254,26 @@ function findPreviousUserMessageIndex(messages: ChatMessage[], fromIndex: number
   return -1;
 }
 
+function markPendingAnswerInterrupted(
+  messages: ChatMessage[],
+  pendingId: string,
+  ragProgress: RagProgressStage[],
+): ChatMessage[] {
+  return messages.map((message) =>
+    message.id === pendingId
+      ? {
+          ...message,
+          content: "连接已中断，刷新页面后将自动恢复回答。",
+          status: "sending" as const,
+          ragProgress,
+        }
+      : message,
+  );
+}
+
 function isFetchInterrupted(error: unknown) {
-  return error instanceof TypeError && error.message === "Failed to fetch";
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  return error instanceof TypeError && /(failed to fetch|networkerror|load failed|fetch failed)/i.test(error.message);
 }
 
 function settingsEqual(left: Settings, right: Settings) {

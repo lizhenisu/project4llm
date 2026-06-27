@@ -680,6 +680,128 @@ test.describe("browser-level frontend load smoke", () => {
     await expect(page.getByText("触发高频 stage")).toBeVisible();
   });
 
+  test("preserves an interrupted answer and completes it after reload", async ({ page, baseURL }) => {
+    const now = Date.now();
+    let queryAttempts = 0;
+    let persistedConversation: {
+      id: string;
+      tenant_id: string;
+      title: string;
+      messages: Array<Record<string, unknown>>;
+      source_doc_ids: string[];
+      created_at: number;
+      updated_at: number;
+    } | null = null;
+
+    await seedBrowserSession(page, 961);
+    await mockStartupApi(page);
+    await page.route("**/api/sources**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ sources: [] }),
+      });
+    });
+    await page.unroute("**/api/conversations**");
+    await page.route("**/api/conversations**", async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (request.method() === "GET" && path.endsWith("/conversations")) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            conversations: persistedConversation
+              ? [{
+                  id: persistedConversation.id,
+                  tenant_id: persistedConversation.tenant_id,
+                  title: persistedConversation.title,
+                  message_count: persistedConversation.messages.length,
+                  source_doc_ids: persistedConversation.source_doc_ids,
+                  created_at: persistedConversation.created_at,
+                  updated_at: persistedConversation.updated_at,
+                }]
+              : [],
+          }),
+        });
+        return;
+      }
+      if (request.method() === "GET" && path.endsWith("/conversations/interrupted-recovery-conversation")) {
+        await route.fulfill({
+          status: persistedConversation ? 200 : 404,
+          contentType: "application/json",
+          body: JSON.stringify(persistedConversation || { detail: "Conversation not found" }),
+        });
+        return;
+      }
+      if (request.method() === "POST" && path.endsWith("/conversations")) {
+        const body = JSON.parse(request.postData() || "{}") as {
+          title?: string;
+          messages?: Array<Record<string, unknown>>;
+          source_doc_ids?: string[];
+        };
+        persistedConversation = {
+          id: "interrupted-recovery-conversation",
+          tenant_id: "queued-upload-tenant",
+          title: body.title || "Interrupted recovery conversation",
+          messages: body.messages || [],
+          source_doc_ids: body.source_doc_ids || [],
+          created_at: persistedConversation?.created_at || now,
+          updated_at: Date.now(),
+        };
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(persistedConversation),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Conversation not found" }),
+      });
+    });
+    await page.route("**/api/query/stream", async (route) => {
+      queryAttempts += 1;
+      if (queryAttempts === 1) {
+        await route.abort("failed");
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/x-ndjson",
+        body: `${JSON.stringify({
+          type: "result",
+          request_id: "interrupted-recovery-request",
+          answer: "Recovered answer after browser reload.",
+          citations: [],
+          trace: {},
+        })}\n`,
+      });
+    });
+
+    await page.goto(`${(baseURL || "http://127.0.0.1:5173").replace(/\/$/, "")}/#token=browser-load-token-961`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#chat-input-textarea").fill("测试断流恢复");
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.getByText("连接已中断，刷新页面后将自动恢复回答。")).toBeVisible();
+    await expect.poll(() => persistedConversation?.messages.at(-1)?.status).toBe("sending");
+    await expect.poll(() => persistedConversation?.messages.at(-1)?.content).toBe(
+      "连接已中断，刷新页面后将自动恢复回答。",
+    );
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByText("Recovered answer after browser reload.")).toBeVisible();
+    await expect(page.getByText("测试断流恢复")).toBeVisible();
+    await expect.poll(() => queryAttempts).toBe(2);
+    await expect.poll(() => persistedConversation?.messages.at(-1)?.status).toBe("done");
+    await expect.poll(() => persistedConversation?.messages.at(-1)?.content).toBe(
+      "Recovered answer after browser reload.",
+    );
+  });
+
   test("compresses large chat image attachments before sending", async ({ page, baseURL }) => {
     const now = Date.now();
     let streamedImageDataUrl = "";

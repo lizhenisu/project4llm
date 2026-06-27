@@ -1047,6 +1047,12 @@ button.jump-latest-button:active:not(:disabled) {
     assistant-thinking 1.2s ease-in-out infinite;
 }
 
+.assistant-message.sending.interrupted {
+  border-color: color-mix(in srgb, var(--gold) 65%, var(--line));
+  background: color-mix(in srgb, var(--gold) 16%, var(--surface));
+  animation: message-in 220ms ease both;
+}
+
 .rag-progress {
   display: grid;
   gap: 12px;

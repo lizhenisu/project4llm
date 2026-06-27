@@ -464,6 +464,8 @@ const AssistantMessage = memo(function AssistantMessage({
   const [copied, setCopied] = useState(false);
   const [ragOpen, setRagOpen] = useState(false);
   const feedbackRating = message.feedbackRating ?? null;
+  const interrupted = message.status === "sending"
+    && message.content === "连接已中断，刷新页面后将自动恢复回答。";
   
   const { text, done } = useTypewriter(message.content, typing);
 
@@ -472,6 +474,7 @@ const AssistantMessage = memo(function AssistantMessage({
     "assistant-message",
     message.status === "failed" ? "failed" : "",
     message.status === "sending" ? "sending" : "",
+    interrupted ? "interrupted" : "",
     typing && !done ? "typing" : "",
   ]
     .filter(Boolean)
@@ -501,7 +504,7 @@ const AssistantMessage = memo(function AssistantMessage({
           <RagProgressTimeline stages={message.ragProgress} />
         </div>
       ) : null}
-      {message.status === "sending" && message.ragProgress?.length ? (
+      {message.status === "sending" && message.ragProgress?.length && !interrupted ? (
         <RagProgressTimeline stages={message.ragProgress} />
       ) : (
         <ReactMarkdown remarkPlugins={markdownRemarkPlugins} rehypePlugins={markdownRehypePlugins}>{text}</ReactMarkdown>
