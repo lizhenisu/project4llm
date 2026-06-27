@@ -13,6 +13,7 @@ START_SCRIPT = PROJECT_DIR / "scripts" / "start_api.sh"
 def main() -> None:
     test_start_script_forwards_runtime_limits()
     test_start_script_rejects_invalid_worker_count()
+    test_start_script_rejects_metadata_connection_budget_overflow()
     print("smoke_api_start_config=ok")
 
 
@@ -24,6 +25,9 @@ def test_start_script_forwards_runtime_limits() -> None:
             "RAG_API_LIMIT_CONCURRENCY": "480",
             "RAG_API_KEEP_ALIVE_SECONDS": "20",
             "RAG_API_GRACEFUL_SHUTDOWN_SECONDS": "45",
+            "RAG_METADATA_DATABASE_URL": "postgresql://metadata.example/app",
+            "RAG_METADATA_POOL_SIZE": "16",
+            "RAG_METADATA_MAX_CONNECTION_BUDGET": "64",
         }
     )
     assert result.returncode == 0, result.stderr
@@ -39,6 +43,21 @@ def test_start_script_rejects_invalid_worker_count() -> None:
     result = run_with_fake_commands({"RAG_API_WORKERS": "0"})
     assert result.returncode == 2
     assert "RAG_API_WORKERS must be a positive integer" in result.stderr
+    assert result.stdout == ""
+
+
+def test_start_script_rejects_metadata_connection_budget_overflow() -> None:
+    result = run_with_fake_commands(
+        {
+            "RAG_METADATA_DATABASE_URL": "postgresql://metadata.example/app",
+            "RAG_API_WORKERS": "6",
+            "RAG_METADATA_POOL_SIZE": "16",
+            "RAG_METADATA_MAX_CONNECTION_BUDGET": "80",
+        }
+    )
+    assert result.returncode == 2
+    assert "6 workers * 16 pool size = 96" in result.stderr
+    assert "Reduce workers/pool size or deploy PgBouncer" in result.stderr
     assert result.stdout == ""
 
 

@@ -10,6 +10,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 from queue import Full, Queue
 from typing import Any
 
@@ -44,7 +45,13 @@ from rag_core.conversations import (
 )
 from rag_core.events import append_event, event_log_limits_snapshot, hit_event_summaries
 from rag_core.ingestion_jobs import submit_upload_ingestion_job
-from rag_core.jsonl_store import parse_s3_uri, read_object_bytes_by_uri, unquote_object_uri
+from rag_core.jsonl_store import (
+    parse_s3_uri,
+    read_object_bytes_by_uri,
+    s3_bucket,
+    s3_key,
+    unquote_object_uri,
+)
 from rag_core.model_api_retry import model_api_metrics_snapshot
 from rag_core.milvus_store import milvus_client_metrics_snapshot
 from rag_core.pipeline import retrieve_and_rerank
@@ -407,6 +414,114 @@ def query_stream_metrics_snapshot() -> dict[str, object]:
             "event_queue_limit": query_stream_event_queue_limit(),
             "workers": query_stream_max_workers(),
         }
+
+
+def prometheus_metrics_text(config) -> str:
+    http = http_metrics_snapshot()
+    query_stream = query_stream_metrics_snapshot()
+    query_images = query_image_metrics_snapshot()
+    model_api = model_api_metrics_snapshot()
+    metadata = metadata_pool_metrics_snapshot()
+    ingestion = count_source_tasks_by_status(config=config, tenant_id=None)
+    lines = [
+        "# HELP rag_http_active_requests Current in-flight HTTP requests.",
+        "# TYPE rag_http_active_requests gauge",
+        f"rag_http_active_requests {int(http['active_total'])}",
+        "# HELP rag_http_requests_total Completed HTTP requests by normalized route.",
+        "# TYPE rag_http_requests_total counter",
+        "# HELP rag_http_responses_total Completed HTTP responses by status family.",
+        "# TYPE rag_http_responses_total counter",
+        "# HELP rag_http_request_latency_seconds_total Cumulative HTTP request latency.",
+        "# TYPE rag_http_request_latency_seconds_total counter",
+        "# HELP rag_http_request_latency_seconds_max Maximum observed HTTP request latency.",
+        "# TYPE rag_http_request_latency_seconds_max gauge",
+    ]
+    for route, metrics in http["routes"].items():
+        route_label = prometheus_label(str(route))
+        lines.append(f'rag_http_requests_total{{route="{route_label}"}} {int(metrics["requests_total"])}')
+        for status_family in ("2xx", "3xx", "4xx", "5xx"):
+            lines.append(
+                "rag_http_responses_total"
+                f'{{route="{route_label}",status_family="{status_family}"}} '
+                f'{int(metrics[f"{status_family}_total"])}'
+            )
+        lines.append(
+            f'rag_http_request_latency_seconds_total{{route="{route_label}"}} '
+            f'{float(metrics["latency_total_ms"]) / 1000.0:.6f}'
+        )
+        lines.append(
+            f'rag_http_request_latency_seconds_max{{route="{route_label}"}} '
+            f'{float(metrics["latency_max_ms"]) / 1000.0:.6f}'
+        )
+
+    lines.extend(
+        [
+            "# HELP rag_query_stream_active Current accepted query streams.",
+            "# TYPE rag_query_stream_active gauge",
+            f"rag_query_stream_active {int(query_stream['active'])}",
+            "# HELP rag_query_stream_events_total Query-stream lifecycle and rejection events.",
+            "# TYPE rag_query_stream_events_total counter",
+        ]
+    )
+    for event, key in (
+        ("accepted", "accepted_total"),
+        ("completed", "completed_total"),
+        ("errored", "errored_total"),
+        ("rejected_global", "rejected_global_total"),
+        ("rejected_tenant", "rejected_tenant_total"),
+        ("rejected_user", "rejected_user_total"),
+        ("event_queue_backpressure", "event_queue_backpressure_total"),
+    ):
+        lines.append(f'rag_query_stream_events_total{{event="{event}"}} {int(query_stream[key])}')
+
+    lines.extend(
+        [
+            "# HELP rag_query_image_payloads_total Query image validation outcomes.",
+            "# TYPE rag_query_image_payloads_total counter",
+            f'rag_query_image_payloads_total{{outcome="accepted"}} {int(query_images["accepted_total"])}',
+            (
+                'rag_query_image_payloads_total{outcome="rejected_oversized"} '
+                f'{int(query_images["rejected_oversized_total"])}'
+            ),
+            f'rag_query_image_payloads_total{{outcome="invalid"}} {int(query_images["invalid_total"])}',
+            "# HELP rag_model_api_active Current external model API calls.",
+            "# TYPE rag_model_api_active gauge",
+            f"rag_model_api_active {int(model_api['active'])}",
+            "# HELP rag_model_api_events_total External model API admission events.",
+            "# TYPE rag_model_api_events_total counter",
+            f'rag_model_api_events_total{{event="acquired"}} {int(model_api["acquired_total"])}',
+            f'rag_model_api_events_total{{event="rejected"}} {int(model_api["rejected_total"])}',
+        ]
+    )
+
+    pool_fields = {
+        "total": "rag_metadata_pool_connections",
+        "idle": "rag_metadata_pool_idle_connections",
+        "borrowed": "rag_metadata_pool_borrowed_connections",
+        "waits_total": "rag_metadata_pool_waits_total",
+        "timeouts_total": "rag_metadata_pool_timeouts_total",
+    }
+    for field, metric_name in pool_fields.items():
+        value = sum(int(pool[field]) for pool in metadata["pools"])
+        metric_type = "counter" if field.endswith("_total") else "gauge"
+        lines.extend([f"# TYPE {metric_name} {metric_type}", f"{metric_name} {value}"])
+
+    lines.extend(
+        [
+            "# HELP rag_ingestion_tasks Current source-task rows by status.",
+            "# TYPE rag_ingestion_tasks gauge",
+        ]
+    )
+    for status in sorted({"queued", "processing", "ready", "failed", *ingestion.keys()}):
+        lines.append(
+            f'rag_ingestion_tasks{{status="{prometheus_label(status)}"}} '
+            f"{int(ingestion.get(status, 0))}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def prometheus_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
 def env_int(name: str, default: int) -> int:
@@ -844,6 +959,13 @@ def create_app():
                 "tenant_id": tenant_id or "",
             },
         }
+
+    @app.get("/metrics", include_in_schema=False)
+    def prometheus_metrics() -> Response:
+        return Response(
+            content=prometheus_metrics_text(load_config()),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
 
     @app.post("/auth/register", response_model=AuthResponse)
     def register(request: AuthRequest) -> AuthResponse:
@@ -2055,14 +2177,13 @@ def resolve_asset_auth_context(
 
 def s3_asset_belongs_to_tenant(object_uri: str, tenant_id: str) -> bool:
     try:
-        _, key = parse_s3_uri(object_uri)
+        bucket, key = parse_s3_uri(object_uri)
     except ValueError:
         return False
-    parts = [part for part in key.split("/") if part]
-    return any(
-        part == "uploads" and index + 1 < len(parts) and parts[index + 1] == tenant_id
-        for index, part in enumerate(parts)
-    )
+    if bucket != s3_bucket():
+        return False
+    expected_prefix = s3_key(Path("uploads") / tenant_id).rstrip("/") + "/"
+    return key.startswith(expected_prefix) and len(key) > len(expected_prefix)
 
 
 def validate_query_image_data_url(request: QueryRequest, config) -> None:
