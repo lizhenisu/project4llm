@@ -302,6 +302,11 @@ def retrieve_multimodal(
         )
     else:
         reranked = candidates
+    reranked = anchor_query_image_evidence(
+        reranked,
+        image_hits=image_hits,
+        has_image_file_query=has_image_file_query,
+    )
     emit_stage(
         stage_callback,
         "context",
@@ -369,6 +374,23 @@ def retrieve_multimodal(
         reranked=reranked,
         trace=trace,
     )
+
+
+def anchor_query_image_evidence(
+    reranked: list[SearchHit],
+    *,
+    image_hits: list[SearchHit],
+    has_image_file_query: bool,
+) -> list[SearchHit]:
+    """Keep the nearest indexed image in context for an uploaded-image query.
+
+    Text-only rerankers can otherwise demote the actual visual match in favor of
+    chunks whose wording happens to resemble the question.
+    """
+    if not has_image_file_query or not image_hits:
+        return reranked
+    anchor = replace(image_hits[0], rerank_score=None)
+    return [anchor, *(hit for hit in reranked if hit.id != anchor.id)]
 
 
 def image_only_candidates(image_hits: list[SearchHit], *, limit: int) -> list[SearchHit]:

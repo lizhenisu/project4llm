@@ -6,6 +6,7 @@ from pathlib import Path
 
 from rag_core.answering import generate_answer
 from rag_core.config import load_config
+from rag_core.document_scope import answer_document_scope, build_scope_plan
 from rag_core.io import PdfImageCaptioner, detect_text_language
 from rag_core.pipeline import StageCallback, emit_stage
 from rag_core.types import SearchHit, TraceInfo
@@ -42,6 +43,48 @@ def answer_multimodal_query(
     stage_callback: StageCallback | None = None,
 ) -> MultimodalAnswerResult:
     resolved_text_query = text_query if text_query is not None else query
+    config = load_config()
+    has_doc_filter = bool(doc_ids or source_types or doc_version or include_all_sources)
+    if has_doc_filter and resolved_text_query:
+        scope_plan = build_scope_plan(
+            config=config,
+            tenant_id=tenant_id,
+            query=resolved_text_query,
+            doc_ids=doc_ids,
+            doc_version=doc_version,
+            include_all_sources=include_all_sources,
+        )
+        emit_stage(
+            stage_callback,
+            "intent_router",
+            "done",
+            "意图与范围识别",
+            scope_plan.route.reason,
+            **scope_plan.route.as_dict(),
+        )
+        emit_stage(
+            stage_callback,
+            "scope_resolution",
+            "done",
+            "文档范围解析",
+            f"已解析 {len(scope_plan.resolved_doc_ids)} 个文档，覆盖要求为 {scope_plan.route.coverage_required}。",
+            selected_doc_ids=scope_plan.selected_doc_ids,
+            resolved_doc_ids=scope_plan.resolved_doc_ids,
+            missing_or_skipped_doc_ids=scope_plan.missing_doc_ids,
+            coverage_required=scope_plan.route.coverage_required,
+        )
+        if scope_plan.should_use_document_pipeline:
+            return answer_document_scope(
+                config=config,
+                query=resolved_text_query,
+                tenant_id=tenant_id,
+                acl_groups=acl_groups,
+                plan=scope_plan,
+                request_id=request_id,
+                stage_callback=stage_callback,
+            )
+        if scope_plan.route.explicit_doc_refs:
+            doc_ids = scope_plan.resolved_doc_ids
     retrieval = retrieve_multimodal(
         query,
         text_query=text_query,
@@ -58,7 +101,6 @@ def answer_multimodal_query(
         request_id=request_id,
         stage_callback=stage_callback,
     )
-    config = load_config()
     final_answer_query = answer_query or resolved_text_query or retrieval.trace.rewritten_query
     query_image_caption = describe_query_image_for_answer(
         image_query_path=image_query_path,
