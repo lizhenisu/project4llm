@@ -28,7 +28,9 @@ from rag_core.sources import (  # noqa: E402
     list_queued_source_tasks,
     renew_source_task_lease,
     requeue_stale_processing_source_tasks,
+    retry_or_fail_source_task,
     save_source_task_for_tenant,
+    source_task_recovery_metrics_snapshot,
 )
 from rag_core.text_utils import now_ms  # noqa: E402
 
@@ -47,6 +49,8 @@ def main() -> None:
         ensure_schema(config)
         test_atomic_claim_and_owner_guard(config)
         test_requested_version_survives_persistence(config)
+        test_retry_backoff_and_dead_letter(config)
+        test_embedded_runner_retries_until_success(config)
         test_expired_lease_can_be_reclaimed(config)
         test_two_runners_execute_once_and_renew(config)
         test_restarted_worker_recovers_expired_process_lease(config)
@@ -131,6 +135,118 @@ def test_requested_version_survives_persistence(config) -> None:
     assert queued[explicit_source.doc_id].requested_doc_version == 7
     assert delete_source_task(config=config, tenant_id=TENANT_ID, task_id=auto_source.doc_id)
     assert delete_source_task(config=config, tenant_id=TENANT_ID, task_id=explicit_source.doc_id)
+
+
+def test_retry_backoff_and_dead_letter(config) -> None:
+    source = save_task(config, "retry")
+    assert claim_source_task_for_processing(
+        config=config,
+        tenant_id=TENANT_ID,
+        source=source,
+        lease_owner="retry-owner-1",
+        lease_ms=60_000,
+    )
+    assert retry_or_fail_source_task(
+        config=config,
+        tenant_id=TENANT_ID,
+        source=source,
+        error="synthetic transient failure",
+        lease_owner="retry-owner-1",
+        max_attempts=2,
+        backoff_seconds=60,
+        backoff_max_seconds=60,
+    ) == "retried"
+    row = task_row(config, source.doc_id)
+    assert row["status"] == "queued"
+    assert row["error"] == "synthetic transient failure"
+    assert int(row["next_attempt_at"]) > now_ms()
+    assert int(row["dead_lettered_at"]) == 0
+    waiting_recovery = source_task_recovery_metrics_snapshot(config=config, tenant_id=TENANT_ID)
+    assert waiting_recovery["retry_waiting"] >= 1
+    assert not any(
+        record.source.doc_id == source.doc_id
+        for record in list_queued_source_tasks(config=config, limit=1000)
+    )
+
+    with connect_metadata_db(config) as conn:
+        conn.execute(
+            "UPDATE source_tasks SET next_attempt_at = ? WHERE tenant_id = ? AND id = ?",
+            (now_ms() - 1, TENANT_ID, source.doc_id),
+        )
+    queued = replace(source, status="queued", updated_at=now_ms())
+    assert claim_source_task_for_processing(
+        config=config,
+        tenant_id=TENANT_ID,
+        source=queued,
+        lease_owner="retry-owner-2",
+        lease_ms=60_000,
+    )
+    assert retry_or_fail_source_task(
+        config=config,
+        tenant_id=TENANT_ID,
+        source=queued,
+        error="synthetic terminal failure",
+        lease_owner="retry-owner-2",
+        max_attempts=2,
+        backoff_seconds=60,
+        backoff_max_seconds=60,
+    ) == "failed"
+    assert retry_or_fail_source_task(
+        config=config,
+        tenant_id=TENANT_ID,
+        source=queued,
+        error="stale owner",
+        lease_owner="retry-owner-1",
+        max_attempts=2,
+        backoff_seconds=60,
+        backoff_max_seconds=60,
+    ) == "lost"
+    row = task_row(config, source.doc_id)
+    assert row["status"] == "failed"
+    assert row["error"] == "synthetic terminal failure"
+    assert int(row["attempt_count"]) == 2
+    assert int(row["next_attempt_at"]) == 0
+    assert int(row["dead_lettered_at"]) > 0
+    recovery = source_task_recovery_metrics_snapshot(config=config, tenant_id=TENANT_ID)
+    assert recovery["dead_lettered"] >= 1
+    assert recovery["retries_recorded"] >= 1
+    assert delete_source_task(config=config, tenant_id=TENANT_ID, task_id=source.doc_id)
+
+
+def test_embedded_runner_retries_until_success(config) -> None:
+    source = save_task(config, "runner-retry")
+    executions: list[int] = []
+
+    def fail_once_then_succeed(**_kwargs):
+        executions.append(len(executions) + 1)
+        if len(executions) == 1:
+            raise RuntimeError("synthetic retryable failure")
+
+    runner = IngestionJobRunner(
+        workers=1,
+        queue_limit=1,
+        tenant_queue_limit=1,
+        runner_id="embedded-retry-runner",
+    )
+    runner.max_attempts = 2
+    runner.retry_backoff_seconds = 0.1
+    runner.retry_backoff_max_seconds = 0.1
+    with (
+        patch("rag_core.ingestion_jobs.load_config", return_value=config),
+        patch("rag_core.ingestion_jobs.ingest_uploaded_path", side_effect=fail_once_then_succeed),
+    ):
+        runner.start_polling(poll_seconds=0.1)
+        assert runner.submit_upload(
+            pending_source=source,
+            saved_path=Path(source.source_uri),
+            tenant_id=TENANT_ID,
+            acl_groups=source.acl_groups,
+            doc_version=source.doc_version,
+            language="zh",
+        )
+        wait_for(lambda: task_row(config, source.doc_id, required=False) is None)
+    runner.shutdown(wait=True)
+    assert executions == [1, 2]
 
 
 def test_expired_lease_can_be_reclaimed(config) -> None:
@@ -307,7 +423,8 @@ def task_row(config, task_id: str, *, required: bool = True):
     with connect_metadata_db(config) as conn:
         row = conn.execute(
             """
-            SELECT status, error, lease_owner, lease_expires_at, attempt_count, updated_at
+            SELECT status, error, lease_owner, lease_expires_at, attempt_count,
+                   next_attempt_at, dead_lettered_at, updated_at
             FROM source_tasks
             WHERE tenant_id = ? AND id = ?
             """,

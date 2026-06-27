@@ -434,6 +434,8 @@ CREATE TABLE IF NOT EXISTS source_tasks (
     lease_expires_at INTEGER NOT NULL DEFAULT 0,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     requested_doc_version INTEGER,
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    dead_lettered_at INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -494,6 +496,8 @@ def ensure_sqlite_columns(conn: sqlite3.Connection) -> None:
     ensure_sqlite_column(conn, table="source_tasks", column="lease_expires_at", definition="INTEGER NOT NULL DEFAULT 0")
     ensure_sqlite_column(conn, table="source_tasks", column="attempt_count", definition="INTEGER NOT NULL DEFAULT 0")
     ensure_sqlite_column(conn, table="source_tasks", column="requested_doc_version", definition="INTEGER")
+    ensure_sqlite_column(conn, table="source_tasks", column="next_attempt_at", definition="INTEGER NOT NULL DEFAULT 0")
+    ensure_sqlite_column(conn, table="source_tasks", column="dead_lettered_at", definition="INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
@@ -501,6 +505,10 @@ def ensure_sqlite_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_source_tasks_status_lease "
         "ON source_tasks(status, lease_expires_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_source_tasks_status_next_attempt "
+        "ON source_tasks(status, next_attempt_at)"
     )
 
 
@@ -521,6 +529,8 @@ def ensure_postgres_columns(conn: PostgresConnection) -> None:
     ensure_postgres_column(conn, table="source_tasks", column="lease_expires_at", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="attempt_count", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="requested_doc_version", definition="BIGINT")
+    ensure_postgres_column(conn, table="source_tasks", column="next_attempt_at", definition="BIGINT NOT NULL DEFAULT 0")
+    ensure_postgres_column(conn, table="source_tasks", column="dead_lettered_at", definition="BIGINT NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
@@ -528,6 +538,10 @@ def ensure_postgres_columns(conn: PostgresConnection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_source_tasks_status_lease "
         "ON source_tasks(status, lease_expires_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_source_tasks_status_next_attempt "
+        "ON source_tasks(status, next_attempt_at)"
     )
 
 

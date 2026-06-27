@@ -310,6 +310,11 @@ def save_source_task_for_tenant(
                 error = excluded.error,
                 lease_owner = '',
                 lease_expires_at = 0,
+                next_attempt_at = 0,
+                dead_lettered_at = CASE
+                    WHEN excluded.status = 'failed' THEN excluded.updated_at
+                    ELSE 0
+                END,
                 updated_at = excluded.updated_at
             """,
             (
@@ -498,6 +503,80 @@ def fail_source_task(
     if updated:
         invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     return updated
+
+
+def retry_or_fail_source_task(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    source: SourceSummary,
+    error: str,
+    lease_owner: str,
+    max_attempts: int,
+    backoff_seconds: float,
+    backoff_max_seconds: float,
+) -> str:
+    timestamp = now_ms()
+    with connect_metadata_db(config) as conn:
+        row = conn.execute(
+            """
+            SELECT attempt_count
+            FROM source_tasks
+            WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
+            """,
+            (tenant_id, source.doc_id, lease_owner),
+        ).fetchone()
+        if row is None:
+            return "lost"
+        attempt_count = int(row["attempt_count"] or 0)
+        if attempt_count < max(1, int(max_attempts)):
+            exponent = min(30, max(0, attempt_count - 1))
+            delay_seconds = min(
+                max(0.1, float(backoff_max_seconds)),
+                max(0.1, float(backoff_seconds)) * (2**exponent),
+            )
+            next_attempt_at = timestamp + max(100, int(delay_seconds * 1000))
+            cursor = conn.execute(
+                """
+                UPDATE source_tasks
+                SET status = 'queued', error = ?, updated_at = ?,
+                    lease_owner = '', lease_expires_at = 0,
+                    next_attempt_at = ?, dead_lettered_at = 0
+                WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
+                """,
+                (
+                    error[:500],
+                    timestamp,
+                    next_attempt_at,
+                    tenant_id,
+                    source.doc_id,
+                    lease_owner,
+                ),
+            )
+            outcome = "retried"
+        else:
+            cursor = conn.execute(
+                """
+                UPDATE source_tasks
+                SET status = 'failed', error = ?, updated_at = ?,
+                    lease_owner = '', lease_expires_at = 0,
+                    next_attempt_at = 0, dead_lettered_at = ?
+                WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
+                """,
+                (
+                    error[:500],
+                    timestamp,
+                    timestamp,
+                    tenant_id,
+                    source.doc_id,
+                    lease_owner,
+                ),
+            )
+            outcome = "failed"
+    if int(cursor.rowcount or 0) != 1:
+        return "lost"
+    invalidate_source_list_cache(config=config, tenant_id=tenant_id)
+    return outcome
 
 
 def update_source_task_status(
@@ -1100,6 +1179,50 @@ def source_task_lease_metrics_snapshot(
     }
 
 
+def source_task_recovery_metrics_snapshot(
+    *,
+    config: RagConfig,
+    tenant_id: str | None = None,
+) -> dict[str, int]:
+    timestamp = now_ms()
+    params: list[object] = [timestamp]
+    where = ""
+    if tenant_id:
+        where = "WHERE tenant_id = ?"
+        params.append(tenant_id)
+    with connect_metadata_db(config) as conn:
+        row = conn.execute(
+            f"""
+            SELECT
+                SUM(
+                    CASE
+                        WHEN status = 'queued' AND next_attempt_at > ?
+                        THEN 1 ELSE 0
+                    END
+                ) AS retry_waiting,
+                SUM(
+                    CASE
+                        WHEN status = 'failed' AND dead_lettered_at > 0
+                        THEN 1 ELSE 0
+                    END
+                ) AS dead_lettered,
+                SUM(
+                    CASE
+                        WHEN attempt_count > 1 THEN attempt_count - 1 ELSE 0
+                    END
+                ) AS retries_recorded
+            FROM source_tasks
+            {where}
+            """,
+            tuple(params),
+        ).fetchone()
+    return {
+        "retry_waiting": int(row["retry_waiting"] or 0) if row is not None else 0,
+        "dead_lettered": int(row["dead_lettered"] or 0) if row is not None else 0,
+        "retries_recorded": int(row["retries_recorded"] or 0) if row is not None else 0,
+    }
+
+
 def count_active_source_tasks(*, config: RagConfig, tenant_id: str | None = None) -> int:
     params: list[object] = ["queued", "processing", "uploading"]
     where = "WHERE status IN (?, ?, ?)"
@@ -1119,17 +1242,18 @@ def count_active_source_tasks(*, config: RagConfig, tenant_id: str | None = None
 
 
 def list_queued_source_tasks(*, config: RagConfig, limit: int = 100) -> list[QueuedSourceTask]:
+    timestamp = now_ms()
     with connect_metadata_db(config) as conn:
         rows = conn.execute(
             """
             SELECT tenant_id, doc_id, title, source_type, source_uri, doc_version, acl_groups,
                    status, error, requested_doc_version, created_at, updated_at
             FROM source_tasks
-            WHERE status = 'queued'
-            ORDER BY created_at ASC
+            WHERE status = 'queued' AND next_attempt_at <= ?
+            ORDER BY next_attempt_at ASC, created_at ASC
             LIMIT ?
             """,
-            (max(1, int(limit)),),
+            (timestamp, max(1, int(limit))),
         ).fetchall()
     return [
         QueuedSourceTask(
@@ -1190,7 +1314,8 @@ def requeue_stale_processing_source_tasks(
         cursor = conn.execute(
             f"""
             UPDATE source_tasks
-            SET status = 'queued', updated_at = ?, error = '', lease_owner = '', lease_expires_at = 0
+            SET status = 'queued', updated_at = ?, error = '', lease_owner = '', lease_expires_at = 0,
+                next_attempt_at = ?
             WHERE id IN ({placeholders})
               AND status = 'processing'
               AND (
@@ -1198,7 +1323,7 @@ def requeue_stale_processing_source_tasks(
                 OR (lease_expires_at = 0 AND updated_at < ?)
               )
             """,
-            (timestamp, *task_ids, timestamp, cutoff),
+            (timestamp, timestamp, *task_ids, timestamp, cutoff),
         )
         updated_count = int(cursor.rowcount or 0)
     for tenant_id in tenant_ids:
@@ -1221,8 +1346,9 @@ def claim_source_task_for_processing(
             """
             UPDATE source_tasks
             SET status = 'processing', updated_at = ?, error = '',
-                lease_owner = ?, lease_expires_at = ?, attempt_count = attempt_count + 1
-            WHERE tenant_id = ? AND id = ? AND status = 'queued'
+                lease_owner = ?, lease_expires_at = ?, attempt_count = attempt_count + 1,
+                next_attempt_at = 0
+            WHERE tenant_id = ? AND id = ? AND status = 'queued' AND next_attempt_at <= ?
             """,
             (
                 updated.updated_at,
@@ -1230,6 +1356,7 @@ def claim_source_task_for_processing(
                 lease_expires_at,
                 tenant_id,
                 source.doc_id,
+                updated.updated_at,
             ),
         )
         if cursor.rowcount != 1:

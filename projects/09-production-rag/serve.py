@@ -70,6 +70,7 @@ from rag_core.sources import (
     resolve_metadata_display_block_urls,
     save_uploaded_file,
     source_task_lease_metrics_snapshot,
+    source_task_recovery_metrics_snapshot,
     UploadTooLargeError,
 )
 from rag_core.user_auth import (
@@ -457,6 +458,7 @@ def prometheus_metrics_text(config) -> str:
     metadata = metadata_pool_metrics_snapshot()
     ingestion = count_source_tasks_by_status(config=config, tenant_id=None)
     ingestion_leases = source_task_lease_metrics_snapshot(config=config, tenant_id=None)
+    ingestion_recovery = source_task_recovery_metrics_snapshot(config=config, tenant_id=None)
     lines = [
         "# HELP rag_http_active_requests Current in-flight HTTP requests.",
         "# TYPE rag_http_active_requests gauge",
@@ -649,6 +651,11 @@ def prometheus_metrics_text(config) -> str:
             "# TYPE rag_ingestion_task_attempts gauge",
             f'rag_ingestion_task_attempts{{stat="sum"}} {ingestion_leases["attempts_recorded"]}',
             f'rag_ingestion_task_attempts{{stat="max"}} {ingestion_leases["max_attempt_count"]}',
+            "# HELP rag_ingestion_task_recovery Current retry and dead-letter task state.",
+            "# TYPE rag_ingestion_task_recovery gauge",
+            f'rag_ingestion_task_recovery{{state="retry_waiting"}} {ingestion_recovery["retry_waiting"]}',
+            f'rag_ingestion_task_recovery{{state="dead_lettered"}} {ingestion_recovery["dead_lettered"]}',
+            f'rag_ingestion_task_recovery{{state="retries_recorded"}} {ingestion_recovery["retries_recorded"]}',
         ]
     )
     return "\n".join(lines) + "\n"
@@ -1090,6 +1097,7 @@ def create_app():
             "ingestion": {
                 "source_tasks_by_status": count_source_tasks_by_status(config=config, tenant_id=tenant_id),
                 "task_leases": source_task_lease_metrics_snapshot(config=config, tenant_id=tenant_id),
+                "task_recovery": source_task_recovery_metrics_snapshot(config=config, tenant_id=tenant_id),
                 "active_source_tasks": count_active_source_tasks(config=config, tenant_id=None),
                 "tenant_active_source_tasks": count_active_source_tasks(config=config, tenant_id=tenant_id),
                 "backlog_limit": ingest_backlog_limit(),

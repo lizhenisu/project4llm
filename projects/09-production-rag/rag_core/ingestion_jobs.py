@@ -11,11 +11,11 @@ from rag_core.config import load_config
 from rag_core.sources import claim_source_task_for_processing
 from rag_core.sources import SourceSummary
 from rag_core.sources import delete_source_task
-from rag_core.sources import fail_source_task
 from rag_core.sources import ingest_uploaded_path
 from rag_core.sources import list_queued_source_tasks
 from rag_core.sources import requeue_stale_processing_source_tasks
 from rag_core.sources import renew_source_task_lease
+from rag_core.sources import retry_or_fail_source_task
 
 
 _RUNNER_LOCK = threading.Lock()
@@ -35,11 +35,16 @@ class IngestionJobRunner:
         self.queue_limit = max(self.workers, queue_limit)
         self.tenant_queue_limit = max(1, tenant_queue_limit or self.queue_limit)
         self.processing_stale_ms = env_int("RAG_INGEST_PROCESSING_STALE_MS", 30 * 60 * 1000)
+        self.max_attempts = env_int("RAG_INGEST_MAX_ATTEMPTS", 3)
+        self.retry_backoff_seconds = env_float("RAG_INGEST_RETRY_BACKOFF_SECONDS", 5.0)
+        self.retry_backoff_max_seconds = env_float("RAG_INGEST_RETRY_BACKOFF_MAX_SECONDS", 300.0)
         self.runner_id = runner_id or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         self._slots = threading.BoundedSemaphore(self.queue_limit)
         self._tenant_slots: dict[str, threading.BoundedSemaphore] = {}
         self._tenant_slots_lock = threading.Lock()
         self._stopping = threading.Event()
+        self._poll_thread: threading.Thread | None = None
+        self._poll_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="rag-ingest")
 
     def submit_upload(
@@ -180,12 +185,15 @@ class IngestionJobRunner:
         except Exception as exc:  # noqa: BLE001 - background job must persist failures.
             config = load_config()
             if lease_valid.is_set():
-                fail_source_task(
+                retry_or_fail_source_task(
                     config=config,
                     tenant_id=tenant_id,
                     source=source,
                     error=str(exc),
                     lease_owner=lease_owner,
+                    max_attempts=self.max_attempts,
+                    backoff_seconds=self.retry_backoff_seconds,
+                    backoff_max_seconds=self.retry_backoff_max_seconds,
                 )
         finally:
             stop_renewal.set()
@@ -221,8 +229,28 @@ class IngestionJobRunner:
     def _lease_owner(self, task_id: str) -> str:
         return f"{self.runner_id}:{task_id}:{uuid.uuid4().hex}"
 
+    def start_polling(self, *, poll_seconds: float) -> None:
+        interval = max(0.1, float(poll_seconds))
+        with self._poll_lock:
+            if self._poll_thread is not None and self._poll_thread.is_alive():
+                return
+            self._poll_thread = threading.Thread(
+                target=self._poll_loop,
+                args=(interval,),
+                name="rag-ingest-poller",
+                daemon=True,
+            )
+            self._poll_thread.start()
+
+    def _poll_loop(self, interval: float) -> None:
+        while not self._stopping.wait(interval):
+            self.drain_pending()
+
     def shutdown(self, *, wait: bool = True) -> None:
         self._stopping.set()
+        poll_thread = self._poll_thread
+        if poll_thread is not None and poll_thread is not threading.current_thread():
+            poll_thread.join(timeout=1)
         self._executor.shutdown(wait=wait)
 
 
@@ -233,6 +261,9 @@ def ingestion_job_runner() -> IngestionJobRunner:
             if _RUNNER is None:
                 _RUNNER = new_ingestion_job_runner()
                 _RUNNER.drain_pending()
+                _RUNNER.start_polling(
+                    poll_seconds=env_float("RAG_INGEST_POLL_SECONDS", 1.0),
+                )
     return _RUNNER
 
 

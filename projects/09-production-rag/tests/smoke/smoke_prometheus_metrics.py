@@ -57,6 +57,9 @@ def main() -> None:
     assert 'rag_ingestion_task_leases{state="expired"}' in text
     assert 'rag_ingestion_task_attempts{stat="sum"}' in text
     assert 'rag_ingestion_task_attempts{stat="max"}' in text
+    assert 'rag_ingestion_task_recovery{state="retry_waiting"}' in text
+    assert 'rag_ingestion_task_recovery{state="dead_lettered"}' in text
+    assert 'rag_ingestion_task_recovery{state="retries_recorded"}' in text
     validate_metric_lines(text)
     validate_health_histogram(text)
     validate_query_image_histogram(text)

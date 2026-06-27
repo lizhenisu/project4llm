@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from rag_core.ingestion_jobs import (  # noqa: E402
+    IngestionJobRunner,
     ingestion_execution_mode,
     run_ingestion_worker,
     submit_upload_ingestion_job,
@@ -22,6 +24,7 @@ from rag_core.sources import SourceSummary  # noqa: E402
 def main() -> None:
     test_external_mode_leaves_persisted_task_for_worker()
     test_worker_polls_and_shuts_down_cleanly()
+    test_embedded_runner_polling_is_singleton_and_stoppable()
     test_invalid_execution_mode_is_rejected()
     print("smoke_ingestion_worker=ok")
 
@@ -67,6 +70,19 @@ def test_worker_polls_and_shuts_down_cleanly() -> None:
     assert runner.shutdown_calls == [True]
 
 
+def test_embedded_runner_polling_is_singleton_and_stoppable() -> None:
+    runner = IngestionJobRunner(workers=1, queue_limit=1)
+    with patch.object(runner, "drain_pending") as drain_pending:
+        runner.start_polling(poll_seconds=0.1)
+        first_thread = runner._poll_thread
+        runner.start_polling(poll_seconds=0.1)
+        assert runner._poll_thread is first_thread
+        wait_for(lambda: drain_pending.call_count >= 1)
+        runner.shutdown(wait=True)
+    assert first_thread is not None
+    assert not first_thread.is_alive()
+
+
 def test_invalid_execution_mode_is_rejected() -> None:
     old_mode = os.environ.get("RAG_INGEST_EXECUTION_MODE")
     os.environ["RAG_INGEST_EXECUTION_MODE"] = "not-a-mode"
@@ -103,6 +119,15 @@ def restore_env(name: str, value: str | None) -> None:
         os.environ.pop(name, None)
     else:
         os.environ[name] = value
+
+
+def wait_for(predicate, *, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition not reached before timeout")
 
 
 if __name__ == "__main__":

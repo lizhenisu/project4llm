@@ -154,8 +154,9 @@ def test_ingestion_runner_persists_failures() -> None:
     def fake_ingest_uploaded_path(**kwargs):
         raise RuntimeError("boom")
 
-    def fake_fail_source_task(**kwargs):
+    def fake_retry_or_fail_source_task(**kwargs):
         state["failed"].append((kwargs["source"].doc_id, kwargs["error"]))
+        return "failed"
 
     def fake_claim_source_task_for_processing(**kwargs):
         return replace(kwargs["source"], status="processing")
@@ -165,7 +166,10 @@ def test_ingestion_runner_persists_failures() -> None:
         patches = (
             patch("rag_core.ingestion_jobs.load_config", return_value=SimpleNamespace()),
             patch("rag_core.ingestion_jobs.ingest_uploaded_path", side_effect=fake_ingest_uploaded_path),
-            patch("rag_core.ingestion_jobs.fail_source_task", side_effect=fake_fail_source_task),
+            patch(
+                "rag_core.ingestion_jobs.retry_or_fail_source_task",
+                side_effect=fake_retry_or_fail_source_task,
+            ),
             patch("rag_core.ingestion_jobs.claim_source_task_for_processing", side_effect=fake_claim_source_task_for_processing),
         )
         for manager in patches:

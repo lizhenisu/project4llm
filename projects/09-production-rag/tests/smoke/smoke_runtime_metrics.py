@@ -109,6 +109,11 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
         "attempts_recorded": 0,
         "max_attempt_count": 0,
     }
+    assert body["ingestion"]["task_recovery"] == {
+        "retry_waiting": 0,
+        "dead_lettered": 0,
+        "retries_recorded": 0,
+    }
     assert body["ingestion"]["active_source_tasks"] >= 1
     assert body["ingestion"]["tenant_active_source_tasks"] == 1
     assert body["ingestion"]["backlog_limit"] >= 1
