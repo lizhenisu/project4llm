@@ -5,13 +5,16 @@ import uuid
 import base64
 import json
 import mimetypes
+import os
+import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from queue import Queue
+from queue import Full, Queue
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from answer import answer_query
@@ -35,16 +38,20 @@ from rag_core.config import load_config
 from rag_core.conversations import (
     ConversationMessage,
     delete_conversation,
-    list_conversations,
+    list_conversation_items,
     load_conversation,
     save_conversation,
 )
-from rag_core.events import append_event, hit_event_summaries
+from rag_core.events import append_event, event_log_limits_snapshot, hit_event_summaries
 from rag_core.ingestion_jobs import submit_upload_ingestion_job
-from rag_core.jsonl_store import read_object_bytes_by_uri, unquote_object_uri
+from rag_core.jsonl_store import parse_s3_uri, read_object_bytes_by_uri, unquote_object_uri
+from rag_core.model_api_retry import model_api_metrics_snapshot
+from rag_core.milvus_store import milvus_client_metrics_snapshot
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.readiness import readiness_report
 from rag_core.sources import (
+    count_active_source_tasks,
+    count_source_tasks_by_status,
     create_source_task,
     delete_source,
     fail_source_task,
@@ -54,9 +61,11 @@ from rag_core.sources import (
     rename_source,
     resolve_metadata_display_block_urls,
     save_uploaded_file,
+    UploadTooLargeError,
 )
 from rag_core.user_auth import (
     authenticate_token,
+    auth_token_cache_metrics_snapshot,
     bearer_token,
     bulk_update_users,
     change_user_password,
@@ -75,7 +84,276 @@ from rag_core.user_auth import (
     set_user_status,
     update_user_profile,
 )
+from rag_core.database import metadata_pool_metrics_snapshot
 from search_multimodal import retrieve_multimodal
+
+
+_QUERY_STREAM_EXECUTOR_LOCK = threading.Lock()
+_QUERY_STREAM_EXECUTORS: dict[int, ThreadPoolExecutor] = {}
+_QUERY_STREAM_SEMAPHORE_LOCK = threading.Lock()
+_QUERY_STREAM_SEMAPHORES: dict[int, threading.BoundedSemaphore] = {}
+_QUERY_STREAM_TENANT_SEMAPHORE_LOCK = threading.Lock()
+_QUERY_STREAM_TENANT_SEMAPHORES: dict[tuple[int, str], threading.BoundedSemaphore] = {}
+_QUERY_STREAM_USER_SEMAPHORE_LOCK = threading.Lock()
+_QUERY_STREAM_USER_SEMAPHORES: dict[tuple[int, str], threading.BoundedSemaphore] = {}
+_QUERY_STREAM_METRICS_LOCK = threading.Lock()
+_QUERY_STREAM_METRICS = {
+    "active": 0,
+    "accepted_total": 0,
+    "completed_total": 0,
+    "errored_total": 0,
+    "rejected_global_total": 0,
+    "rejected_tenant_total": 0,
+    "rejected_user_total": 0,
+    "event_queue_backpressure_total": 0,
+}
+_QUERY_STREAM_ACTIVE_BY_TENANT: dict[str, int] = {}
+_QUERY_STREAM_ACTIVE_BY_USER: dict[str, int] = {}
+_HTTP_METRICS_LOCK = threading.Lock()
+_HTTP_METRICS: dict[str, dict[str, int | float]] = {}
+_HTTP_ACTIVE_TOTAL = 0
+
+
+def query_stream_executor(max_workers: int) -> ThreadPoolExecutor:
+    with _QUERY_STREAM_EXECUTOR_LOCK:
+        executor = _QUERY_STREAM_EXECUTORS.get(max_workers)
+        if executor is None:
+            executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rag-query-stream")
+            _QUERY_STREAM_EXECUTORS[max_workers] = executor
+        return executor
+
+
+def query_stream_semaphore(limit: int) -> threading.BoundedSemaphore:
+    with _QUERY_STREAM_SEMAPHORE_LOCK:
+        semaphore = _QUERY_STREAM_SEMAPHORES.get(limit)
+        if semaphore is None:
+            semaphore = threading.BoundedSemaphore(limit)
+            _QUERY_STREAM_SEMAPHORES[limit] = semaphore
+        return semaphore
+
+
+def query_stream_tenant_semaphore(limit: int, tenant_id: str) -> threading.BoundedSemaphore:
+    key = (limit, tenant_id)
+    with _QUERY_STREAM_TENANT_SEMAPHORE_LOCK:
+        semaphore = _QUERY_STREAM_TENANT_SEMAPHORES.get(key)
+        if semaphore is None:
+            semaphore = threading.BoundedSemaphore(limit)
+            _QUERY_STREAM_TENANT_SEMAPHORES[key] = semaphore
+        return semaphore
+
+
+def query_stream_user_semaphore(limit: int, user_key: str) -> threading.BoundedSemaphore:
+    key = (limit, user_key)
+    with _QUERY_STREAM_USER_SEMAPHORE_LOCK:
+        semaphore = _QUERY_STREAM_USER_SEMAPHORES.get(key)
+        if semaphore is None:
+            semaphore = threading.BoundedSemaphore(limit)
+            _QUERY_STREAM_USER_SEMAPHORES[key] = semaphore
+        return semaphore
+
+
+def query_stream_max_workers() -> int:
+    return env_int("RAG_QUERY_STREAM_WORKERS", 64)
+
+
+def query_stream_queue_limit() -> int:
+    return env_int("RAG_QUERY_STREAM_QUEUE_LIMIT", 256)
+
+
+def query_stream_tenant_queue_limit() -> int:
+    return env_int("RAG_QUERY_STREAM_TENANT_QUEUE_LIMIT", 64)
+
+
+def query_stream_user_queue_limit() -> int:
+    return env_int("RAG_QUERY_STREAM_USER_QUEUE_LIMIT", 8)
+
+
+def query_stream_event_queue_limit() -> int:
+    return env_int("RAG_QUERY_STREAM_EVENT_QUEUE_LIMIT", 128)
+
+
+def ingest_backlog_limit() -> int:
+    return env_int("RAG_INGEST_BACKLOG_LIMIT", 100_000)
+
+
+def ingest_tenant_backlog_limit() -> int:
+    return env_int("RAG_INGEST_TENANT_BACKLOG_LIMIT", 1_000)
+
+
+def max_upload_request_bytes(config) -> int:
+    # Multipart adds a small amount of framing around the file bytes.
+    return int(config.max_upload_bytes) + 1024 * 1024
+
+
+def max_query_request_bytes(config) -> int:
+    # JSON/base64 framing can be larger than decoded image bytes.
+    default_limit = int(config.max_query_image_bytes) * 2 + 256 * 1024
+    return env_int("RAG_MAX_QUERY_REQUEST_BYTES", default_limit)
+
+
+def max_conversation_request_bytes(config) -> int:
+    # Conversation saves include message history, citations, RAG progress, and optionally one compressed user image.
+    return env_int("RAG_MAX_CONVERSATION_REQUEST_BYTES", max_query_request_bytes(config) * 2)
+
+
+def max_conversation_images() -> int:
+    return env_int("RAG_MAX_CONVERSATION_IMAGES", 4)
+
+
+def max_conversation_image_bytes(config) -> int:
+    return env_int("RAG_MAX_CONVERSATION_IMAGE_BYTES", int(config.max_query_image_bytes) * 2)
+
+
+def estimate_base64_decoded_bytes(encoded: str) -> int:
+    stripped = encoded.strip()
+    if not stripped:
+        return 0
+    padding = len(stripped) - len(stripped.rstrip("="))
+    return max(0, (len(stripped) * 3) // 4 - padding)
+
+
+def query_stream_user_key(auth_context) -> str:
+    user_id = str(getattr(auth_context, "user_id", "") or "").strip()
+    if not user_id:
+        return ""
+    return f"{auth_context.tenant_id}:{user_id}"
+
+
+def http_route_key(method: str, path: str) -> str:
+    normalized = re.sub(r"/[^/?]+@[A-Za-z0-9_.~:%+-]+", "/{doc_id}", path)
+    normalized = re.sub(r"/(conv|conversation|artifact|mindmap|table)-[A-Za-z0-9_.~:%+-]+", r"/\1-{id}", normalized)
+    normalized = re.sub(r"/user-[A-Za-z0-9_.~:%+-]+", "/user-{id}", normalized)
+    normalized = re.sub(r"/[0-9a-f]{8,}(?=/|$)", "/{id}", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"/[^/]*sha256-[A-Za-z0-9_.~:%+-]+", "/{doc_id}", normalized)
+    return f"{method.upper()} {normalized}"
+
+
+def record_http_started(route_key: str) -> None:
+    global _HTTP_ACTIVE_TOTAL
+    with _HTTP_METRICS_LOCK:
+        metrics = _HTTP_METRICS.setdefault(route_key, new_http_route_metrics())
+        metrics["active"] = int(metrics["active"]) + 1
+        _HTTP_ACTIVE_TOTAL += 1
+
+
+def record_http_finished(route_key: str, *, status_code: int, latency_ms: float) -> None:
+    global _HTTP_ACTIVE_TOTAL
+    status_family = f"{max(1, min(5, status_code // 100))}xx"
+    with _HTTP_METRICS_LOCK:
+        metrics = _HTTP_METRICS.setdefault(route_key, new_http_route_metrics())
+        metrics["active"] = max(0, int(metrics["active"]) - 1)
+        metrics["requests_total"] = int(metrics["requests_total"]) + 1
+        metrics[f"{status_family}_total"] = int(metrics.get(f"{status_family}_total", 0)) + 1
+        metrics["latency_total_ms"] = float(metrics["latency_total_ms"]) + latency_ms
+        metrics["latency_max_ms"] = max(float(metrics["latency_max_ms"]), latency_ms)
+        _HTTP_ACTIVE_TOTAL = max(0, _HTTP_ACTIVE_TOTAL - 1)
+
+
+def new_http_route_metrics() -> dict[str, int | float]:
+    return {
+        "active": 0,
+        "requests_total": 0,
+        "2xx_total": 0,
+        "3xx_total": 0,
+        "4xx_total": 0,
+        "5xx_total": 0,
+        "latency_total_ms": 0.0,
+        "latency_max_ms": 0.0,
+    }
+
+
+def http_metrics_snapshot() -> dict[str, object]:
+    with _HTTP_METRICS_LOCK:
+        routes = {
+            route: {
+                **metrics,
+                "latency_avg_ms": (
+                    round(float(metrics["latency_total_ms"]) / int(metrics["requests_total"]), 2)
+                    if int(metrics["requests_total"])
+                    else 0.0
+                ),
+                "latency_max_ms": round(float(metrics["latency_max_ms"]), 2),
+                "latency_total_ms": round(float(metrics["latency_total_ms"]), 2),
+            }
+            for route, metrics in sorted(_HTTP_METRICS.items())
+        }
+        return {
+            "active_total": _HTTP_ACTIVE_TOTAL,
+            "routes": routes,
+        }
+
+
+def record_query_stream_accepted(tenant_id: str) -> None:
+    with _QUERY_STREAM_METRICS_LOCK:
+        _QUERY_STREAM_METRICS["active"] += 1
+        _QUERY_STREAM_METRICS["accepted_total"] += 1
+        _QUERY_STREAM_ACTIVE_BY_TENANT[tenant_id] = _QUERY_STREAM_ACTIVE_BY_TENANT.get(tenant_id, 0) + 1
+
+
+def record_query_stream_user_accepted(user_key: str) -> None:
+    if not user_key:
+        return
+    with _QUERY_STREAM_METRICS_LOCK:
+        _QUERY_STREAM_ACTIVE_BY_USER[user_key] = _QUERY_STREAM_ACTIVE_BY_USER.get(user_key, 0) + 1
+
+
+def record_query_stream_finished(tenant_id: str, user_key: str = "", *, errored: bool) -> None:
+    with _QUERY_STREAM_METRICS_LOCK:
+        _QUERY_STREAM_METRICS["active"] = max(0, _QUERY_STREAM_METRICS["active"] - 1)
+        _QUERY_STREAM_METRICS["completed_total"] += 1
+        if errored:
+            _QUERY_STREAM_METRICS["errored_total"] += 1
+        current = max(0, _QUERY_STREAM_ACTIVE_BY_TENANT.get(tenant_id, 0) - 1)
+        if current:
+            _QUERY_STREAM_ACTIVE_BY_TENANT[tenant_id] = current
+        else:
+            _QUERY_STREAM_ACTIVE_BY_TENANT.pop(tenant_id, None)
+        if user_key:
+            current_user = max(0, _QUERY_STREAM_ACTIVE_BY_USER.get(user_key, 0) - 1)
+            if current_user:
+                _QUERY_STREAM_ACTIVE_BY_USER[user_key] = current_user
+            else:
+                _QUERY_STREAM_ACTIVE_BY_USER.pop(user_key, None)
+
+
+def record_query_stream_rejected(kind: str) -> None:
+    if kind == "user":
+        key = "rejected_user_total"
+    elif kind == "tenant":
+        key = "rejected_tenant_total"
+    else:
+        key = "rejected_global_total"
+    with _QUERY_STREAM_METRICS_LOCK:
+        _QUERY_STREAM_METRICS[key] += 1
+
+
+def record_query_stream_event_queue_backpressure() -> None:
+    with _QUERY_STREAM_METRICS_LOCK:
+        _QUERY_STREAM_METRICS["event_queue_backpressure_total"] += 1
+
+
+def query_stream_metrics_snapshot() -> dict[str, object]:
+    with _QUERY_STREAM_METRICS_LOCK:
+        return {
+            **_QUERY_STREAM_METRICS,
+            "active_by_tenant": dict(sorted(_QUERY_STREAM_ACTIVE_BY_TENANT.items())),
+            "active_by_user": dict(sorted(_QUERY_STREAM_ACTIVE_BY_USER.items())),
+            "queue_limit": query_stream_queue_limit(),
+            "tenant_queue_limit": query_stream_tenant_queue_limit(),
+            "user_queue_limit": query_stream_user_queue_limit(),
+            "event_queue_limit": query_stream_event_queue_limit(),
+            "workers": query_stream_max_workers(),
+        }
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return default
 
 
 class QueryRequest(BaseModel):
@@ -390,6 +668,76 @@ def create_app():
     app = FastAPI(title="Production RAG", version=app_version())
     ensure_default_test_account(load_config())
 
+    @app.middleware("http")
+    async def record_http_metrics(request, call_next):
+        route_key = http_route_key(request.method, request.url.path)
+        start = time.perf_counter()
+        record_http_started(route_key)
+        status_code = 500
+        try:
+            if request.method.upper() == "POST" and request.url.path == "/sources/upload":
+                config = load_config()
+                content_length = request.headers.get("content-length")
+                try:
+                    request_size = int(content_length) if content_length else 0
+                except ValueError:
+                    request_size = 0
+                if request_size > max_upload_request_bytes(config):
+                    status_code = 413
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "detail": (
+                                "Uploaded file is too large. "
+                                f"RAG_MAX_UPLOAD_BYTES={config.max_upload_bytes}"
+                            )
+                        },
+                    )
+            if request.method.upper() == "POST" and request.url.path in {"/query", "/query/stream", "/search"}:
+                config = load_config()
+                content_length = request.headers.get("content-length")
+                try:
+                    request_size = int(content_length) if content_length else 0
+                except ValueError:
+                    request_size = 0
+                query_request_limit = max_query_request_bytes(config)
+                if request_size > query_request_limit:
+                    status_code = 413
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "detail": (
+                                "Query request body is too large. "
+                                f"RAG_MAX_QUERY_REQUEST_BYTES={query_request_limit}"
+                            )
+                        },
+                    )
+            if request.method.upper() == "POST" and request.url.path == "/conversations":
+                config = load_config()
+                content_length = request.headers.get("content-length")
+                try:
+                    request_size = int(content_length) if content_length else 0
+                except ValueError:
+                    request_size = 0
+                conversation_request_limit = max_conversation_request_bytes(config)
+                if request_size > conversation_request_limit:
+                    status_code = 413
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "detail": (
+                                "Conversation request body is too large. "
+                                f"RAG_MAX_CONVERSATION_REQUEST_BYTES={conversation_request_limit}"
+                            )
+                        },
+                    )
+            response = await call_next(request)
+            status_code = int(getattr(response, "status_code", 500))
+            return response
+        finally:
+            latency_ms = (time.perf_counter() - start) * 1000
+            record_http_finished(route_key, status_code=status_code, latency_ms=latency_ms)
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -401,6 +749,37 @@ def create_app():
         if report["status"] != "ok":
             raise HTTPException(status_code=503, detail=report)
         return report
+
+    @app.get("/runtime-metrics")
+    def runtime_metrics(tenant_id: str | None = None) -> dict[str, object]:
+        config = load_config()
+        return {
+            "http": http_metrics_snapshot(),
+            "query_stream": query_stream_metrics_snapshot(),
+            "query": {
+                "max_query_image_bytes": config.max_query_image_bytes,
+                "max_query_request_bytes": max_query_request_bytes(config),
+            },
+            "conversation": {
+                "max_conversation_request_bytes": max_conversation_request_bytes(config),
+                "max_conversation_images": max_conversation_images(),
+                "max_conversation_image_bytes": max_conversation_image_bytes(config),
+            },
+            "model_api": model_api_metrics_snapshot(),
+            "milvus_client": milvus_client_metrics_snapshot(),
+            "metadata_db": metadata_pool_metrics_snapshot(),
+            "auth_token_cache": auth_token_cache_metrics_snapshot(),
+            "event_log": event_log_limits_snapshot(),
+            "ingestion": {
+                "source_tasks_by_status": count_source_tasks_by_status(config=config, tenant_id=tenant_id),
+                "active_source_tasks": count_active_source_tasks(config=config, tenant_id=None),
+                "tenant_active_source_tasks": count_active_source_tasks(config=config, tenant_id=tenant_id),
+                "backlog_limit": ingest_backlog_limit(),
+                "tenant_backlog_limit": ingest_tenant_backlog_limit(),
+                "max_upload_bytes": config.max_upload_bytes,
+                "tenant_id": tenant_id or "",
+            },
+        }
 
     @app.post("/auth/register", response_model=AuthResponse)
     def register(request: AuthRequest) -> AuthResponse:
@@ -650,6 +1029,29 @@ def create_app():
             tenant_id=tenant_id,
             acl_groups=body_acl_groups,
         )
+        active_backlog = count_active_source_tasks(config=config, tenant_id=None)
+        backlog_limit = ingest_backlog_limit()
+        if active_backlog >= backlog_limit:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Ingestion backlog is full. Please retry later. "
+                    f"active_source_tasks={active_backlog} "
+                    f"RAG_INGEST_BACKLOG_LIMIT={backlog_limit}"
+                ),
+            )
+        tenant_active_backlog = count_active_source_tasks(config=config, tenant_id=auth_context.tenant_id)
+        tenant_backlog_limit = ingest_tenant_backlog_limit()
+        if tenant_active_backlog >= tenant_backlog_limit:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Ingestion backlog is full for this tenant. Please retry later. "
+                    f"tenant_id={auth_context.tenant_id} "
+                    f"tenant_active_source_tasks={tenant_active_backlog} "
+                    f"RAG_INGEST_TENANT_BACKLOG_LIMIT={tenant_backlog_limit}"
+                ),
+            )
         try:
             saved_path = save_uploaded_file(
                 config=config,
@@ -664,7 +1066,7 @@ def create_app():
                 acl_groups=auth_context.acl_groups or body_acl_groups or ["engineering"],
                 doc_version=doc_version,
             )
-            accepted = submit_upload_ingestion_job(
+            submit_upload_ingestion_job(
                 pending_source=pending_source,
                 saved_path=saved_path,
                 tenant_id=auth_context.tenant_id,
@@ -672,14 +1074,8 @@ def create_app():
                 doc_version=doc_version,
                 language=language,
             )
-            if not accepted:
-                fail_source_task(
-                    config=config,
-                    tenant_id=auth_context.tenant_id,
-                    source=pending_source,
-                    error="Ingestion queue is full. Please retry later.",
-                )
-                raise HTTPException(status_code=503, detail="Ingestion queue is full. Please retry later.")
+        except UploadTooLargeError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return SourceUploadResponse(
@@ -721,10 +1117,20 @@ def create_app():
     def source_asset(
         asset_path: str,
         tenant_id: str = "team_a",
+        token: str | None = None,
+        authorization: str | None = Header(default=None),
     ) -> Response:
         config = load_config()
+        auth_context = resolve_asset_auth_context(
+            config=config,
+            authorization=authorization,
+            token=token,
+            tenant_id=tenant_id,
+        )
         if asset_path.startswith("__s3__/"):
             object_uri = unquote_object_uri(asset_path[len("__s3__/") :])
+            if not s3_asset_belongs_to_tenant(object_uri, auth_context.tenant_id):
+                raise HTTPException(status_code=404, detail="Asset not found")
             try:
                 body = read_object_bytes_by_uri(object_uri)
             except Exception:
@@ -737,7 +1143,7 @@ def create_app():
         if len(asset_parts) < 3 or asset_parts[0] != "uploads":
             raise HTTPException(status_code=404, detail="Asset not found")
         requested_tenant = asset_parts[1]
-        if requested_tenant != tenant_id:
+        if requested_tenant != auth_context.tenant_id:
             raise HTTPException(status_code=404, detail="Asset not found")
         try:
             object_store_dir = config.object_store_dir.expanduser().resolve()
@@ -845,6 +1251,7 @@ def create_app():
         x_rag_acl_groups: str | None = Header(default=None),
     ) -> SearchResponse:
         config = load_config()
+        validate_query_image_data_url(request, config)
         auth_context = resolve_auth_context(
             config=config,
             authorization=authorization,
@@ -886,6 +1293,7 @@ def create_app():
         x_rag_acl_groups: str | None = Header(default=None),
     ) -> QueryResponse:
         config = load_config()
+        validate_query_image_data_url(request, config)
         auth_context = resolve_auth_context(
             config=config,
             authorization=authorization,
@@ -929,6 +1337,7 @@ def create_app():
         x_rag_acl_groups: str | None = Header(default=None),
     ) -> StreamingResponse:
         config = load_config()
+        validate_query_image_data_url(request, config)
         auth_context = resolve_auth_context(
             config=config,
             authorization=authorization,
@@ -936,17 +1345,71 @@ def create_app():
             x_rag_acl_groups=x_rag_acl_groups,
             request=request,
         )
+        stream_slot = query_stream_semaphore(query_stream_queue_limit())
+        if not stream_slot.acquire(blocking=False):
+            record_query_stream_rejected("global")
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Query service is busy. Please retry later. "
+                    f"RAG_QUERY_STREAM_QUEUE_LIMIT={query_stream_queue_limit()}"
+                ),
+            )
+        tenant_slot = query_stream_tenant_semaphore(
+            query_stream_tenant_queue_limit(),
+            auth_context.tenant_id,
+        )
+        if not tenant_slot.acquire(blocking=False):
+            stream_slot.release()
+            record_query_stream_rejected("tenant")
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Query service is busy for this tenant. Please retry later. "
+                    f"tenant_id={auth_context.tenant_id} "
+                    f"RAG_QUERY_STREAM_TENANT_QUEUE_LIMIT={query_stream_tenant_queue_limit()}"
+                ),
+            )
+        user_key = query_stream_user_key(auth_context)
+        user_slot = None
+        if user_key:
+            user_slot = query_stream_user_semaphore(query_stream_user_queue_limit(), user_key)
+            if not user_slot.acquire(blocking=False):
+                tenant_slot.release()
+                stream_slot.release()
+                record_query_stream_rejected("user")
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Query service is busy for this user. Please retry later. "
+                        f"user_id={auth_context.user_id} "
+                        f"RAG_QUERY_STREAM_USER_QUEUE_LIMIT={query_stream_user_queue_limit()}"
+                    ),
+                )
+        record_query_stream_accepted(auth_context.tenant_id)
+        record_query_stream_user_accepted(user_key)
 
         def stream_events():
-            event_queue: Queue[dict[str, object] | None] = Queue()
+            client_disconnected = threading.Event()
+            event_queue: Queue[dict[str, object] | None] = Queue(maxsize=query_stream_event_queue_limit())
 
-            def emit(event_type: str, payload: dict[str, object]) -> None:
-                event_queue.put({"type": event_type, **payload})
+            def enqueue_event(event: dict[str, object] | None) -> bool:
+                while not client_disconnected.is_set():
+                    try:
+                        event_queue.put(event, timeout=0.5)
+                        return True
+                    except Full:
+                        record_query_stream_event_queue_backpressure()
+                return False
+
+            def emit(event_type: str, payload: dict[str, object]) -> bool:
+                return enqueue_event({"type": event_type, **payload})
 
             def emit_stage_event(payload: dict[str, object]) -> None:
                 emit("stage", payload)
 
             def run_query() -> None:
+                errored = False
                 try:
                     emit(
                         "stage",
@@ -988,16 +1451,34 @@ def create_app():
                     )
                     emit("result", response.model_dump())
                 except Exception as exc:  # noqa: BLE001 - streamed API must serialize failures.
+                    errored = True
                     emit("error", {"detail": str(exc) or exc.__class__.__name__})
                 finally:
-                    event_queue.put(None)
+                    record_query_stream_finished(auth_context.tenant_id, user_key, errored=errored)
+                    if user_slot is not None:
+                        user_slot.release()
+                    tenant_slot.release()
+                    stream_slot.release()
+                    enqueue_event(None)
 
-            threading.Thread(target=run_query, daemon=True).start()
-            while True:
-                event = event_queue.get()
-                if event is None:
-                    break
-                yield json.dumps(event, ensure_ascii=False) + "\n"
+            try:
+                query_stream_executor(query_stream_max_workers()).submit(run_query)
+            except Exception as exc:  # noqa: BLE001 - streamed API must serialize failures.
+                record_query_stream_finished(auth_context.tenant_id, user_key, errored=True)
+                if user_slot is not None:
+                    user_slot.release()
+                tenant_slot.release()
+                stream_slot.release()
+                emit("error", {"detail": str(exc) or exc.__class__.__name__})
+                enqueue_event(None)
+            try:
+                while True:
+                    event = event_queue.get()
+                    if event is None:
+                        break
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+            finally:
+                client_disconnected.set()
 
         return StreamingResponse(stream_events(), media_type="application/x-ndjson")
 
@@ -1050,8 +1531,8 @@ def create_app():
         )
         return ConversationListResponse(
             conversations=[
-                conversation_to_list_item(conversation)
-                for conversation in list_conversations(config, tenant_id=auth_context.tenant_id)
+                conversation_item_to_response(item)
+                for item in list_conversation_items(config, tenant_id=auth_context.tenant_id)
             ]
         )
 
@@ -1063,6 +1544,7 @@ def create_app():
         x_rag_acl_groups: str | None = Header(default=None),
     ) -> ConversationResponse:
         config = load_config()
+        validate_conversation_image_data_urls(request, config)
         auth_context = resolve_auth_context_from_values(
             config=config,
             authorization=authorization,
@@ -1348,6 +1830,8 @@ def resolve_auth_context(
                 header_acl_groups="engineering",
                 body_tenant_id=request.tenant_id,
                 body_acl_groups=request.acl_groups,
+                user_id=user.id,
+                username=user.username,
             )
         if not config.api_token:
             raise ValueError("请先登录")
@@ -1449,6 +1933,8 @@ def resolve_auth_context_from_values(
                 header_acl_groups="engineering",
                 body_tenant_id=tenant_id,
                 body_acl_groups=acl_groups,
+                user_id=user.id,
+                username=user.username,
             )
         if not config.api_token:
             raise ValueError("请先登录")
@@ -1464,9 +1950,103 @@ def resolve_auth_context_from_values(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
-def materialize_query_image(request: QueryRequest) -> str | None:
+def resolve_asset_auth_context(
+    *,
+    config,
+    authorization: str | None,
+    token: str | None,
+    tenant_id: str,
+):
+    from fastapi import HTTPException
+
+    query_authorization = f"Bearer {token}" if token else None
+    resolved_authorization = authorization or query_authorization
+    try:
+        user = authenticate_token(config, token=bearer_token(resolved_authorization))
+        if user is not None:
+            return build_auth_context(
+                config=config,
+                header_tenant_id=user.tenant_id,
+                header_acl_groups="engineering",
+                body_tenant_id=tenant_id,
+                body_acl_groups=[],
+                user_id=user.id,
+                username=user.username,
+            )
+        if not config.api_token:
+            raise ValueError("请先登录")
+        validate_bearer_token(config=config, authorization=resolved_authorization)
+        return build_auth_context(
+            config=config,
+            header_tenant_id=tenant_id,
+            header_acl_groups="engineering",
+            body_tenant_id=tenant_id,
+            body_acl_groups=[],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+def s3_asset_belongs_to_tenant(object_uri: str, tenant_id: str) -> bool:
+    try:
+        _, key = parse_s3_uri(object_uri)
+    except ValueError:
+        return False
+    parts = [part for part in key.split("/") if part]
+    return any(
+        part == "uploads" and index + 1 < len(parts) and parts[index + 1] == tenant_id
+        for index, part in enumerate(parts)
+    )
+
+
+def validate_query_image_data_url(request: QueryRequest, config) -> None:
+    if not request.image_data_url:
+        return
+    prefix, separator, encoded = request.image_data_url.partition(",")
+    if separator != "," or not prefix.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="image_data_url must be a data:image URL")
+    if estimate_base64_decoded_bytes(encoded) > config.max_query_image_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Query image is too large. RAG_MAX_QUERY_IMAGE_BYTES={config.max_query_image_bytes}",
+        )
+
+
+def validate_conversation_image_data_urls(request: ConversationUpsertRequest, config) -> None:
+    image_count = 0
+    total_image_bytes = 0
+    image_count_limit = max_conversation_images()
+    image_bytes_limit = max_conversation_image_bytes(config)
+    for message in request.messages:
+        if not message.image_data_url:
+            continue
+        image_count += 1
+        if image_count > image_count_limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Too many conversation images. RAG_MAX_CONVERSATION_IMAGES={image_count_limit}",
+            )
+        prefix, separator, encoded = message.image_data_url.partition(",")
+        if separator != "," or not prefix.startswith("data:image/"):
+            raise HTTPException(status_code=400, detail="message.image_data_url must be a data:image URL")
+        decoded_bytes = estimate_base64_decoded_bytes(encoded)
+        if decoded_bytes > config.max_query_image_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Conversation image is too large. RAG_MAX_QUERY_IMAGE_BYTES={config.max_query_image_bytes}",
+            )
+        total_image_bytes += decoded_bytes
+        if total_image_bytes > image_bytes_limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Conversation images are too large. RAG_MAX_CONVERSATION_IMAGE_BYTES={image_bytes_limit}",
+            )
+
+
+def materialize_query_image(request: QueryRequest, config=None) -> str | None:
     if not request.image_data_url:
         return None
+    config = config or load_config()
     prefix, separator, encoded = request.image_data_url.partition(",")
     if separator != "," or not prefix.startswith("data:image/"):
         raise HTTPException(status_code=400, detail="image_data_url must be a data:image URL")
@@ -1480,9 +2060,11 @@ def materialize_query_image(request: QueryRequest) -> str | None:
         image_bytes = base64.b64decode(encoded, validate=True)
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid query image data") from exc
-    if len(image_bytes) > 8 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Query image is too large")
-    config = load_config()
+    if len(image_bytes) > config.max_query_image_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Query image is too large. RAG_MAX_QUERY_IMAGE_BYTES={config.max_query_image_bytes}",
+        )
     query_dir = config.runtime_dir / "query_images"
     query_dir.mkdir(parents=True, exist_ok=True)
     image_path = query_dir / f"{uuid.uuid4().hex}.{extension}"
@@ -1663,6 +2245,18 @@ def conversation_to_list_item(conversation) -> ConversationListItemResponse:
         source_doc_ids=conversation.source_doc_ids,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
+    )
+
+
+def conversation_item_to_response(item) -> ConversationListItemResponse:
+    return ConversationListItemResponse(
+        id=item.id,
+        tenant_id=item.tenant_id,
+        title=item.title,
+        message_count=item.message_count,
+        source_doc_ids=item.source_doc_ids,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
     )
 
 

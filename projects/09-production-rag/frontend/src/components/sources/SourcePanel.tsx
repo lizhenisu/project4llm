@@ -4,6 +4,9 @@ import { createPortal } from "react-dom";
 import type { SourceContent, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
 
+const INITIAL_VISIBLE_SOURCE_COUNT = 80;
+const SOURCE_VISIBLE_INCREMENT = 80;
+
 type Props = {
   sources: SourceItem[];
   onSourcesChange: (sources: SourceItem[]) => void;
@@ -36,6 +39,7 @@ export function SourcePanel({
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [sourceToDelete, setSourceToDelete] = useState<SourceItem | null>(null);
+  const [visibleSourceCount, setVisibleSourceCount] = useState(INITIAL_VISIBLE_SOURCE_COUNT);
 
   
   useEffect(() => {
@@ -46,8 +50,17 @@ export function SourcePanel({
     return () => document.removeEventListener("click", handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    setVisibleSourceCount((current) => {
+      const minimum = Math.min(INITIAL_VISIBLE_SOURCE_COUNT, sources.length || INITIAL_VISIBLE_SOURCE_COUNT);
+      return Math.min(Math.max(current, minimum), Math.max(sources.length, INITIAL_VISIBLE_SOURCE_COUNT));
+    });
+  }, [sources.length]);
+
   const readySources = sources.filter((source) => source.status === "ready");
   const allSelected = readySources.length > 0 && readySources.every((source) => source.selected);
+  const visibleSources = sources.slice(0, visibleSourceCount);
+  const hiddenSourceCount = Math.max(0, sources.length - visibleSources.length);
 
   function toggleAll() {
     onSourcesChange(
@@ -93,7 +106,7 @@ export function SourcePanel({
             <span>全选</span>
             <input type="checkbox" checked={allSelected} onChange={toggleAll} />
           </label>
-          {sources.map((source) => {
+          {visibleSources.map((source) => {
             const activeTask = source.status === "uploading" || source.status === "queued" || source.status === "processing";
             const sourceKey = sourceInstanceKey(source);
             const isEditing = editingSourceId === sourceKey;
@@ -194,6 +207,17 @@ export function SourcePanel({
             </div>
           );
           })}
+          {hiddenSourceCount > 0 ? (
+            <button
+              className="source-list-more"
+              type="button"
+              onClick={() =>
+                setVisibleSourceCount((current) => Math.min(sources.length, current + SOURCE_VISIBLE_INCREMENT))
+              }
+            >
+              显示更多来源（{hiddenSourceCount}）
+            </button>
+          ) : null}
         </div>
       )}
 
@@ -304,7 +328,12 @@ function SourceReader({
               content.blocks.map((block, index) =>
                 block.type === "image" && block.url ? (
                   <figure className="source-document-image" key={`${index}-${block.url.slice(0, 32)}`}>
-                    <img src={block.url} alt={block.title || block.page || "Document image"} />
+                    <img
+                      src={block.url}
+                      alt={block.title || block.page || "Document image"}
+                      loading="lazy"
+                      decoding="async"
+                    />
                     {block.page || block.title ? (
                       <figcaption>{[block.page, block.title].filter(Boolean).join(" · ")}</figcaption>
                     ) : null}

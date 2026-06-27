@@ -459,6 +459,24 @@ button:not(:disabled):active {
   transform: translateX(2px);
 }
 
+.source-list-more {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.source-list-more:hover {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  color: var(--text-main);
+  background: var(--surface-muted);
+}
+
 .source-row.is-active-task,
 .artifact-row.is-active-task {
   border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
@@ -944,6 +962,24 @@ button.jump-latest-button:active:not(:disabled) {
   margin: 0;
 }
 
+.message-list-more {
+  justify-self: center;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  padding: 0 14px;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.message-list-more:hover {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  color: var(--text-main);
+  background: var(--surface-muted);
+}
+
 .user-message,
 .assistant-message {
   border-radius: var(--radius);
@@ -1365,6 +1401,19 @@ button.jump-latest-button:active:not(:disabled) {
   align-self: center;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.chat-input-hint,
+.chat-input-error {
+  grid-column: 1 / -1;
+  margin: -4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.chat-input-error {
+  color: var(--danger);
 }
 
 .chat-input button {

@@ -75,6 +75,12 @@ async function request<T>(path: string, options: RequestOptions): Promise<T> {
 }
 
 async function readErrorDetail(response: Response): Promise<string> {
+  if (response.status === 503) {
+    return "当前服务繁忙，请稍后重试。";
+  }
+  if (response.status === 413) {
+    return "文件过大，请压缩文件或拆分后再上传。";
+  }
   const contentType = response.headers.get("content-type") ?? "";
   const defaultMessage = response.statusText || `HTTP ${response.status}`;
   if (contentType.includes("application/json")) {
@@ -90,6 +96,16 @@ async function readErrorDetail(response: Response): Promise<string> {
   }
   const text = await response.text();
   return text || defaultMessage;
+}
+
+function normalizeStreamError(detail: string): string {
+  if (
+    detail.includes("Query service is busy") ||
+    detail.includes("Model API concurrency limit reached")
+  ) {
+    return "当前服务繁忙，请稍后重试。";
+  }
+  return detail;
 }
 
 export function health(settings: Settings) {
@@ -244,7 +260,7 @@ export async function queryRagStream(
       }
       params.onEvent(event);
       if (event.type === "error") {
-        throw new ApiError(event.detail, response.status);
+        throw new ApiError(normalizeStreamError(event.detail), response.status);
       }
     }
     if (done) break;
@@ -257,7 +273,7 @@ export async function queryRagStream(
       }
       params.onEvent(event);
       if (event.type === "error") {
-        throw new ApiError(event.detail, response.status);
+        throw new ApiError(normalizeStreamError(event.detail), response.status);
       }
     }
   }
@@ -413,7 +429,12 @@ function normalizeAssetUrl(settings: Settings, url: string | undefined): string 
     return url;
   }
   const apiBaseUrl = settings.apiBaseUrl.replace(/\/+$/, "");
-  return `${apiBaseUrl}${url}`;
+  const normalizedUrl = new URL(`${apiBaseUrl}${url}`, window.location.origin);
+  normalizedUrl.searchParams.set("tenant_id", settings.tenantId);
+  if (settings.token) {
+    normalizedUrl.searchParams.set("token", settings.token);
+  }
+  return normalizedUrl.toString();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

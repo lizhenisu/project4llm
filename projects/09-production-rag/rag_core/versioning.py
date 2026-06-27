@@ -124,7 +124,11 @@ def publish_current_versions_db(config: RagConfig, docs: Iterable[SourceDocument
                 INSERT INTO current_source_versions(tenant_id, doc_id, doc_version, updated_at)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(tenant_id, doc_id) DO UPDATE SET
-                    doc_version = max(current_source_versions.doc_version, excluded.doc_version),
+                    doc_version = CASE
+                        WHEN current_source_versions.doc_version > excluded.doc_version
+                        THEN current_source_versions.doc_version
+                        ELSE excluded.doc_version
+                    END,
                     updated_at = excluded.updated_at
                 """,
                 (doc.tenant_id, doc.doc_id, int(doc.doc_version), timestamp),

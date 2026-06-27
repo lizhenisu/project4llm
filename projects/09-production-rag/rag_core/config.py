@@ -10,7 +10,7 @@ DATA_DIR = PROJECT_DIR / "data"
 FIXTURE_DATA_DIR = PROJECT_DIR / "tests" / "fixtures" / "data"
 RUNTIME_DIR = PROJECT_DIR / "runtime"
 OBJECT_STORE_DIR = PROJECT_DIR / "object_store"
-DEFAULT_MILVUS_DB = PROJECT_DIR / "production_rag.db"
+DEFAULT_MILVUS_DB = RUNTIME_DIR / "milvus_lite.db"
 MODELSCOPE_CACHE = Path.home() / ".cache" / "modelscope" / "hub" / "models" / "BAAI"
 DEFAULT_FIXED_TEST_LOGIN_TOKEN = "production-rag-fixed-test-login-token"
 _ENV_LOADED = False
@@ -87,6 +87,10 @@ def _validate_backend(name: str, value: str, allowed: set[str]) -> None:
         raise ValueError(f"Unsupported {name}={value!r}; use {allowed_text}")
 
 
+def _default_milvus_uri() -> str:
+    return str(DEFAULT_MILVUS_DB)
+
+
 @dataclass(frozen=True)
 class RagConfig:
     milvus_uri: str
@@ -126,6 +130,8 @@ class RagConfig:
     s3_prefix: str
     metadata_database_url: str | None
     pii_policy: str
+    max_upload_bytes: int
+    max_query_image_bytes: int
     max_context_chars: int
     max_chunks_per_doc: int
     min_rerank_score: float | None
@@ -143,6 +149,7 @@ class RagConfig:
     image_search_ef: int
     sparse_drop_ratio_build: float
     sparse_drop_ratio_search: float
+    source_list_cache_ttl_seconds: float
 
 
 def load_config() -> RagConfig:
@@ -161,7 +168,7 @@ def load_config() -> RagConfig:
     milvus_uri = (
         os.environ.get("RAG_MILVUS_URI")
         or os.environ.get("MILVUS_URI")
-        or str(DEFAULT_MILVUS_DB)
+        or _default_milvus_uri()
     )
 
     return RagConfig(
@@ -210,6 +217,8 @@ def load_config() -> RagConfig:
         s3_prefix=os.environ.get("RAG_S3_PREFIX", "").strip("/"),
         metadata_database_url=os.environ.get("RAG_METADATA_DATABASE_URL") or None,
         pii_policy=os.environ.get("RAG_PII_POLICY", "warn").lower(),
+        max_upload_bytes=_env_int("RAG_MAX_UPLOAD_BYTES", 100 * 1024 * 1024),
+        max_query_image_bytes=_env_int("RAG_MAX_QUERY_IMAGE_BYTES", 2 * 1024 * 1024),
         max_context_chars=_env_int("RAG_MAX_CONTEXT_CHARS", 6000),
         max_chunks_per_doc=_env_int("RAG_MAX_CHUNKS_PER_DOC", 2),
         min_rerank_score=_env_float_or_none("RAG_MIN_RERANK_SCORE"),
@@ -231,4 +240,5 @@ def load_config() -> RagConfig:
         image_search_ef=_env_int("RAG_IMAGE_SEARCH_EF", 128),
         sparse_drop_ratio_build=_env_float("RAG_SPARSE_DROP_RATIO_BUILD", 0.2),
         sparse_drop_ratio_search=_env_float("RAG_SPARSE_DROP_RATIO_SEARCH", 0.0),
+        source_list_cache_ttl_seconds=_env_float("RAG_SOURCE_LIST_CACHE_TTL_SECONDS", 1.0),
     )

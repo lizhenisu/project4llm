@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -12,7 +13,8 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import serve
-from rag_core.sources import IngestSummary
+from rag_core.auth import AuthContext
+from rag_core.sources import SourceSummary
 from serve import (
     ArtifactListResponse,
     DeleteArtifactResponse,
@@ -137,59 +139,76 @@ def main() -> None:
     assert ConversationListResponse(conversations=[]).conversations == []
     assert DeleteConversationResponse(status="deleted", conversation_id="conv-1").status == "deleted"
 
-    old_save_uploaded_file = serve.save_uploaded_file
-    old_ingest_uploaded_path = serve.ingest_uploaded_path
-    try:
-        serve.save_uploaded_file = lambda **_: Path("/tmp/upload.txt")
-        serve.ingest_uploaded_path = lambda **_: IngestSummary(
-            sources=[source],
-            document_count=1,
-            chunk_count=2,
-        )
+    queued_source = SourceSummary(
+        doc_id="runbook",
+        title="upload.txt",
+        source_type="txt",
+        source_uri="/tmp/upload.txt",
+        doc_version=1,
+        chunk_count=0,
+        acl_groups=["ops"],
+        status="queued",
+        current=False,
+        created_at=1,
+        updated_at=1,
+    )
+    with (
+        patch("serve.count_active_source_tasks", return_value=0),
+        patch("serve.save_uploaded_file", return_value=Path("/tmp/upload.txt")) as save_uploaded,
+        patch("serve.create_source_task", return_value=queued_source) as create_task,
+        patch("serve.submit_upload_ingestion_job") as submit_job,
+        patch("serve.resolve_auth_context_from_values", return_value=AuthContext("team_a", ["ops"], "smoke")),
+    ):
         upload_response = TestClient(app).post(
             "/sources/upload",
             files={"file": ("upload.txt", b"hello", "text/plain")},
             data={"tenant_id": "team_a", "acl_groups": "ops"},
         )
-        assert upload_response.status_code == 200, upload_response.text
-        assert upload_response.json()["sources"][0]["doc_id"] == "runbook"
-    finally:
-        serve.save_uploaded_file = old_save_uploaded_file
-        serve.ingest_uploaded_path = old_ingest_uploaded_path
+    assert upload_response.status_code == 200, upload_response.text
+    assert upload_response.json()["status"] == "queued"
+    assert upload_response.json()["sources"][0]["doc_id"] == "runbook"
+    assert upload_response.json()["sources"][0]["status"] == "queued"
+    save_uploaded.assert_called_once()
+    create_task.assert_called_once()
+    submit_job.assert_called_once()
 
     old_runtime_dir = os.environ.get("RAG_RUNTIME_DIR")
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["RAG_RUNTIME_DIR"] = tmp
         try:
             client = TestClient(app)
-            save_response = client.post(
-                "/conversations",
-                json={
-                    "tenant_id": "team_a",
-                    "title": "Runbook chat",
-                    "source_doc_ids": ["runbook"],
-                    "messages": [
-                        {"id": "msg-1", "role": "user", "content": "怎么排障？"},
-                        {
-                            "id": "msg-2",
-                            "role": "assistant",
-                            "content": "检查 Milvus。",
-                            "citations": [hit.model_dump()],
-                        },
-                    ],
-                },
-            )
-            assert save_response.status_code == 200, save_response.text
-            conversation_id = save_response.json()["id"]
-            list_response = client.get("/conversations?tenant_id=team_a")
-            assert list_response.status_code == 200, list_response.text
-            assert list_response.json()["conversations"][0]["id"] == conversation_id
-            get_response = client.get(f"/conversations/{conversation_id}?tenant_id=team_a")
-            assert get_response.status_code == 200, get_response.text
-            assert get_response.json()["messages"][1]["citations"][0]["doc_id"] == "runbook"
-            delete_response = client.delete(f"/conversations/{conversation_id}?tenant_id=team_a")
-            assert delete_response.status_code == 200, delete_response.text
-            assert delete_response.json()["status"] == "deleted"
+            with patch(
+                "serve.resolve_auth_context_from_values",
+                return_value=AuthContext("team_a", ["ops"], "smoke"),
+            ):
+                save_response = client.post(
+                    "/conversations",
+                    json={
+                        "tenant_id": "team_a",
+                        "title": "Runbook chat",
+                        "source_doc_ids": ["runbook"],
+                        "messages": [
+                            {"id": "msg-1", "role": "user", "content": "怎么排障？"},
+                            {
+                                "id": "msg-2",
+                                "role": "assistant",
+                                "content": "检查 Milvus。",
+                                "citations": [hit.model_dump()],
+                            },
+                        ],
+                    },
+                )
+                assert save_response.status_code == 200, save_response.text
+                conversation_id = save_response.json()["id"]
+                list_response = client.get("/conversations?tenant_id=team_a")
+                assert list_response.status_code == 200, list_response.text
+                assert list_response.json()["conversations"][0]["id"] == conversation_id
+                get_response = client.get(f"/conversations/{conversation_id}?tenant_id=team_a")
+                assert get_response.status_code == 200, get_response.text
+                assert get_response.json()["messages"][1]["citations"][0]["doc_id"] == "runbook"
+                delete_response = client.delete(f"/conversations/{conversation_id}?tenant_id=team_a")
+                assert delete_response.status_code == 200, delete_response.text
+                assert delete_response.json()["status"] == "deleted"
         finally:
             if old_runtime_dir is None:
                 os.environ.pop("RAG_RUNTIME_DIR", None)

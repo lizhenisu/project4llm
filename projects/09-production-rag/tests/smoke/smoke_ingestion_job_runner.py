@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import threading
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -26,7 +27,7 @@ def test_ingestion_runner_limits_concurrency_and_cleans_successful_tasks() -> No
     lock = threading.Lock()
     started = threading.Event()
     release = threading.Event()
-    state = {"active": 0, "max_active": 0, "deleted": [], "statuses": []}
+    state = {"active": 0, "max_active": 0, "deleted": [], "claims": []}
 
     def fake_ingest_uploaded_path(**kwargs):
         with lock:
@@ -40,9 +41,9 @@ def test_ingestion_runner_limits_concurrency_and_cleans_successful_tasks() -> No
     def fake_delete_source_task(**kwargs):
         state["deleted"].append(kwargs["task_id"])
 
-    def fake_update_source_task_status(**kwargs):
-        state["statuses"].append((kwargs["source"].doc_id, kwargs["status"]))
-        return kwargs["source"]
+    def fake_claim_source_task_for_processing(**kwargs):
+        state["claims"].append(kwargs["source"].doc_id)
+        return replace(kwargs["source"], status="processing")
 
     runner = IngestionJobRunner(workers=1, queue_limit=1, tenant_queue_limit=1)
     with tempfile.TemporaryDirectory() as tmp:
@@ -50,7 +51,7 @@ def test_ingestion_runner_limits_concurrency_and_cleans_successful_tasks() -> No
             patch("rag_core.ingestion_jobs.load_config", return_value=SimpleNamespace()),
             patch("rag_core.ingestion_jobs.ingest_uploaded_path", side_effect=fake_ingest_uploaded_path),
             patch("rag_core.ingestion_jobs.delete_source_task", side_effect=fake_delete_source_task),
-            patch("rag_core.ingestion_jobs.update_source_task_status", side_effect=fake_update_source_task_status),
+            patch("rag_core.ingestion_jobs.claim_source_task_for_processing", side_effect=fake_claim_source_task_for_processing),
         )
         for manager in patches:
             manager.__enter__()
@@ -81,7 +82,7 @@ def test_ingestion_runner_limits_concurrency_and_cleans_successful_tasks() -> No
                 manager.__exit__(None, None, None)
 
     assert state["max_active"] == 1
-    assert state["statuses"] == [("task-1", "processing")]
+    assert state["claims"] == ["task-1"]
 
 
 def test_ingestion_runner_limits_per_tenant_inflight_tasks() -> None:
@@ -99,13 +100,16 @@ def test_ingestion_runner_limits_per_tenant_inflight_tasks() -> None:
     def fake_delete_source_task(**kwargs):
         state["deleted"].append(kwargs["task_id"])
 
+    def fake_claim_source_task_for_processing(**kwargs):
+        return replace(kwargs["source"], status="processing")
+
     runner = IngestionJobRunner(workers=2, queue_limit=4, tenant_queue_limit=1)
     with tempfile.TemporaryDirectory() as tmp:
         patches = (
             patch("rag_core.ingestion_jobs.load_config", return_value=SimpleNamespace()),
             patch("rag_core.ingestion_jobs.ingest_uploaded_path", side_effect=fake_ingest_uploaded_path),
             patch("rag_core.ingestion_jobs.delete_source_task", side_effect=fake_delete_source_task),
-            patch("rag_core.ingestion_jobs.update_source_task_status", side_effect=lambda **kwargs: kwargs["source"]),
+            patch("rag_core.ingestion_jobs.claim_source_task_for_processing", side_effect=fake_claim_source_task_for_processing),
         )
         for manager in patches:
             manager.__enter__()
@@ -151,13 +155,16 @@ def test_ingestion_runner_persists_failures() -> None:
     def fake_fail_source_task(**kwargs):
         state["failed"].append((kwargs["source"].doc_id, kwargs["error"]))
 
+    def fake_claim_source_task_for_processing(**kwargs):
+        return replace(kwargs["source"], status="processing")
+
     runner = IngestionJobRunner(workers=1, queue_limit=1, tenant_queue_limit=1)
     with tempfile.TemporaryDirectory() as tmp:
         patches = (
             patch("rag_core.ingestion_jobs.load_config", return_value=SimpleNamespace()),
             patch("rag_core.ingestion_jobs.ingest_uploaded_path", side_effect=fake_ingest_uploaded_path),
             patch("rag_core.ingestion_jobs.fail_source_task", side_effect=fake_fail_source_task),
-            patch("rag_core.ingestion_jobs.update_source_task_status", side_effect=lambda **kwargs: kwargs["source"]),
+            patch("rag_core.ingestion_jobs.claim_source_task_for_processing", side_effect=fake_claim_source_task_for_processing),
         )
         for manager in patches:
             manager.__enter__()

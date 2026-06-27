@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Iterable
 from typing import Any
 
@@ -30,13 +31,117 @@ OUTPUT_FIELDS = [
     "content_hash",
     "metadata",
 ]
+_MILVUS_CLIENT_CACHE_LOCAL = threading.local()
+_MILVUS_CLIENT_CREATION_LOCKS_LOCK = threading.Lock()
+_MILVUS_CLIENT_CREATION_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_MILVUS_CLIENT_METRICS_LOCK = threading.Lock()
+_MILVUS_CLIENT_METRICS = {
+    "created_total": 0,
+    "reused_total": 0,
+    "cache_disabled_total": 0,
+}
 
 
 def connect(config: RagConfig) -> MilvusClient:
+    if not milvus_client_cache_enabled():
+        with _MILVUS_CLIENT_METRICS_LOCK:
+            _MILVUS_CLIENT_METRICS["cache_disabled_total"] += 1
+            _MILVUS_CLIENT_METRICS["created_total"] += 1
+        return create_milvus_client_locked(config)
+
+    cache_key = (config.milvus_uri, config.milvus_token or "")
+    cache = getattr(_MILVUS_CLIENT_CACHE_LOCAL, "clients", None)
+    if cache is None:
+        cache = {}
+        _MILVUS_CLIENT_CACHE_LOCAL.clients = cache
+    client = cache.get(cache_key)
+    if client is not None:
+        with _MILVUS_CLIENT_METRICS_LOCK:
+            _MILVUS_CLIENT_METRICS["reused_total"] += 1
+        return client
+
+    client = create_milvus_client_locked(config)
+    cache[cache_key] = client
+    with _MILVUS_CLIENT_METRICS_LOCK:
+        _MILVUS_CLIENT_METRICS["created_total"] += 1
+    return client
+
+
+def create_milvus_client(config: RagConfig) -> MilvusClient:
     kwargs: dict[str, Any] = {}
     if config.milvus_token:
         kwargs["token"] = config.milvus_token
+    kwargs["grpc_options"] = milvus_grpc_options()
     return MilvusClient(uri=config.milvus_uri, **kwargs)
+
+
+def create_milvus_client_locked(config: RagConfig) -> MilvusClient:
+    lock = milvus_client_creation_lock(config)
+    with lock:
+        return create_milvus_client(config)
+
+
+def milvus_client_creation_lock(config: RagConfig) -> threading.Lock:
+    key = (config.milvus_uri, config.milvus_token or "")
+    with _MILVUS_CLIENT_CREATION_LOCKS_LOCK:
+        lock = _MILVUS_CLIENT_CREATION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _MILVUS_CLIENT_CREATION_LOCKS[key] = lock
+        return lock
+
+
+def milvus_client_cache_enabled() -> bool:
+    value = os.environ.get("RAG_MILVUS_CLIENT_CACHE", "1")
+    return value.lower() not in {"0", "false", "no", "off"}
+
+
+def milvus_grpc_options() -> dict[str, int]:
+    return {
+        "grpc.keepalive_time_ms": env_int("RAG_MILVUS_GRPC_KEEPALIVE_TIME_MS", 60_000),
+        "grpc.keepalive_timeout_ms": env_int("RAG_MILVUS_GRPC_KEEPALIVE_TIMEOUT_MS", 20_000),
+        "grpc.keepalive_permit_without_calls": 1
+        if env_bool("RAG_MILVUS_GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS", False)
+        else 0,
+    }
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def close_thread_milvus_clients() -> None:
+    cache = getattr(_MILVUS_CLIENT_CACHE_LOCAL, "clients", None)
+    if not cache:
+        return
+    for client in list(cache.values()):
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+    cache.clear()
+
+
+def milvus_client_metrics_snapshot() -> dict[str, int | bool]:
+    cache = getattr(_MILVUS_CLIENT_CACHE_LOCAL, "clients", None) or {}
+    with _MILVUS_CLIENT_METRICS_LOCK:
+        return {
+            **_MILVUS_CLIENT_METRICS,
+            "thread_cached_clients": len(cache),
+            "cache_enabled": milvus_client_cache_enabled(),
+        }
 
 
 def create_schema(config: RagConfig):

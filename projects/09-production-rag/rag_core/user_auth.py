@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -24,6 +26,15 @@ TEST_ACCOUNT_TENANT_ID = "tenant-fixed-test"
 TEST_ACCOUNT_SALT = "0123456789abcdeffedcba9876543210"
 LEGACY_TEST_ACCOUNT_CREATED_AT = 1704067200000
 TEST_ACCOUNT_TOKEN_EXPIRES_AT = 4102444800000
+_ANNOUNCEMENT_CACHE_LOCK = threading.Lock()
+_ANNOUNCEMENT_CACHE: dict[tuple[str, int], tuple[float, list[dict[str, Any]]]] = {}
+_AUTH_TOKEN_CACHE_LOCK = threading.Lock()
+_AUTH_TOKEN_CACHE: dict[tuple[str, str], tuple[float, "User"]] = {}
+_AUTH_TOKEN_CACHE_METRICS = {
+    "hits_total": 0,
+    "misses_total": 0,
+    "invalidations_total": 0,
+}
 
 
 @dataclass(frozen=True)
@@ -178,7 +189,10 @@ def login_user(config: RagConfig, *, username: str, password: str) -> tuple[User
             (token, row["id"], expires_at, timestamp),
         )
         conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (timestamp, row["id"]))
-        return user_from_row(row, last_login_at=timestamp), token, expires_at
+    invalidate_auth_token_cache(config)
+    user = user_from_row(row, last_login_at=timestamp)
+    cache_auth_token(config=config, token=token, user=user, expires_at_ms=expires_at)
+    return user, token, expires_at
 
 
 def generate_session_token(length: int = 24) -> str:
@@ -216,14 +230,19 @@ def refresh_session_token(config: RagConfig, *, current_token: str) -> tuple[Use
             "INSERT INTO sessions(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
             (token, row["id"], expires_at, timestamp),
         )
-        return user_from_row(row), token, expires_at
+    invalidate_auth_token_cache(config, token=current_token)
+    user = user_from_row(row)
+    cache_auth_token(config=config, token=token, user=user, expires_at_ms=expires_at)
+    return user, token, expires_at
 
 
 def logout_user(config: RagConfig, *, token: str) -> None:
     if token == config.fixed_test_login_token:
+        invalidate_auth_token_cache(config, token=token)
         return
     with connect_metadata_db(config) as conn:
         conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+    invalidate_auth_token_cache(config, token=token)
 
 
 def ensure_default_test_account(config: RagConfig) -> User:
@@ -264,18 +283,22 @@ def ensure_default_test_account(config: RagConfig) -> User:
                 "INSERT OR REPLACE INTO sessions(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
                 (config.fixed_test_login_token, row["id"], TEST_ACCOUNT_TOKEN_EXPIRES_AT, timestamp),
             )
+        invalidate_auth_token_cache(config)
         return user_from_row(row)
 
 
 def authenticate_token(config: RagConfig, *, token: str | None) -> User | None:
     if not token:
         return None
+    cached = get_cached_auth_token(config=config, token=token)
+    if cached is not None:
+        return cached
     timestamp = now_ms()
     with connect_metadata_db(config) as conn:
         conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (timestamp,))
         row = conn.execute(
             """
-            SELECT users.* FROM sessions
+            SELECT users.*, sessions.expires_at AS session_expires_at FROM sessions
             JOIN users ON users.id = sessions.user_id
             WHERE sessions.token = ? AND sessions.expires_at > ?
             """,
@@ -285,11 +308,86 @@ def authenticate_token(config: RagConfig, *, token: str | None) -> User | None:
             return None
         if str(row["status"] or "active") != "active":
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
+            invalidate_auth_token_cache(config)
             return None
         if token == config.fixed_test_login_token and str(row["username"]) == TEST_ACCOUNT_USERNAME:
             conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (timestamp, row["id"]))
-            return user_from_row(row, last_login_at=timestamp)
-        return user_from_row(row)
+            user = user_from_row(row, last_login_at=timestamp)
+            cache_auth_token(config=config, token=token, user=user, expires_at_ms=int(row["session_expires_at"]))
+            return user
+        user = user_from_row(row)
+        cache_auth_token(config=config, token=token, user=user, expires_at_ms=int(row["session_expires_at"]))
+        return user
+
+
+def get_cached_auth_token(*, config: RagConfig, token: str) -> User | None:
+    ttl_seconds = auth_token_cache_ttl_seconds()
+    if ttl_seconds <= 0:
+        with _AUTH_TOKEN_CACHE_LOCK:
+            _AUTH_TOKEN_CACHE_METRICS["misses_total"] += 1
+        return None
+    key = auth_token_cache_key(config=config, token=token)
+    now = time.monotonic()
+    with _AUTH_TOKEN_CACHE_LOCK:
+        cached = _AUTH_TOKEN_CACHE.get(key)
+        if cached is not None and cached[0] > now:
+            _AUTH_TOKEN_CACHE_METRICS["hits_total"] += 1
+            return cached[1]
+        if cached is not None:
+            _AUTH_TOKEN_CACHE.pop(key, None)
+        _AUTH_TOKEN_CACHE_METRICS["misses_total"] += 1
+    return None
+
+
+def cache_auth_token(*, config: RagConfig, token: str, user: User, expires_at_ms: int) -> None:
+    ttl_seconds = auth_token_cache_ttl_seconds()
+    if ttl_seconds <= 0:
+        return
+    session_remaining_seconds = max(0.0, (expires_at_ms - now_ms()) / 1000)
+    ttl = min(ttl_seconds, session_remaining_seconds)
+    if ttl <= 0:
+        return
+    key = auth_token_cache_key(config=config, token=token)
+    with _AUTH_TOKEN_CACHE_LOCK:
+        _AUTH_TOKEN_CACHE[key] = (time.monotonic() + ttl, user)
+
+
+def auth_token_cache_ttl_seconds() -> float:
+    value = os.environ.get("RAG_AUTH_TOKEN_CACHE_TTL_SECONDS", "2")
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return 2.0
+
+
+def auth_token_cache_key(*, config: RagConfig, token: str) -> tuple[str, str]:
+    db_key = config.metadata_database_url or str(config.runtime_dir / "production_rag.db")
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return (db_key, token_hash)
+
+
+def invalidate_auth_token_cache(config: RagConfig | None = None, *, token: str | None = None) -> None:
+    with _AUTH_TOKEN_CACHE_LOCK:
+        _AUTH_TOKEN_CACHE_METRICS["invalidations_total"] += 1
+        if config is None:
+            _AUTH_TOKEN_CACHE.clear()
+            return
+        db_key = config.metadata_database_url or str(config.runtime_dir / "production_rag.db")
+        if token is not None:
+            _AUTH_TOKEN_CACHE.pop(auth_token_cache_key(config=config, token=token), None)
+            return
+        for key in list(_AUTH_TOKEN_CACHE):
+            if key[0] == db_key:
+                _AUTH_TOKEN_CACHE.pop(key, None)
+
+
+def auth_token_cache_metrics_snapshot() -> dict[str, int | float]:
+    with _AUTH_TOKEN_CACHE_LOCK:
+        return {
+            **_AUTH_TOKEN_CACHE_METRICS,
+            "entries": len(_AUTH_TOKEN_CACHE),
+            "ttl_seconds": auth_token_cache_ttl_seconds(),
+        }
 
 
 def list_public_users(config: RagConfig, *, query: str = "", limit: int = 50, offset: int = 0) -> list[User]:
@@ -371,6 +469,7 @@ def update_user_profile(
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if row is None:
         raise ValueError("用户不存在")
+    invalidate_auth_token_cache(config)
     return user_from_row(row)
 
 
@@ -396,6 +495,7 @@ def change_user_password(
             "UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
             (password_hash, salt, user_id),
         )
+    invalidate_auth_token_cache(config)
 
 
 def set_user_status(config: RagConfig, *, actor_id: str, user_id: str, status: str) -> User:
@@ -413,6 +513,7 @@ def set_user_status(config: RagConfig, *, actor_id: str, user_id: str, status: s
         if status == "banned":
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         updated = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    invalidate_auth_token_cache(config)
     return user_from_row(updated)
 
 
@@ -467,6 +568,7 @@ def bulk_update_users(config: RagConfig, *, actor_id: str, updates: list[dict[st
                 conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             updated = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             updated_users.append(user_from_row(updated))
+    invalidate_auth_token_cache(config)
     return updated_users
 
 
@@ -518,6 +620,7 @@ def create_announcement(
                 row["created_at"],
             ),
         )
+    invalidate_announcement_cache(config)
     return row
 
 
@@ -531,6 +634,18 @@ def validate_announcement_link_url(link_url: str | None) -> str:
 
 
 def list_announcements(config: RagConfig, *, limit: int = 5) -> list[dict[str, Any]]:
+    clean_limit = max(1, min(limit, 20))
+    ttl_seconds = announcement_cache_ttl_seconds()
+    if ttl_seconds > 0:
+        cache_key = announcement_cache_key(config=config, limit=clean_limit)
+        now = time.monotonic()
+        with _ANNOUNCEMENT_CACHE_LOCK:
+            cached = _ANNOUNCEMENT_CACHE.get(cache_key)
+            if cached is not None and cached[0] > now:
+                return [dict(row) for row in cached[1]]
+    else:
+        cache_key = None
+
     with connect_metadata_db(config) as conn:
         rows = conn.execute(
             """
@@ -543,15 +658,46 @@ def list_announcements(config: RagConfig, *, limit: int = 5) -> list[dict[str, A
             ORDER BY announcements.created_at DESC
             LIMIT ?
             """,
-            (max(1, min(limit, 20)),),
+            (clean_limit,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    result = [dict(row) for row in rows]
+    if ttl_seconds > 0 and cache_key is not None:
+        with _ANNOUNCEMENT_CACHE_LOCK:
+            _ANNOUNCEMENT_CACHE[cache_key] = (time.monotonic() + ttl_seconds, [dict(row) for row in result])
+    return result
 
 
 def delete_announcement(config: RagConfig, *, announcement_id: str) -> bool:
     with connect_metadata_db(config) as conn:
         cursor = conn.execute("DELETE FROM announcements WHERE id = ?", (announcement_id,))
-        return cursor.rowcount > 0
+        removed = cursor.rowcount > 0
+    if removed:
+        invalidate_announcement_cache(config)
+    return removed
+
+
+def announcement_cache_ttl_seconds() -> float:
+    value = os.environ.get("RAG_ANNOUNCEMENT_CACHE_TTL_SECONDS", "5")
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return 5.0
+
+
+def announcement_cache_key(*, config: RagConfig, limit: int) -> tuple[str, int]:
+    db_key = config.metadata_database_url or str(config.runtime_dir / "production_rag.db")
+    return (db_key, limit)
+
+
+def invalidate_announcement_cache(config: RagConfig | None = None) -> None:
+    with _ANNOUNCEMENT_CACHE_LOCK:
+        if config is None:
+            _ANNOUNCEMENT_CACHE.clear()
+            return
+        db_key = config.metadata_database_url or str(config.runtime_dir / "production_rag.db")
+        for key in list(_ANNOUNCEMENT_CACHE):
+            if key[0] == db_key:
+                _ANNOUNCEMENT_CACHE.pop(key, None)
 
 
 def is_registration_enabled(config: RagConfig) -> bool:

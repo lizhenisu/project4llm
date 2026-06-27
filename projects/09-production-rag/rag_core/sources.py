@@ -5,6 +5,8 @@ import hashlib
 import json
 import mimetypes
 import os
+import threading
+import time
 import uuid
 from collections import Counter
 from collections import defaultdict
@@ -48,6 +50,17 @@ MAX_EMBEDDABLE_IMAGE_ASPECT_RATIO = 20.0
 
 
 SUPPORTED_FILE_SUFFIXES = {".pdf", ".html", ".htm", ".md", ".txt", ".csv", ".tsv"}
+_SOURCE_LIST_CACHE_LOCK = threading.Lock()
+_SOURCE_LIST_CACHE: dict[tuple[str, str, str], tuple[float, list["SourceSummary"]]] = {}
+
+
+class UploadTooLargeError(ValueError):
+    def __init__(self, *, size_bytes: int, limit_bytes: int) -> None:
+        self.size_bytes = size_bytes
+        self.limit_bytes = limit_bytes
+        super().__init__(
+            f"Uploaded file is too large: {size_bytes} bytes exceeds RAG_MAX_UPLOAD_BYTES={limit_bytes}"
+        )
 
 
 @dataclass(frozen=True)
@@ -72,6 +85,12 @@ class IngestSummary:
     sources: list[SourceSummary]
     document_count: int
     chunk_count: int
+
+
+@dataclass(frozen=True)
+class QueuedSourceTask:
+    tenant_id: str
+    source: SourceSummary
 
 
 @dataclass(frozen=True)
@@ -104,8 +123,16 @@ def save_uploaded_file(
     upload_dir = config.object_store_dir / "uploads" / tenant_id / upload_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     target = upload_dir / safe_name
-    with target.open("wb") as file:
-        shutil.copyfileobj(content, file)
+    try:
+        with target.open("wb") as file:
+            copy_uploaded_file_limited(content, file, max_bytes=config.max_upload_bytes)
+    except Exception:
+        target.unlink(missing_ok=True)
+        try:
+            upload_dir.rmdir()
+        except OSError:
+            pass
+        raise
     if object_store_backend() == "s3":
         relative_path = Path("uploads") / tenant_id / upload_id / safe_name
         upload_file_to_object_store(
@@ -114,6 +141,19 @@ def save_uploaded_file(
             content_type=mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
         )
     return target
+
+
+def copy_uploaded_file_limited(content: BinaryIO, target: BinaryIO, *, max_bytes: int) -> None:
+    copied = 0
+    chunk_size = 1024 * 1024
+    while True:
+        chunk = content.read(chunk_size)
+        if not chunk:
+            return
+        copied += len(chunk)
+        if copied > max_bytes:
+            raise UploadTooLargeError(size_bytes=copied, limit_bytes=max_bytes)
+        target.write(chunk)
 
 
 def ingest_uploaded_path(
@@ -265,11 +305,128 @@ def save_source_task_for_tenant(*, config: RagConfig, tenant_id: str, source: So
                 source.updated_at or now_ms(),
             ),
         )
+    invalidate_source_list_cache(config=config, tenant_id=tenant_id)
 
 
 def delete_source_task(*, config: RagConfig, tenant_id: str, task_id: str) -> None:
     with connect_metadata_db(config) as conn:
         conn.execute("DELETE FROM source_tasks WHERE tenant_id = ? AND id = ?", (tenant_id, task_id))
+    invalidate_source_list_cache(config=config, tenant_id=tenant_id)
+
+
+def save_source_catalog_for_tenant(*, config: RagConfig, tenant_id: str, sources: list[SourceSummary]) -> None:
+    if not sources:
+        return
+    timestamp = now_ms()
+    with connect_metadata_db(config) as conn:
+        for source in sources:
+            conn.execute(
+                """
+                INSERT INTO source_catalog(
+                    tenant_id, doc_id, title, source_type, source_uri, doc_version,
+                    chunk_count, acl_groups, current, created_at, updated_at, child_doc_ids
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tenant_id, doc_id, doc_version) DO UPDATE SET
+                    title = excluded.title,
+                    source_type = excluded.source_type,
+                    source_uri = excluded.source_uri,
+                    chunk_count = excluded.chunk_count,
+                    acl_groups = excluded.acl_groups,
+                    current = excluded.current,
+                    updated_at = excluded.updated_at,
+                    child_doc_ids = excluded.child_doc_ids
+                """,
+                (
+                    tenant_id,
+                    source.doc_id,
+                    source.title,
+                    source.source_type,
+                    source.source_uri,
+                    source.doc_version,
+                    source.chunk_count,
+                    json.dumps(source.acl_groups, ensure_ascii=False),
+                    1 if source.current else 0,
+                    source.created_at or timestamp,
+                    source.updated_at or timestamp,
+                    json.dumps(source.child_doc_ids, ensure_ascii=False),
+                ),
+            )
+    invalidate_source_list_cache(config=config, tenant_id=tenant_id)
+
+
+def list_source_catalog(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
+    with connect_metadata_db(config) as conn:
+        rows = conn.execute(
+            """
+            SELECT doc_id, title, source_type, source_uri, doc_version, chunk_count,
+                   acl_groups, current, created_at, updated_at, child_doc_ids
+            FROM source_catalog
+            WHERE tenant_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (tenant_id,),
+        ).fetchall()
+    title_overrides = load_source_title_overrides(config=config, tenant_id=tenant_id)
+    current_versions = load_current_versions(config.object_store_dir, tenant_id=tenant_id, config=config)
+    summaries: list[SourceSummary] = []
+    for row in rows:
+        doc_id = str(row["doc_id"])
+        doc_version = int(row["doc_version"])
+        child_doc_ids = json.loads(row["child_doc_ids"] or "[]")
+        is_current = bool(row["current"])
+        if child_doc_ids:
+            is_current = all(current_versions.get(str(child_doc_id)) == doc_version for child_doc_id in child_doc_ids)
+        elif doc_id in current_versions:
+            is_current = current_versions.get(doc_id) == doc_version
+        summaries.append(
+            SourceSummary(
+                doc_id=doc_id,
+                title=title_overrides.get((doc_id, doc_version), str(row["title"])),
+                source_type=str(row["source_type"]),
+                source_uri=str(row["source_uri"]),
+                doc_version=doc_version,
+                chunk_count=int(row["chunk_count"] or 0),
+                acl_groups=json.loads(row["acl_groups"] or "[]"),
+                status="ready",
+                current=is_current,
+                created_at=int(row["created_at"] or 0),
+                updated_at=int(row["updated_at"] or 0),
+                child_doc_ids=[str(item) for item in child_doc_ids],
+            )
+        )
+    return summaries
+
+
+def delete_source_catalog(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    doc_id: str,
+    doc_version: int | None = None,
+    child_doc_ids: list[str] | None = None,
+) -> None:
+    child_doc_ids = child_doc_ids or []
+    with connect_metadata_db(config) as conn:
+        if doc_version is None:
+            conn.execute("DELETE FROM source_catalog WHERE tenant_id = ? AND doc_id = ?", (tenant_id, doc_id))
+        else:
+            conn.execute(
+                "DELETE FROM source_catalog WHERE tenant_id = ? AND doc_id = ? AND doc_version = ?",
+                (tenant_id, doc_id, doc_version),
+            )
+        for child_doc_id in child_doc_ids:
+            if doc_version is None:
+                conn.execute(
+                    "DELETE FROM source_catalog WHERE tenant_id = ? AND doc_id = ?",
+                    (tenant_id, child_doc_id),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM source_catalog WHERE tenant_id = ? AND doc_id = ? AND doc_version = ?",
+                    (tenant_id, child_doc_id, doc_version),
+                )
+    invalidate_source_list_cache(config=config, tenant_id=tenant_id)
 
 
 def fail_source_task(*, config: RagConfig, tenant_id: str, source: SourceSummary, error: str) -> None:
@@ -445,6 +602,15 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
     upsert_entities(client, collection_name=config.collection_name, entities=entities)
     archive_source_documents(config.object_store_dir, canonical_docs)
     publish_current_versions(config.object_store_dir, canonical_docs, config=config)
+    for tenant_id in {doc.tenant_id for doc in canonical_docs}:
+        tenant_sources = [
+            source
+            for source in sources
+            if any(doc.tenant_id == tenant_id and doc.doc_id in source.child_doc_ids for doc in canonical_docs)
+        ]
+        save_source_catalog_for_tenant(config=config, tenant_id=tenant_id, sources=tenant_sources)
+    for tenant_id in {doc.tenant_id for doc in canonical_docs}:
+        invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     return IngestSummary(
         sources=sources,
         document_count=len(canonical_docs),
@@ -652,6 +818,36 @@ def generate_ingested_source_guides(
 
 
 def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
+    ttl_seconds = max(0.0, float(config.source_list_cache_ttl_seconds))
+    if ttl_seconds <= 0:
+        return _list_sources_uncached(config=config, tenant_id=tenant_id)
+    cache_key = source_list_cache_key(config=config, tenant_id=tenant_id)
+    now = time.monotonic()
+    with _SOURCE_LIST_CACHE_LOCK:
+        cached = _SOURCE_LIST_CACHE.get(cache_key)
+        if cached is not None and cached[0] > now:
+            return list(cached[1])
+    summaries = _list_sources_uncached(config=config, tenant_id=tenant_id)
+    with _SOURCE_LIST_CACHE_LOCK:
+        _SOURCE_LIST_CACHE[cache_key] = (now + ttl_seconds, list(summaries))
+    return summaries
+
+
+def _list_sources_uncached(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
+    catalog_sources = list_source_catalog(config=config, tenant_id=tenant_id)
+    task_sources = list_source_tasks(config=config, tenant_id=tenant_id)
+    if catalog_sources:
+        summaries = [*catalog_sources, *task_sources]
+        return sorted(summaries, key=lambda item: (item.status == "ready", not item.current, item.title, item.doc_id))
+    return _list_sources_from_milvus(config=config, tenant_id=tenant_id, task_sources=task_sources)
+
+
+def _list_sources_from_milvus(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    task_sources: list[SourceSummary] | None = None,
+) -> list[SourceSummary]:
     client = connect(config)
     ensure_collection(client, config, reset=False)
     rows = client.query(
@@ -722,8 +918,20 @@ def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
         )
         for item in grouped.values()
     ]
-    summaries.extend(list_source_tasks(config=config, tenant_id=tenant_id))
+    if summaries:
+        save_source_catalog_for_tenant(config=config, tenant_id=tenant_id, sources=summaries)
+    summaries.extend(task_sources if task_sources is not None else list_source_tasks(config=config, tenant_id=tenant_id))
     return sorted(summaries, key=lambda item: (item.status == "ready", not item.current, item.title, item.doc_id))
+
+
+def source_list_cache_key(*, config: RagConfig, tenant_id: str) -> tuple[str, str, str]:
+    return (str(config.metadata_database_url or config.object_store_dir), config.collection_name, tenant_id)
+
+
+def invalidate_source_list_cache(*, config: RagConfig, tenant_id: str) -> None:
+    cache_key = source_list_cache_key(config=config, tenant_id=tenant_id)
+    with _SOURCE_LIST_CACHE_LOCK:
+        _SOURCE_LIST_CACHE.pop(cache_key, None)
 
 
 def list_source_tasks(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
@@ -756,6 +964,138 @@ def list_source_tasks(*, config: RagConfig, tenant_id: str) -> list[SourceSummar
         )
         for row in rows
     ]
+
+
+def count_source_tasks_by_status(*, config: RagConfig, tenant_id: str | None = None) -> dict[str, int]:
+    params: tuple[object, ...] = ()
+    where = ""
+    if tenant_id:
+        where = "WHERE tenant_id = ?"
+        params = (tenant_id,)
+    with connect_metadata_db(config) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT status, COUNT(*) AS count
+            FROM source_tasks
+            {where}
+            GROUP BY status
+            """,
+            params,
+        ).fetchall()
+    return {str(row["status"]): int(row["count"] or 0) for row in rows}
+
+
+def count_active_source_tasks(*, config: RagConfig, tenant_id: str | None = None) -> int:
+    params: list[object] = ["queued", "processing", "uploading"]
+    where = "WHERE status IN (?, ?, ?)"
+    if tenant_id:
+        where += " AND tenant_id = ?"
+        params.append(tenant_id)
+    with connect_metadata_db(config) as conn:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM source_tasks
+            {where}
+            """,
+            tuple(params),
+        ).fetchone()
+    return int(row["count"] if row is not None else 0)
+
+
+def list_queued_source_tasks(*, config: RagConfig, limit: int = 100) -> list[QueuedSourceTask]:
+    with connect_metadata_db(config) as conn:
+        rows = conn.execute(
+            """
+            SELECT tenant_id, doc_id, title, source_type, source_uri, doc_version, acl_groups,
+                   status, error, created_at, updated_at
+            FROM source_tasks
+            WHERE status = 'queued'
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+    return [
+        QueuedSourceTask(
+            tenant_id=str(row["tenant_id"]),
+            source=SourceSummary(
+                doc_id=str(row["doc_id"]),
+                title=str(row["title"]),
+                source_type=str(row["source_type"]),
+                source_uri=str(row["source_uri"]),
+                doc_version=int(row["doc_version"]),
+                chunk_count=0,
+                acl_groups=json.loads(row["acl_groups"] or "[]"),
+                status=str(row["status"]),
+                current=False,
+                created_at=int(row["created_at"] or 0),
+                updated_at=int(row["updated_at"] or 0),
+                child_doc_ids=[],
+                error=str(row["error"] or ""),
+            ),
+        )
+        for row in rows
+    ]
+
+
+def requeue_stale_processing_source_tasks(
+    *,
+    config: RagConfig,
+    stale_after_ms: int,
+    limit: int = 100,
+) -> int:
+    cutoff = now_ms() - max(1000, int(stale_after_ms))
+    with connect_metadata_db(config) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, tenant_id
+            FROM source_tasks
+            WHERE status = 'processing' AND updated_at < ?
+            ORDER BY updated_at ASC
+            LIMIT ?
+            """,
+            (cutoff, max(1, int(limit))),
+        ).fetchall()
+        task_ids = [str(row["id"]) for row in rows]
+        tenant_ids = {str(row["tenant_id"]) for row in rows}
+        if not task_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in task_ids)
+        cursor = conn.execute(
+            f"""
+            UPDATE source_tasks
+            SET status = 'queued', updated_at = ?, error = ''
+            WHERE id IN ({placeholders}) AND status = 'processing'
+            """,
+            (now_ms(), *task_ids),
+        )
+        updated_count = int(cursor.rowcount or 0)
+    for tenant_id in tenant_ids:
+        invalidate_source_list_cache(config=config, tenant_id=tenant_id)
+    return updated_count
+
+
+def claim_source_task_for_processing(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    source: SourceSummary,
+) -> SourceSummary | None:
+    updated = replace(source, status="processing", updated_at=now_ms())
+    with connect_metadata_db(config) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE source_tasks
+            SET status = 'processing', updated_at = ?, error = ''
+            WHERE tenant_id = ? AND id = ? AND status = 'queued'
+            """,
+            (updated.updated_at, tenant_id, source.doc_id),
+        )
+        if cursor.rowcount != 1:
+            return None
+    invalidate_source_list_cache(config=config, tenant_id=tenant_id)
+    return updated
 
 
 def load_source_title_overrides(*, config: RagConfig, tenant_id: str) -> dict[tuple[str, int], str]:
@@ -798,6 +1138,15 @@ def rename_source(
             """,
             (tenant_id, source.doc_id, source.doc_version, clean_title, now_ms()),
         )
+        conn.execute(
+            """
+            UPDATE source_catalog
+            SET title = ?, updated_at = ?
+            WHERE tenant_id = ? AND doc_id = ? AND doc_version = ?
+            """,
+            (clean_title, now_ms(), tenant_id, source.doc_id, source.doc_version),
+        )
+    invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     return replace(source, title=clean_title, updated_at=now_ms())
 
 
@@ -934,6 +1283,13 @@ def delete_source(
         source_doc_ids={doc_id},
         doc_version=effective_version,
     )
+    delete_source_catalog(
+        config=config,
+        tenant_id=tenant_id,
+        doc_id=source.doc_id if source is not None else doc_id,
+        doc_version=effective_version,
+        child_doc_ids=target_doc_ids,
+    )
     if source is not None:
         with connect_metadata_db(config) as conn:
             conn.execute(
@@ -950,6 +1306,7 @@ def delete_source(
                 """.format(placeholders=", ".join("?" for _ in target_doc_ids)),
                 (tenant_id, source.doc_id, *target_doc_ids),
             )
+    invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     return {
         "filter": filter_expr,
         "milvus": result,

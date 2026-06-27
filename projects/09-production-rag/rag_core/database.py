@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import re
+import os
 import shutil
 import sqlite3
+import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -11,6 +14,10 @@ from rag_core.config import RagConfig
 
 
 SCHEMA_VERSION = 1
+_POSTGRES_SCHEMA_LOCK = threading.Lock()
+_POSTGRES_SCHEMA_INITIALIZED_URLS: set[str] = set()
+_POSTGRES_POOLS_LOCK = threading.Lock()
+_POSTGRES_POOLS: dict[tuple[str, int], PostgresConnectionPool] = {}
 
 
 def metadata_db_path(config: RagConfig) -> Path:
@@ -57,20 +64,163 @@ def connect_sqlite_metadata_db(config: RagConfig) -> Iterator[sqlite3.Connection
 
 @contextmanager
 def connect_postgres_metadata_db(database_url: str) -> Iterator[PostgresConnection]:
-    import psycopg
-    from psycopg.rows import dict_row
-
-    raw_conn = psycopg.connect(database_url, row_factory=dict_row, connect_timeout=10)
+    pool = postgres_connection_pool(database_url)
+    raw_conn = pool.acquire()
     conn = PostgresConnection(raw_conn)
+    reusable = True
     try:
-        initialize_postgres_schema(conn)
+        ensure_postgres_schema_initialized(database_url, conn)
         yield conn
         raw_conn.commit()
     except Exception:
-        raw_conn.rollback()
+        try:
+            raw_conn.rollback()
+        except Exception:
+            reusable = False
         raise
     finally:
+        pool.release(raw_conn, reusable=reusable)
+
+
+def postgres_connection_pool(database_url: str) -> PostgresConnectionPool:
+    max_size = env_int("RAG_METADATA_POOL_SIZE", 16)
+    key = (database_url, max_size)
+    with _POSTGRES_POOLS_LOCK:
+        pool = _POSTGRES_POOLS.get(key)
+        if pool is None:
+            pool = PostgresConnectionPool(database_url=database_url, max_size=max_size)
+            _POSTGRES_POOLS[key] = pool
+        return pool
+
+
+def metadata_pool_metrics_snapshot() -> dict[str, Any]:
+    with _POSTGRES_POOLS_LOCK:
+        pools = list(_POSTGRES_POOLS.values())
+    return {
+        "pools": [pool.snapshot() for pool in pools],
+        "pool_count": len(pools),
+        "default_pool_size": env_int("RAG_METADATA_POOL_SIZE", 16),
+        "acquire_timeout_seconds": env_float("RAG_METADATA_POOL_TIMEOUT_SECONDS", 10.0),
+    }
+
+
+class PostgresConnectionPool:
+    def __init__(self, *, database_url: str, max_size: int) -> None:
+        self.database_url = database_url
+        self.max_size = max(1, int(max_size))
+        self._condition = threading.Condition()
+        self._idle: list[Any] = []
+        self._total = 0
+        self._borrowed = 0
+        self._waits_total = 0
+        self._timeouts_total = 0
+        self._created_total = 0
+        self._reused_total = 0
+
+    def acquire(self) -> Any:
+        timeout_seconds = env_float("RAG_METADATA_POOL_TIMEOUT_SECONDS", 10.0)
+        deadline = time.monotonic() + timeout_seconds
+        should_create = False
+        with self._condition:
+            while True:
+                if self._idle:
+                    raw_conn = self._idle.pop()
+                    self._borrowed += 1
+                    self._reused_total += 1
+                    return raw_conn
+                if self._total < self.max_size:
+                    self._total += 1
+                    self._borrowed += 1
+                    should_create = True
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._timeouts_total += 1
+                    raise TimeoutError(
+                        "Timed out waiting for PostgreSQL metadata connection; "
+                        f"RAG_METADATA_POOL_SIZE={self.max_size}"
+                    )
+                self._waits_total += 1
+                self._condition.wait(timeout=remaining)
+        if should_create:
+            try:
+                raw_conn = open_postgres_raw_connection(self.database_url)
+            except Exception:
+                with self._condition:
+                    self._borrowed = max(0, self._borrowed - 1)
+                    self._total = max(0, self._total - 1)
+                    self._condition.notify()
+                raise
+            with self._condition:
+                self._created_total += 1
+            return raw_conn
+        raise RuntimeError("PostgreSQL metadata pool acquisition reached an unreachable state.")
+
+    def release(self, raw_conn: Any, *, reusable: bool) -> None:
+        with self._condition:
+            self._borrowed = max(0, self._borrowed - 1)
+            if reusable and not is_postgres_connection_closed(raw_conn):
+                self._idle.append(raw_conn)
+            else:
+                close_postgres_connection(raw_conn)
+                self._total = max(0, self._total - 1)
+            self._condition.notify()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._condition:
+            return {
+                "database": redact_database_url(self.database_url),
+                "max_size": self.max_size,
+                "total": self._total,
+                "idle": len(self._idle),
+                "borrowed": self._borrowed,
+                "waits_total": self._waits_total,
+                "timeouts_total": self._timeouts_total,
+                "created_total": self._created_total,
+                "reused_total": self._reused_total,
+            }
+
+
+def open_postgres_raw_connection(database_url: str) -> Any:
+    import psycopg
+    from psycopg.rows import dict_row
+
+    return psycopg.connect(database_url, row_factory=dict_row, connect_timeout=10)
+
+
+def is_postgres_connection_closed(raw_conn: Any) -> bool:
+    return bool(getattr(raw_conn, "closed", False))
+
+
+def close_postgres_connection(raw_conn: Any) -> None:
+    try:
         raw_conn.close()
+    except Exception:
+        pass
+
+
+def redact_database_url(database_url: str) -> str:
+    return re.sub(r"://([^:/@]+):([^@]+)@", r"://\1:***@", database_url)
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return default
 
 
 class PostgresConnection:
@@ -174,6 +324,17 @@ def initialize_postgres_schema(conn: PostgresConnection) -> None:
     ensure_postgres_columns(conn)
 
 
+def ensure_postgres_schema_initialized(database_url: str, conn: PostgresConnection) -> None:
+    if database_url in _POSTGRES_SCHEMA_INITIALIZED_URLS:
+        return
+    with _POSTGRES_SCHEMA_LOCK:
+        if database_url in _POSTGRES_SCHEMA_INITIALIZED_URLS:
+            return
+        initialize_postgres_schema(conn)
+        conn.commit()
+        _POSTGRES_SCHEMA_INITIALIZED_URLS.add(database_url)
+
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
     key TEXT PRIMARY KEY,
@@ -274,6 +435,23 @@ CREATE TABLE IF NOT EXISTS source_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_source_tasks_tenant_updated ON source_tasks(tenant_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS source_catalog (
+    tenant_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_uri TEXT NOT NULL,
+    doc_version INTEGER NOT NULL,
+    chunk_count INTEGER NOT NULL,
+    acl_groups TEXT NOT NULL DEFAULT '[]',
+    current INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    child_doc_ids TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY(tenant_id, doc_id, doc_version)
+);
+CREATE INDEX IF NOT EXISTS idx_source_catalog_tenant_updated ON source_catalog(tenant_id, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS source_title_overrides (
     tenant_id TEXT NOT NULL,
     doc_id TEXT NOT NULL,
@@ -307,6 +485,7 @@ def ensure_sqlite_columns(conn: sqlite3.Connection) -> None:
     ensure_sqlite_column(conn, table="announcements", column="link_url", definition="TEXT NOT NULL DEFAULT ''")
     ensure_sqlite_column(conn, table="announcements", column="link_label", definition="TEXT NOT NULL DEFAULT ''")
     ensure_sqlite_column(conn, table="artifacts", column="workspace_id", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_sqlite_column(conn, table="source_catalog", column="child_doc_ids", definition="TEXT NOT NULL DEFAULT '[]'")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
@@ -325,6 +504,7 @@ def ensure_postgres_columns(conn: PostgresConnection) -> None:
     ensure_postgres_column(conn, table="announcements", column="link_url", definition="TEXT NOT NULL DEFAULT ''")
     ensure_postgres_column(conn, table="announcements", column="link_label", definition="TEXT NOT NULL DEFAULT ''")
     ensure_postgres_column(conn, table="artifacts", column="workspace_id", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_postgres_column(conn, table="source_catalog", column="child_doc_ids", definition="TEXT NOT NULL DEFAULT '[]'")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"

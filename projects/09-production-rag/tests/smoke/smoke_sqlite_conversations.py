@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
 
 from rag_core.config import load_config
 from rag_core.conversations import ConversationMessage, delete_conversation, list_conversations, load_conversation, save_conversation
