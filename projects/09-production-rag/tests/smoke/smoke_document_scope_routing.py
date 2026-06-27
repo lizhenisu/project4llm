@@ -32,6 +32,7 @@ def main() -> None:
     test_missing_source_guides_fall_back_to_archived_documents()
     test_answer_query_uses_all_selected_doc_guides_for_summary()
     test_explicit_local_question_narrows_scope_then_uses_top_k()
+    test_zero_document_open_chat_skips_retrieval()
     test_large_scope_uses_map_reduce_when_guides_exceed_budget()
     print("smoke_document_scope_routing=ok")
 
@@ -205,6 +206,37 @@ def test_explicit_local_question_narrows_scope_then_uses_top_k() -> None:
     assert result.trace.retrieval_mode == "hybrid_dense_sparse_rerank"
     assert result.trace.doc_ids == ["doc-2"]
     assert result.trace.context_count == 1
+
+
+def test_zero_document_open_chat_skips_retrieval() -> None:
+    stages: list[dict[str, object]] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        config = fake_config(tmp)
+        with (
+            patch("answer.load_config", return_value=config),
+            patch("answer.retrieve_and_rerank", side_effect=AssertionError("retrieval must be skipped")),
+            patch("answer.generate_chat", return_value=fake_generation("direct answer")),
+        ):
+            result = answer_query(
+                "给我讲一个与知识库无关的笑话",
+                tenant_id="team_a",
+                candidate_limit=20,
+                context_limit=5,
+                doc_version=1,
+                source_types=["pdf"],
+                request_id="smoke-zero-document-open-chat",
+                stage_callback=stages.append,
+            )
+
+    assert result.answer == "direct answer"
+    assert result.trace.retrieval_mode == "direct_llm_no_retrieval"
+    assert result.trace.context_count == 0
+    assert [stage["stage"] for stage in stages] == [
+        "intent_router",
+        "scope_resolution",
+        "answer",
+        "answer",
+    ]
 
 
 def test_large_scope_uses_map_reduce_when_guides_exceed_budget() -> None:

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from rag_core.answering import build_prompt, generate_answer, generate_chat
 from rag_core.config import load_config
-from rag_core.document_scope import answer_document_scope, build_scope_plan
+from rag_core.document_scope import OPEN_CHAT, answer_document_scope, build_scope_plan
 from rag_core.pipeline import StageCallback, emit_stage, retrieve_and_rerank
 from rag_core.types import SearchHit, TraceInfo
 
@@ -74,6 +74,13 @@ def answer_query(
         missing_or_skipped_doc_ids=scope_plan.missing_doc_ids,
         coverage_required=scope_plan.route.coverage_required,
     )
+    if scope_plan.route.intent == OPEN_CHAT and not scope_plan.resolved_doc_ids:
+        return answer_query_without_retrieval(
+            query,
+            history=history,
+            request_id=request_id,
+            stage_callback=stage_callback,
+        )
     if scope_plan.should_use_document_pipeline:
         return answer_document_scope(
             config=config,
