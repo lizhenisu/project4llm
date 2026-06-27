@@ -289,12 +289,18 @@ def retrieve_multimodal(
             )
             for source_id, group_doc_ids in selected_source_groups
         ]
-        image_anchor_hits = sorted(
-            [hit for group in image_hit_groups for hit in group],
-            key=lambda hit: hit.score,
-            reverse=True,
-        )
         image_hits = round_robin_hit_groups(image_hit_groups)
+        image_anchor_hits = (
+            image_search(
+                client,
+                collection_name=config.collection_name,
+                image_query_vector=image_query_vector,
+                filter_expr=image_filter_expr,
+                limit=1,
+            )
+            if has_image_file_query
+            else image_hits
+        )
     else:
         image_hits = image_search(
             client,
