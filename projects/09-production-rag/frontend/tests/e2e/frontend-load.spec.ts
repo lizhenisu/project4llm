@@ -13,6 +13,10 @@ const busyConcurrency = envInt("FRONTEND_BUSY_CONCURRENCY", 2);
 const failedUploadPageCount = envInt("FRONTEND_FAILED_UPLOAD_PAGES", 4);
 const failedUploadConcurrency = envInt("FRONTEND_FAILED_UPLOAD_CONCURRENCY", 2);
 const token = process.env.FRONTEND_LOAD_TOKEN || "production-rag-fixed-test-login-token";
+const startupMaxDomNodes = envInt("FRONTEND_STARTUP_MAX_DOM_NODES", 500);
+const startupMaxImageNodes = envInt("FRONTEND_STARTUP_MAX_IMAGE_NODES", 10);
+const startupMaxResources = envInt("FRONTEND_STARTUP_MAX_RESOURCES", 100);
+const startupMaxTransferKb = envInt("FRONTEND_STARTUP_MAX_TRANSFER_KB", 10_000);
 const outputPath = process.env.FRONTEND_LOAD_OUTPUT || "test-results/frontend-load-summary.json";
 const interactionOutputPath =
   process.env.FRONTEND_INTERACTION_OUTPUT || "test-results/frontend-interaction-summary.json";
@@ -42,6 +46,10 @@ test.describe("browser-level frontend load smoke", () => {
       console_errors: samples.reduce((total, sample) => total + sample.console_errors.length, 0),
       page_errors: samples.reduce((total, sample) => total + sample.page_errors.length, 0),
       http_failures: samples.reduce((total, sample) => total + sample.http_failures.length, 0),
+      isolated_conversation_requests: samples.reduce(
+        (total, sample) => total + sample.isolated_conversation_requests,
+        0,
+      ),
       failed_samples: failures.slice(0, 10),
       samples: samples.slice(0, 20),
     };
@@ -52,6 +60,7 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.isolated_conversation_requests, JSON.stringify(payload, null, 2)).toBe(pageCount);
   });
 
   test("uploads a file and renders streamed answers with mocked backend", async ({ browser, baseURL }) => {
@@ -1022,6 +1031,21 @@ async function openWorkspacePage(browser: Browser, baseURL: string, index: numbe
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   const httpFailures: string[] = [];
+  let isolatedConversationRequests = 0;
+  await page.route("**/api/conversations**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path.endsWith("/conversations")) {
+      isolatedConversationRequests += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ conversations: [] }),
+      });
+      return;
+    }
+    await route.continue();
+  });
   page.on("console", (message) => {
     if (message.type() === "error") {
       consoleErrors.push(message.text());
@@ -1044,15 +1068,26 @@ async function openWorkspacePage(browser: Browser, baseURL: string, index: numbe
     await expect(page.getByRole("heading", { name: "来源" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "对话" })).toBeVisible();
     await expect(page.getByRole("heading", { name: /Studio|工作室/ })).toBeVisible();
+    await expect(
+      page.locator(".message-list .user-message, .message-list .assistant-message"),
+    ).toHaveCount(0);
     await waitForNetworkQuiet(page, 500, 10_000);
     const loadMs = roundMs(performance.now() - started);
     const metrics = await collectPageMetrics(page);
+    const baselineWithinLimits = startupMetricsWithinLimits(metrics);
     await closePage(page);
     return {
       index,
-      ok: consoleErrors.length === 0 && pageErrors.length === 0 && httpFailures.length === 0,
+      ok:
+        consoleErrors.length === 0
+        && pageErrors.length === 0
+        && httpFailures.length === 0
+        && isolatedConversationRequests === 1
+        && baselineWithinLimits,
       load_ms: loadMs,
       metrics,
+      isolated_conversation_requests: isolatedConversationRequests,
+      baseline_within_limits: baselineWithinLimits,
       console_errors: consoleErrors,
       page_errors: pageErrors,
       http_failures: httpFailures,
@@ -1066,6 +1101,8 @@ async function openWorkspacePage(browser: Browser, baseURL: string, index: numbe
       ok: false,
       load_ms: loadMs,
       metrics,
+      isolated_conversation_requests: isolatedConversationRequests,
+      baseline_within_limits: false,
       console_errors: consoleErrors,
       page_errors: pageErrors,
       http_failures: httpFailures,
@@ -1612,11 +1649,22 @@ type PageSample = {
   ok: boolean;
   load_ms: number;
   metrics: PageMetrics | null;
+  isolated_conversation_requests: number;
+  baseline_within_limits: boolean;
   console_errors: string[];
   page_errors: string[];
   http_failures: string[];
   error?: string;
 };
+
+function startupMetricsWithinLimits(metrics: PageMetrics) {
+  return (
+    metrics.dom_nodes <= startupMaxDomNodes
+    && metrics.img_nodes <= startupMaxImageNodes
+    && metrics.resource_count <= startupMaxResources
+    && metrics.transfer_kb <= startupMaxTransferKb
+  );
+}
 
 type InteractionSample = {
   index: number;
