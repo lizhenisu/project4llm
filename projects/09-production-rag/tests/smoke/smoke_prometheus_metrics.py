@@ -53,6 +53,10 @@ def main() -> None:
     assert 'rag_model_api_operation_retries_total{operation="metrics_smoke"} 0' in text
     assert "rag_metadata_pool_timeouts_total" in text
     assert 'rag_ingestion_tasks{status="queued"}' in text
+    assert 'rag_ingestion_task_leases{state="active"}' in text
+    assert 'rag_ingestion_task_leases{state="expired"}' in text
+    assert 'rag_ingestion_task_attempts{stat="sum"}' in text
+    assert 'rag_ingestion_task_attempts{stat="max"}' in text
     validate_metric_lines(text)
     validate_health_histogram(text)
     validate_query_image_histogram(text)

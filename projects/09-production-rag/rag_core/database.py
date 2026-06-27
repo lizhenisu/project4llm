@@ -430,6 +430,9 @@ CREATE TABLE IF NOT EXISTS source_tasks (
     acl_groups TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     error TEXT NOT NULL DEFAULT '',
+    lease_owner TEXT NOT NULL DEFAULT '',
+    lease_expires_at INTEGER NOT NULL DEFAULT 0,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -486,9 +489,16 @@ def ensure_sqlite_columns(conn: sqlite3.Connection) -> None:
     ensure_sqlite_column(conn, table="announcements", column="link_label", definition="TEXT NOT NULL DEFAULT ''")
     ensure_sqlite_column(conn, table="artifacts", column="workspace_id", definition="TEXT NOT NULL DEFAULT ''")
     ensure_sqlite_column(conn, table="source_catalog", column="child_doc_ids", definition="TEXT NOT NULL DEFAULT '[]'")
+    ensure_sqlite_column(conn, table="source_tasks", column="lease_owner", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_sqlite_column(conn, table="source_tasks", column="lease_expires_at", definition="INTEGER NOT NULL DEFAULT 0")
+    ensure_sqlite_column(conn, table="source_tasks", column="attempt_count", definition="INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_source_tasks_status_lease "
+        "ON source_tasks(status, lease_expires_at)"
     )
 
 
@@ -505,9 +515,16 @@ def ensure_postgres_columns(conn: PostgresConnection) -> None:
     ensure_postgres_column(conn, table="announcements", column="link_label", definition="TEXT NOT NULL DEFAULT ''")
     ensure_postgres_column(conn, table="artifacts", column="workspace_id", definition="TEXT NOT NULL DEFAULT ''")
     ensure_postgres_column(conn, table="source_catalog", column="child_doc_ids", definition="TEXT NOT NULL DEFAULT '[]'")
+    ensure_postgres_column(conn, table="source_tasks", column="lease_owner", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_postgres_column(conn, table="source_tasks", column="lease_expires_at", definition="BIGINT NOT NULL DEFAULT 0")
+    ensure_postgres_column(conn, table="source_tasks", column="attempt_count", definition="BIGINT NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_source_tasks_status_lease "
+        "ON source_tasks(status, lease_expires_at)"
     )
 
 

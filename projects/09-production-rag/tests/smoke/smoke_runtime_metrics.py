@@ -103,6 +103,12 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["event_log"]["max_dict_items"] >= 1
     assert body["ingestion"]["tenant_id"] == tenant_id
     assert body["ingestion"]["source_tasks_by_status"]["queued"] == 1
+    assert body["ingestion"]["task_leases"] == {
+        "active_leases": 0,
+        "expired_leases": 0,
+        "attempts_recorded": 0,
+        "max_attempt_count": 0,
+    }
     assert body["ingestion"]["active_source_tasks"] >= 1
     assert body["ingestion"]["tenant_active_source_tasks"] == 1
     assert body["ingestion"]["backlog_limit"] >= 1

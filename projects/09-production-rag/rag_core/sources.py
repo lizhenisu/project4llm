@@ -289,6 +289,8 @@ def save_source_task_for_tenant(*, config: RagConfig, tenant_id: str, source: So
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 error = excluded.error,
+                lease_owner = '',
+                lease_expires_at = 0,
                 updated_at = excluded.updated_at
             """,
             (
@@ -309,10 +311,31 @@ def save_source_task_for_tenant(*, config: RagConfig, tenant_id: str, source: So
     invalidate_source_list_cache(config=config, tenant_id=tenant_id)
 
 
-def delete_source_task(*, config: RagConfig, tenant_id: str, task_id: str) -> None:
+def delete_source_task(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    task_id: str,
+    lease_owner: str | None = None,
+) -> bool:
     with connect_metadata_db(config) as conn:
-        conn.execute("DELETE FROM source_tasks WHERE tenant_id = ? AND id = ?", (tenant_id, task_id))
-    invalidate_source_list_cache(config=config, tenant_id=tenant_id)
+        if lease_owner:
+            cursor = conn.execute(
+                """
+                DELETE FROM source_tasks
+                WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
+                """,
+                (tenant_id, task_id, lease_owner),
+            )
+        else:
+            cursor = conn.execute(
+                "DELETE FROM source_tasks WHERE tenant_id = ? AND id = ?",
+                (tenant_id, task_id),
+            )
+    removed = int(cursor.rowcount or 0) > 0
+    if removed:
+        invalidate_source_list_cache(config=config, tenant_id=tenant_id)
+    return removed
 
 
 def save_source_catalog_for_tenant(*, config: RagConfig, tenant_id: str, sources: list[SourceSummary]) -> None:
@@ -430,9 +453,31 @@ def delete_source_catalog(
     invalidate_source_list_cache(config=config, tenant_id=tenant_id)
 
 
-def fail_source_task(*, config: RagConfig, tenant_id: str, source: SourceSummary, error: str) -> None:
+def fail_source_task(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    source: SourceSummary,
+    error: str,
+    lease_owner: str | None = None,
+) -> bool:
     failed = replace(source, status="failed", updated_at=now_ms())
-    save_source_task_for_tenant(config=config, tenant_id=tenant_id, source=failed, error=error[:500])
+    if not lease_owner:
+        save_source_task_for_tenant(config=config, tenant_id=tenant_id, source=failed, error=error[:500])
+        return True
+    with connect_metadata_db(config) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE source_tasks
+            SET status = 'failed', error = ?, updated_at = ?, lease_owner = '', lease_expires_at = 0
+            WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
+            """,
+            (error[:500], failed.updated_at, tenant_id, source.doc_id, lease_owner),
+        )
+    updated = int(cursor.rowcount or 0) == 1
+    if updated:
+        invalidate_source_list_cache(config=config, tenant_id=tenant_id)
+    return updated
 
 
 def update_source_task_status(
@@ -993,6 +1038,48 @@ def count_source_tasks_by_status(*, config: RagConfig, tenant_id: str | None = N
     return {str(row["status"]): int(row["count"] or 0) for row in rows}
 
 
+def source_task_lease_metrics_snapshot(
+    *,
+    config: RagConfig,
+    tenant_id: str | None = None,
+) -> dict[str, int]:
+    timestamp = now_ms()
+    params: list[object] = [timestamp, timestamp]
+    where = ""
+    if tenant_id:
+        where = "WHERE tenant_id = ?"
+        params.append(tenant_id)
+    with connect_metadata_db(config) as conn:
+        row = conn.execute(
+            f"""
+            SELECT
+                SUM(
+                    CASE
+                        WHEN status = 'processing' AND lease_owner <> '' AND lease_expires_at >= ?
+                        THEN 1 ELSE 0
+                    END
+                ) AS active_leases,
+                SUM(
+                    CASE
+                        WHEN status = 'processing' AND lease_expires_at > 0 AND lease_expires_at < ?
+                        THEN 1 ELSE 0
+                    END
+                ) AS expired_leases,
+                SUM(attempt_count) AS attempts_recorded,
+                MAX(attempt_count) AS max_attempt_count
+            FROM source_tasks
+            {where}
+            """,
+            tuple(params),
+        ).fetchone()
+    return {
+        "active_leases": int(row["active_leases"] or 0) if row is not None else 0,
+        "expired_leases": int(row["expired_leases"] or 0) if row is not None else 0,
+        "attempts_recorded": int(row["attempts_recorded"] or 0) if row is not None else 0,
+        "max_attempt_count": int(row["max_attempt_count"] or 0) if row is not None else 0,
+    }
+
+
 def count_active_source_tasks(*, config: RagConfig, tenant_id: str | None = None) -> int:
     params: list[object] = ["queued", "processing", "uploading"]
     where = "WHERE status IN (?, ?, ?)"
@@ -1053,17 +1140,22 @@ def requeue_stale_processing_source_tasks(
     stale_after_ms: int,
     limit: int = 100,
 ) -> int:
-    cutoff = now_ms() - max(1000, int(stale_after_ms))
+    timestamp = now_ms()
+    cutoff = timestamp - max(1000, int(stale_after_ms))
     with connect_metadata_db(config) as conn:
         rows = conn.execute(
             """
             SELECT id, tenant_id
             FROM source_tasks
-            WHERE status = 'processing' AND updated_at < ?
+            WHERE status = 'processing'
+              AND (
+                (lease_expires_at > 0 AND lease_expires_at < ?)
+                OR (lease_expires_at = 0 AND updated_at < ?)
+              )
             ORDER BY updated_at ASC
             LIMIT ?
             """,
-            (cutoff, max(1, int(limit))),
+            (timestamp, cutoff, max(1, int(limit))),
         ).fetchall()
         task_ids = [str(row["id"]) for row in rows]
         tenant_ids = {str(row["tenant_id"]) for row in rows}
@@ -1073,10 +1165,15 @@ def requeue_stale_processing_source_tasks(
         cursor = conn.execute(
             f"""
             UPDATE source_tasks
-            SET status = 'queued', updated_at = ?, error = ''
-            WHERE id IN ({placeholders}) AND status = 'processing'
+            SET status = 'queued', updated_at = ?, error = '', lease_owner = '', lease_expires_at = 0
+            WHERE id IN ({placeholders})
+              AND status = 'processing'
+              AND (
+                (lease_expires_at > 0 AND lease_expires_at < ?)
+                OR (lease_expires_at = 0 AND updated_at < ?)
+              )
             """,
-            (now_ms(), *task_ids),
+            (timestamp, *task_ids, timestamp, cutoff),
         )
         updated_count = int(cursor.rowcount or 0)
     for tenant_id in tenant_ids:
@@ -1089,21 +1186,59 @@ def claim_source_task_for_processing(
     config: RagConfig,
     tenant_id: str,
     source: SourceSummary,
+    lease_owner: str,
+    lease_ms: int,
 ) -> SourceSummary | None:
     updated = replace(source, status="processing", updated_at=now_ms())
+    lease_expires_at = updated.updated_at + max(1000, int(lease_ms))
     with connect_metadata_db(config) as conn:
         cursor = conn.execute(
             """
             UPDATE source_tasks
-            SET status = 'processing', updated_at = ?, error = ''
+            SET status = 'processing', updated_at = ?, error = '',
+                lease_owner = ?, lease_expires_at = ?, attempt_count = attempt_count + 1
             WHERE tenant_id = ? AND id = ? AND status = 'queued'
             """,
-            (updated.updated_at, tenant_id, source.doc_id),
+            (
+                updated.updated_at,
+                lease_owner,
+                lease_expires_at,
+                tenant_id,
+                source.doc_id,
+            ),
         )
         if cursor.rowcount != 1:
             return None
     invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     return updated
+
+
+def renew_source_task_lease(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    task_id: str,
+    lease_owner: str,
+    lease_ms: int,
+) -> bool:
+    timestamp = now_ms()
+    with connect_metadata_db(config) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE source_tasks
+            SET updated_at = ?, lease_expires_at = ?
+            WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
+            """,
+            (
+                timestamp,
+                timestamp + max(1000, int(lease_ms)),
+                tenant_id,
+                task_id,
+                lease_owner,
+            ),
+        )
+    renewed = int(cursor.rowcount or 0) == 1
+    return renewed
 
 
 def load_source_title_overrides(*, config: RagConfig, tenant_id: str) -> dict[tuple[str, int], str]:
