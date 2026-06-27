@@ -57,6 +57,46 @@ services:
       - etcd
       - minio
 
+  rag-worker:
+    build:
+      context: ../..
+      dockerfile: projects/09-production-rag/Dockerfile
+    command: ["./scripts/start_worker.sh"]
+    env_file:
+      - ./.env
+    environment:
+      MILVUS_URI: http://milvus:19530
+      RAG_COLLECTION: rag_chunks_v1
+      RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
+      RAG_OBJECT_STORE_BACKEND: ${RAG_OBJECT_STORE_BACKEND:-s3}
+      RAG_S3_ENDPOINT_URL: ${RAG_S3_ENDPOINT_URL:-http://minio:9000}
+      RAG_S3_ACCESS_KEY_ID: ${RAG_S3_ACCESS_KEY_ID:-minioadmin}
+      RAG_S3_SECRET_ACCESS_KEY: ${RAG_S3_SECRET_ACCESS_KEY:-minioadmin}
+      RAG_S3_BUCKET: ${RAG_S3_BUCKET:-production-rag}
+      RAG_S3_PREFIX: ${RAG_S3_PREFIX:-app}
+      RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}
+      EMBEDDING_DIM: "1024"
+      IMAGE_EMBEDDING_DIM: "1024"
+      RAG_RUNTIME_DIR: /app/projects/09-production-rag/runtime
+      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@postgres:5432/${POSTGRES_DB:-production_rag}
+      NEW_API_URL: ${NEW_API_URL:-}
+      NEW_API_KEY: ${NEW_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gemini-3-flash-preview}
+      SILICONFLOW_URL: ${SILICONFLOW_URL:-https://api.siliconflow.cn}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
+      RAG_EMBEDDING_BACKEND: ${RAG_EMBEDDING_BACKEND:-siliconflow}
+      RAG_RERANK_BACKEND: ${RAG_RERANK_BACKEND:-siliconflow}
+    volumes:
+      - ./runtime:/app/projects/09-production-rag/runtime
+      - ./volumes/db:/app/projects/09-production-rag/runtime/db
+      - ./object_store:/app/projects/09-production-rag/object_store
+    depends_on:
+      milvus:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   rag-api:
     build:
       context: ../..
@@ -79,6 +119,7 @@ services:
       IMAGE_EMBEDDING_DIM: "1024"
       RAG_RUNTIME_DIR: /app/projects/09-production-rag/runtime
       RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@postgres:5432/${POSTGRES_DB:-production_rag}
+      RAG_INGEST_EXECUTION_MODE: ${RAG_INGEST_EXECUTION_MODE:-external}
       RAG_QUERY_REWRITE_BACKEND: ${RAG_QUERY_REWRITE_BACKEND:-llm}
       RAG_QUERY_REWRITE_HISTORY_TURNS: "6"
       RAG_QUERY_REWRITE_MAX_TOKENS: "256"
@@ -101,6 +142,8 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+      rag-worker:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8008/health"]
       interval: 20s

@@ -72,7 +72,7 @@ def main() -> None:
 
     compose = yaml.safe_load((PROJECT_DIR / "docker-compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
-    assert {"milvus", "rag-api", "rag-ingest", "minio", "postgres"}.issubset(services.keys())
+    assert {"milvus", "rag-api", "rag-worker", "rag-ingest", "minio", "postgres"}.issubset(services.keys())
 
     minio_env = services["minio"]["environment"]
     assert "MINIO_ROOT_USER" in minio_env
@@ -100,11 +100,26 @@ def main() -> None:
     assert rag_api_env["RAG_ANSWER_BACKEND"] == "${RAG_ANSWER_BACKEND:-llm}"
     assert rag_api_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}"
     assert rag_api_env["RAG_METADATA_DATABASE_URL"].startswith("postgresql://")
+    assert rag_api_env["RAG_INGEST_EXECUTION_MODE"] == "${RAG_INGEST_EXECUTION_MODE:-external}"
     assert rag_api_env["NEW_API_URL"] == "${NEW_API_URL:-}"
     assert rag_api_env["NEW_API_KEY"] == "${NEW_API_KEY:-}"
     assert rag_api_env["LLM_MODEL"] == "${LLM_MODEL:-gemini-3-flash-preview}"
     assert has_volume(rag_api["volumes"], EXPECTED_OBJECT_STORE_PATH)
     assert has_volume(rag_api["volumes"], EXPECTED_RUNTIME_PATH)
+    assert rag_api["depends_on"]["rag-worker"]["condition"] == "service_started"
+
+    rag_worker = services["rag-worker"]
+    rag_worker_env = rag_worker["environment"]
+    assert rag_worker["command"] == ["./scripts/start_worker.sh"]
+    assert rag_worker["restart"] == "unless-stopped"
+    assert "container_name" not in rag_worker
+    assert rag_worker_env["MILVUS_URI"] == "http://milvus:19530"
+    assert rag_worker_env["RAG_OBJECT_STORE_BACKEND"] == "${RAG_OBJECT_STORE_BACKEND:-s3}"
+    assert rag_worker_env["RAG_METADATA_DATABASE_URL"].startswith("postgresql://")
+    assert rag_worker_env["RAG_EMBEDDING_BACKEND"] == "${RAG_EMBEDDING_BACKEND:-siliconflow}"
+    assert rag_worker_env["RAG_RERANK_BACKEND"] == "${RAG_RERANK_BACKEND:-siliconflow}"
+    assert has_volume(rag_worker["volumes"], EXPECTED_OBJECT_STORE_PATH)
+    assert has_volume(rag_worker["volumes"], EXPECTED_RUNTIME_PATH)
 
     rag_ingest = services["rag-ingest"]
     rag_ingest_env = rag_ingest["environment"]
@@ -130,6 +145,8 @@ def main() -> None:
     start_api = (PROJECT_DIR / "scripts" / "start_api.sh").read_text(encoding="utf-8")
     assert "python check_config.py" in start_api
     assert (PROJECT_DIR / "scripts" / "start_ingest.sh").exists()
+    start_worker = (PROJECT_DIR / "scripts" / "start_worker.sh").read_text(encoding="utf-8")
+    assert "python ingestion_worker.py" in start_worker
 
     print("smoke_container_config=ok")
 

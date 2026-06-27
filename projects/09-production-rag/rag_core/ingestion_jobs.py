@@ -39,6 +39,7 @@ class IngestionJobRunner:
         self._slots = threading.BoundedSemaphore(self.queue_limit)
         self._tenant_slots: dict[str, threading.BoundedSemaphore] = {}
         self._tenant_slots_lock = threading.Lock()
+        self._stopping = threading.Event()
         self._executor = ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="rag-ingest")
 
     def submit_upload(
@@ -51,6 +52,8 @@ class IngestionJobRunner:
         doc_version: int | None,
         language: str,
     ) -> bool:
+        if self._stopping.is_set():
+            return False
         if not self._slots.acquire(blocking=False):
             return False
         tenant_slot = self._tenant_slot(tenant_id)
@@ -88,6 +91,8 @@ class IngestionJobRunner:
             return slot
 
     def drain_pending(self) -> None:
+        if self._stopping.is_set():
+            return
         config = load_config()
         try:
             requeue_stale_processing_source_tasks(
@@ -98,6 +103,9 @@ class IngestionJobRunner:
         except Exception:
             pass
         while self._slots.acquire(blocking=False):
+            if self._stopping.is_set():
+                self._slots.release()
+                return
             scheduled = False
             try:
                 for record in list_queued_source_tasks(config=config, limit=self.queue_limit * 4):
@@ -210,19 +218,44 @@ class IngestionJobRunner:
     def _lease_owner(self, task_id: str) -> str:
         return f"{self.runner_id}:{task_id}:{uuid.uuid4().hex}"
 
+    def shutdown(self, *, wait: bool = True) -> None:
+        self._stopping.set()
+        self._executor.shutdown(wait=wait)
+
 
 def ingestion_job_runner() -> IngestionJobRunner:
     global _RUNNER
     if _RUNNER is None:
         with _RUNNER_LOCK:
             if _RUNNER is None:
-                _RUNNER = IngestionJobRunner(
-                    workers=env_int("RAG_INGEST_WORKERS", 2),
-                    queue_limit=env_int("RAG_INGEST_QUEUE_LIMIT", 32),
-                    tenant_queue_limit=env_int("RAG_INGEST_TENANT_QUEUE_LIMIT", 8),
-                )
+                _RUNNER = new_ingestion_job_runner()
                 _RUNNER.drain_pending()
     return _RUNNER
+
+
+def new_ingestion_job_runner() -> IngestionJobRunner:
+    return IngestionJobRunner(
+        workers=env_int("RAG_INGEST_WORKERS", 2),
+        queue_limit=env_int("RAG_INGEST_QUEUE_LIMIT", 32),
+        tenant_queue_limit=env_int("RAG_INGEST_TENANT_QUEUE_LIMIT", 8),
+    )
+
+
+def run_ingestion_worker(
+    *,
+    stop_event: threading.Event,
+    poll_seconds: float | None = None,
+    runner: IngestionJobRunner | None = None,
+) -> None:
+    active_runner = runner or new_ingestion_job_runner()
+    interval = poll_seconds if poll_seconds is not None else env_float("RAG_INGEST_POLL_SECONDS", 1.0)
+    interval = max(0.1, interval)
+    try:
+        active_runner.drain_pending()
+        while not stop_event.wait(interval):
+            active_runner.drain_pending()
+    finally:
+        active_runner.shutdown(wait=True)
 
 
 def submit_upload_ingestion_job(
@@ -234,6 +267,8 @@ def submit_upload_ingestion_job(
     doc_version: int | None,
     language: str,
 ) -> bool:
+    if ingestion_execution_mode() == "external":
+        return True
     return ingestion_job_runner().submit_upload(
         pending_source=pending_source,
         saved_path=saved_path,
@@ -244,9 +279,27 @@ def submit_upload_ingestion_job(
     )
 
 
+def ingestion_execution_mode() -> str:
+    mode = os.environ.get("RAG_INGEST_EXECUTION_MODE", "embedded").strip().lower()
+    if mode not in {"embedded", "external"}:
+        raise ValueError(
+            "RAG_INGEST_EXECUTION_MODE must be 'embedded' or 'external', "
+            f"got: {mode or '<empty>'}"
+        )
+    return mode
+
+
 def env_int(name: str, default: int) -> int:
     value = os.environ.get(name, str(default))
     try:
         return max(1, int(value))
+    except ValueError:
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    value = os.environ.get(name, str(default))
+    try:
+        return max(0.1, float(value))
     except ValueError:
         return default

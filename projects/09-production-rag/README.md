@@ -65,6 +65,10 @@ docker compose up -d
 curl http://localhost:8008/health
 # 应返回 {"status":"ok"}
 
+# API 只负责持久化上传任务，rag-worker 独立执行解析和索引。
+# 按处理吞吐需要可横向扩展 worker；数据库租约会协调任务归属。
+docker compose up -d --scale rag-worker=3
+
 # 4. 一键配置 HTTPS（自动获取 Let's Encrypt 证书）
 sudo bash scripts/setup_caddy.sh your-domain.com
 
@@ -90,6 +94,7 @@ docker compose --profile ingest up rag-ingest
 ```
 09-production-rag/
 ├── serve.py                  # FastAPI 应用入口
+├── ingestion_worker.py       # 持久任务队列的独立 worker 入口
 ├── schema.py                 # Milvus Collection 初始化
 ├── answer.py                 # 文本 RAG 问答入口
 ├── answer_multimodal.py      # 多模态 RAG 问答入口

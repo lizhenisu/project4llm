@@ -46,6 +46,7 @@ def main() -> None:
         test_atomic_claim_and_owner_guard(config)
         test_expired_lease_can_be_reclaimed(config)
         test_two_runners_execute_once_and_renew(config)
+        test_restarted_worker_recovers_expired_process_lease(config)
     print("smoke_ingestion_task_leases=ok")
 
 
@@ -205,8 +206,44 @@ def test_two_runners_execute_once_and_renew(config) -> None:
         assert executions == [TENANT_ID]
         release.set()
         wait_for(lambda: task_row(config, source.doc_id, required=False) is None)
-    runner_a._executor.shutdown(wait=True)
-    runner_b._executor.shutdown(wait=True)
+    runner_a.shutdown(wait=True)
+    runner_b.shutdown(wait=True)
+
+
+def test_restarted_worker_recovers_expired_process_lease(config) -> None:
+    source = save_task(config, "process-restart")
+    assert claim_source_task_for_processing(
+        config=config,
+        tenant_id=TENANT_ID,
+        source=source,
+        lease_owner="stopped-process-owner",
+        lease_ms=60_000,
+    )
+    with connect_metadata_db(config) as conn:
+        conn.execute(
+            "UPDATE source_tasks SET lease_expires_at = ? WHERE tenant_id = ? AND id = ?",
+            (now_ms() - 1, TENANT_ID, source.doc_id),
+        )
+
+    observed_attempts: list[int] = []
+
+    def fake_ingest_uploaded_path(**_kwargs):
+        observed_attempts.append(int(task_row(config, source.doc_id)["attempt_count"]))
+
+    restarted_runner = IngestionJobRunner(
+        workers=1,
+        queue_limit=1,
+        tenant_queue_limit=1,
+        runner_id="restarted-worker-process",
+    )
+    with (
+        patch("rag_core.ingestion_jobs.load_config", return_value=config),
+        patch("rag_core.ingestion_jobs.ingest_uploaded_path", side_effect=fake_ingest_uploaded_path),
+    ):
+        restarted_runner.drain_pending()
+        wait_for(lambda: task_row(config, source.doc_id, required=False) is None)
+    restarted_runner.shutdown(wait=True)
+    assert observed_attempts == [2]
 
 
 def save_task(config, label: str) -> SourceSummary:
