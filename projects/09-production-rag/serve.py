@@ -117,8 +117,22 @@ _QUERY_STREAM_METRICS = {
 _QUERY_STREAM_ACTIVE_BY_TENANT: dict[str, int] = {}
 _QUERY_STREAM_ACTIVE_BY_USER: dict[str, int] = {}
 _HTTP_METRICS_LOCK = threading.Lock()
-_HTTP_METRICS: dict[str, dict[str, int | float]] = {}
+_HTTP_METRICS: dict[str, dict[str, Any]] = {}
 _HTTP_ACTIVE_TOTAL = 0
+_HTTP_LATENCY_BUCKETS_MS = (
+    10.0,
+    50.0,
+    100.0,
+    250.0,
+    500.0,
+    1_000.0,
+    2_500.0,
+    5_000.0,
+    10_000.0,
+    30_000.0,
+    60_000.0,
+    120_000.0,
+)
 _QUERY_IMAGE_METRICS_LOCK = threading.Lock()
 _QUERY_IMAGE_BUCKET_LIMITS = (64 * 1024, 256 * 1024, 1024 * 1024, 2 * 1024 * 1024)
 _QUERY_IMAGE_METRICS: dict[str, Any] = {
@@ -316,10 +330,14 @@ def record_http_finished(route_key: str, *, status_code: int, latency_ms: float)
         metrics[f"{status_family}_total"] = int(metrics.get(f"{status_family}_total", 0)) + 1
         metrics["latency_total_ms"] = float(metrics["latency_total_ms"]) + latency_ms
         metrics["latency_max_ms"] = max(float(metrics["latency_max_ms"]), latency_ms)
+        for upper_bound_ms in _HTTP_LATENCY_BUCKETS_MS:
+            if latency_ms <= upper_bound_ms:
+                buckets = metrics["latency_buckets_ms"]
+                buckets[upper_bound_ms] = int(buckets[upper_bound_ms]) + 1
         _HTTP_ACTIVE_TOTAL = max(0, _HTTP_ACTIVE_TOTAL - 1)
 
 
-def new_http_route_metrics() -> dict[str, int | float]:
+def new_http_route_metrics() -> dict[str, Any]:
     return {
         "active": 0,
         "requests_total": 0,
@@ -329,6 +347,10 @@ def new_http_route_metrics() -> dict[str, int | float]:
         "5xx_total": 0,
         "latency_total_ms": 0.0,
         "latency_max_ms": 0.0,
+        "latency_buckets_ms": {
+            upper_bound_ms: 0
+            for upper_bound_ms in _HTTP_LATENCY_BUCKETS_MS
+        },
     }
 
 
@@ -435,6 +457,8 @@ def prometheus_metrics_text(config) -> str:
         "# TYPE rag_http_request_latency_seconds_total counter",
         "# HELP rag_http_request_latency_seconds_max Maximum observed HTTP request latency.",
         "# TYPE rag_http_request_latency_seconds_max gauge",
+        "# HELP rag_http_request_latency_seconds HTTP request latency histogram.",
+        "# TYPE rag_http_request_latency_seconds histogram",
     ]
     for route, metrics in http["routes"].items():
         route_label = prometheus_label(str(route))
@@ -452,6 +476,25 @@ def prometheus_metrics_text(config) -> str:
         lines.append(
             f'rag_http_request_latency_seconds_max{{route="{route_label}"}} '
             f'{float(metrics["latency_max_ms"]) / 1000.0:.6f}'
+        )
+        for upper_bound_ms in _HTTP_LATENCY_BUCKETS_MS:
+            upper_bound_seconds = prometheus_number(upper_bound_ms / 1000.0)
+            count = int(metrics["latency_buckets_ms"][upper_bound_ms])
+            lines.append(
+                f'rag_http_request_latency_seconds_bucket{{route="{route_label}",le="{upper_bound_seconds}"}} '
+                f"{count}"
+            )
+        lines.append(
+            f'rag_http_request_latency_seconds_bucket{{route="{route_label}",le="+Inf"}} '
+            f'{int(metrics["requests_total"])}'
+        )
+        lines.append(
+            f'rag_http_request_latency_seconds_sum{{route="{route_label}"}} '
+            f'{float(metrics["latency_total_ms"]) / 1000.0:.6f}'
+        )
+        lines.append(
+            f'rag_http_request_latency_seconds_count{{route="{route_label}"}} '
+            f'{int(metrics["requests_total"])}'
         )
 
     lines.extend(
@@ -491,8 +534,44 @@ def prometheus_metrics_text(config) -> str:
             "# TYPE rag_model_api_events_total counter",
             f'rag_model_api_events_total{{event="acquired"}} {int(model_api["acquired_total"])}',
             f'rag_model_api_events_total{{event="rejected"}} {int(model_api["rejected_total"])}',
+            "# HELP rag_model_api_operation_calls_total Logical external model calls by operation and outcome.",
+            "# TYPE rag_model_api_operation_calls_total counter",
+            "# HELP rag_model_api_operation_attempts_total External model attempts by operation.",
+            "# TYPE rag_model_api_operation_attempts_total counter",
+            "# HELP rag_model_api_operation_retries_total External model retries by operation.",
+            "# TYPE rag_model_api_operation_retries_total counter",
+            "# HELP rag_model_api_operation_latency_seconds_total Cumulative logical-call latency by operation.",
+            "# TYPE rag_model_api_operation_latency_seconds_total counter",
+            "# HELP rag_model_api_operation_latency_seconds_max Maximum logical-call latency by operation.",
+            "# TYPE rag_model_api_operation_latency_seconds_max gauge",
         ]
     )
+    for operation, metrics in model_api["operations"].items():
+        operation_label = prometheus_label(operation)
+        lines.append(
+            f'rag_model_api_operation_calls_total{{operation="{operation_label}",outcome="success"}} '
+            f'{int(metrics["successes_total"])}'
+        )
+        lines.append(
+            f'rag_model_api_operation_calls_total{{operation="{operation_label}",outcome="failure"}} '
+            f'{int(metrics["failures_total"])}'
+        )
+        lines.append(
+            f'rag_model_api_operation_attempts_total{{operation="{operation_label}"}} '
+            f'{int(metrics["attempts_total"])}'
+        )
+        lines.append(
+            f'rag_model_api_operation_retries_total{{operation="{operation_label}"}} '
+            f'{int(metrics["retries_total"])}'
+        )
+        lines.append(
+            f'rag_model_api_operation_latency_seconds_total{{operation="{operation_label}"}} '
+            f'{float(metrics["latency_total_ms"]) / 1000.0:.6f}'
+        )
+        lines.append(
+            f'rag_model_api_operation_latency_seconds_max{{operation="{operation_label}"}} '
+            f'{float(metrics["latency_max_ms"]) / 1000.0:.6f}'
+        )
 
     pool_fields = {
         "total": "rag_metadata_pool_connections",
@@ -522,6 +601,10 @@ def prometheus_metrics_text(config) -> str:
 
 def prometheus_label(value: str) -> str:
     return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def prometheus_number(value: float) -> str:
+    return f"{value:g}"
 
 
 def env_int(name: str, default: int) -> int:

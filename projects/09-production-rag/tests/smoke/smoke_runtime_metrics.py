@@ -76,6 +76,7 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["conversation"]["max_conversation_image_bytes"] >= body["query"]["max_query_image_bytes"]
     assert body["model_api"]["active"] >= 1
     assert body["model_api"]["acquired_total"] >= 1
+    assert isinstance(body["model_api"]["operations"], dict)
     assert body["milvus_client"]["created_total"] >= 0
     assert body["milvus_client"]["reused_total"] >= 0
     assert body["milvus_client"]["thread_cached_clients"] >= 0
@@ -112,6 +113,10 @@ def test_runtime_metrics_records_http_route_counts() -> None:
     assert http["routes"]["GET /health"]["requests_total"] >= 1
     assert http["routes"]["GET /health"]["2xx_total"] >= 1
     assert http["routes"]["GET /health"]["latency_avg_ms"] >= 0.0
+    assert http["routes"]["GET /health"]["latency_buckets_ms"]
+    bucket_counts = list(http["routes"]["GET /health"]["latency_buckets_ms"].values())
+    assert bucket_counts == sorted(bucket_counts)
+    assert bucket_counts[-1] >= 1
     assert http["routes"]["GET /sources/{doc_id}"]["4xx_total"] >= 1
     assert not any("sha256-deadbeef" in route for route in http["routes"])
 

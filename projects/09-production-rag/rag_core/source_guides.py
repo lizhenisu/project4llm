@@ -18,6 +18,8 @@ from rag_core.types import SourceDocument
 SOURCE_GUIDES_PATH = Path("canonical/source_guides.jsonl")
 DEFAULT_SOURCE_GUIDE_CHUNK_CHARS = 230_000
 DEFAULT_SOURCE_GUIDE_LLM_WORKERS = 3
+DEFAULT_SOURCE_GUIDE_FAST_PATH_CHARS = 2_000
+SOURCE_GUIDE_FAST_PATH_TYPES = {"txt", "md", "html", "csv", "tsv", "table"}
 SOURCE_GUIDES_LOCK = threading.Lock()
 
 
@@ -38,7 +40,8 @@ def get_or_create_source_guide(
     )
     if cached:
         return cached
-    result = generate_source_guide(config=config, title=doc_title, docs=docs)
+    fast_path_result = build_fast_path_source_guide(title=doc_title, docs=docs)
+    result = fast_path_result or generate_source_guide(config=config, title=doc_title, docs=docs)
     save_source_guide(
         config.object_store_dir,
         tenant_id=tenant_id,
@@ -46,7 +49,7 @@ def get_or_create_source_guide(
         doc_version=doc_version,
         title=result.title,
         guide=result.guide,
-        model=config.llm_model,
+        model="deterministic-fast-path" if fast_path_result else config.llm_model,
     )
     return result
 
@@ -86,6 +89,21 @@ def generate_source_guide(*, config: RagConfig, title: str, docs: list[SourceDoc
     if not title_text:
         title_text = title
     return SourceGuideResult(title=normalize_guide_text(title_text), guide=normalize_guide_text(guide_text))
+
+
+def build_fast_path_source_guide(*, title: str, docs: list[SourceDocument]) -> SourceGuideResult | None:
+    limit = source_guide_fast_path_chars()
+    if limit <= 0 or not docs:
+        return None
+    if any(doc.source_type.lower() not in SOURCE_GUIDE_FAST_PATH_TYPES for doc in docs):
+        return None
+    context = build_source_guide_context(docs)
+    if not context or len(context) > limit:
+        return None
+    return SourceGuideResult(
+        title=normalize_guide_text(title) or "未命名来源",
+        guide=normalize_guide_text(context),
+    )
 
 
 def generate_source_guide_text(*, config: RagConfig, title: str, source_text: str) -> str:
@@ -189,6 +207,17 @@ def source_guide_chunk_chars() -> int:
 
 def source_guide_llm_workers() -> int:
     return env_int("RAG_SOURCE_GUIDE_LLM_WORKERS", DEFAULT_SOURCE_GUIDE_LLM_WORKERS)
+
+
+def source_guide_fast_path_chars() -> int:
+    value = os.environ.get(
+        "RAG_SOURCE_GUIDE_FAST_PATH_CHARS",
+        str(DEFAULT_SOURCE_GUIDE_FAST_PATH_CHARS),
+    )
+    try:
+        return max(0, int(value))
+    except ValueError:
+        return DEFAULT_SOURCE_GUIDE_FAST_PATH_CHARS
 
 
 def env_int(name: str, default: int) -> int:

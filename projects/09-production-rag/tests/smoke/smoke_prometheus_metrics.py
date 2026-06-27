@@ -15,11 +15,13 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import serve  # noqa: E402
+from rag_core.model_api_retry import call_model_api_with_retries  # noqa: E402
 
 
 def main() -> None:
     with isolated_runtime():
         api = TestClient(serve.create_app())
+        assert call_model_api_with_retries("metrics_smoke", lambda: "ok") == "ok"
         assert api.get("/health").status_code == 200
         assert api.get("/sources/private-doc@sha256-secret?tenant_id=metrics-smoke").status_code >= 400
         response = api.get("/metrics")
@@ -28,14 +30,24 @@ def main() -> None:
     assert response.headers["content-type"].startswith("text/plain")
     text = response.text
     assert "# TYPE rag_http_requests_total counter" in text
+    assert "# TYPE rag_http_request_latency_seconds histogram" in text
     assert 'rag_http_requests_total{route="GET /health"}' in text
+    assert 'rag_http_request_latency_seconds_bucket{route="GET /health",le="0.01"}' in text
+    assert 'rag_http_request_latency_seconds_bucket{route="GET /health",le="+Inf"} 1' in text
+    assert 'rag_http_request_latency_seconds_count{route="GET /health"} 1' in text
     assert "private-doc" not in text
     assert "sha256-secret" not in text
     assert 'rag_query_stream_events_total{event="rejected_user"}' in text
     assert 'rag_query_image_payloads_total{outcome="accepted"}' in text
+    assert (
+        'rag_model_api_operation_calls_total{operation="metrics_smoke",outcome="success"} 1'
+        in text
+    )
+    assert 'rag_model_api_operation_retries_total{operation="metrics_smoke"} 0' in text
     assert "rag_metadata_pool_timeouts_total" in text
     assert 'rag_ingestion_tasks{status="queued"}' in text
     validate_metric_lines(text)
+    validate_health_histogram(text)
     print("smoke_prometheus_metrics=ok")
 
 
@@ -49,6 +61,17 @@ def validate_metric_lines(text: str) -> None:
         if not line or line.startswith("#"):
             continue
         assert sample_pattern.fullmatch(line), line
+
+
+def validate_health_histogram(text: str) -> None:
+    counts = []
+    for line in text.splitlines():
+        if not line.startswith('rag_http_request_latency_seconds_bucket{route="GET /health"'):
+            continue
+        counts.append(int(line.rsplit(" ", 1)[1]))
+    assert counts
+    assert counts == sorted(counts)
+    assert counts[-1] == 1
 
 
 @contextmanager

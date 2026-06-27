@@ -9,7 +9,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from rag_core.model_api_retry import call_model_api_with_retries
+from rag_core.model_api_retry import call_model_api_with_retries, model_api_metrics_snapshot
 
 
 class ApiError(Exception):
@@ -37,6 +37,7 @@ def main() -> None:
 
 def test_transient_errors_retry_until_success() -> None:
     attempts = {"count": 0}
+    before = operation_metrics("flaky")
 
     def flaky_call() -> str:
         attempts["count"] += 1
@@ -47,10 +48,17 @@ def test_transient_errors_retry_until_success() -> None:
     with patch("rag_core.model_api_retry.time.sleep", return_value=None):
         assert call_model_api_with_retries("flaky", flaky_call) == "ok"
     assert attempts["count"] == 3
+    after = operation_metrics("flaky")
+    assert after["calls_total"] == before["calls_total"] + 1
+    assert after["attempts_total"] == before["attempts_total"] + 3
+    assert after["retries_total"] == before["retries_total"] + 2
+    assert after["successes_total"] == before["successes_total"] + 1
+    assert after["failures_total"] == before["failures_total"]
 
 
 def test_non_transient_errors_do_not_retry() -> None:
     attempts = {"count": 0}
+    before = operation_metrics("bad_request")
 
     def bad_request() -> str:
         attempts["count"] += 1
@@ -63,6 +71,28 @@ def test_non_transient_errors_do_not_retry() -> None:
     else:
         raise AssertionError("expected ApiError")
     assert attempts["count"] == 1
+    after = operation_metrics("bad_request")
+    assert after["calls_total"] == before["calls_total"] + 1
+    assert after["attempts_total"] == before["attempts_total"] + 1
+    assert after["retries_total"] == before["retries_total"]
+    assert after["failures_total"] == before["failures_total"] + 1
+    assert after["latency_max_ms"] >= 0
+
+
+def operation_metrics(operation: str) -> dict[str, int | float]:
+    return model_api_metrics_snapshot()["operations"].get(
+        operation,
+        {
+            "calls_total": 0,
+            "attempts_total": 0,
+            "retries_total": 0,
+            "successes_total": 0,
+            "failures_total": 0,
+            "latency_total_ms": 0.0,
+            "latency_max_ms": 0.0,
+            "latency_avg_ms": 0.0,
+        },
+    )
 
 
 def restore_env(name: str, value: str | None) -> None:
