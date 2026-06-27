@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 from answer import answer_query
 from answer_multimodal import answer_multimodal_query
 from rag_core.artifacts import (
+    ArtifactTenantConflictError,
     MindMapArtifact,
     build_llm_table,
     build_mindmap_root,
@@ -2242,7 +2243,10 @@ def create_app():
             source_doc_ids=request.source_doc_ids,
             artifact_type="mindmap",
         )
-        save_metadata_artifact(config, artifact)
+        try:
+            save_metadata_artifact(config, artifact)
+        except ArtifactTenantConflictError as exc:
+            raise HTTPException(status_code=409, detail="Artifact ID is unavailable") from exc
         background_tasks.add_task(
             build_mindmap_background,
             artifact,
@@ -2274,7 +2278,10 @@ def create_app():
             source_doc_ids=request.source_doc_ids,
             artifact_type="table",
         )
-        save_metadata_artifact(config, artifact)
+        try:
+            save_metadata_artifact(config, artifact)
+        except ArtifactTenantConflictError as exc:
+            raise HTTPException(status_code=409, detail="Artifact ID is unavailable") from exc
         background_tasks.add_task(build_table_background, artifact)
         return artifact_to_response(artifact)
 
@@ -2305,7 +2312,10 @@ def create_app():
         if artifact is None:
             artifact = None if workspace_id else load_artifact(config, tenant_id=auth_context.tenant_id, artifact_id=artifact_id)
             if artifact is not None:
-                save_metadata_artifact(config, artifact)
+                try:
+                    save_metadata_artifact(config, artifact)
+                except ArtifactTenantConflictError:
+                    pass
         if artifact is None:
             raise HTTPException(status_code=404, detail="Artifact not found")
         return artifact_to_response(artifact)
@@ -2484,7 +2494,10 @@ def build_table_background(artifact: MindMapArtifact) -> None:
 def migrate_legacy_artifacts(config, *, tenant_id: str) -> None:
     for artifact in list_artifacts(config, tenant_id=tenant_id):
         if load_metadata_artifact(config, tenant_id=tenant_id, artifact_id=artifact.id) is None:
-            save_metadata_artifact(config, artifact)
+            try:
+                save_metadata_artifact(config, artifact)
+            except ArtifactTenantConflictError:
+                continue
 
 
 def resolve_auth_context_from_values(

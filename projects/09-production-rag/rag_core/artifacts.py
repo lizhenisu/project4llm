@@ -50,6 +50,10 @@ class MindMapArtifact:
     error: str = ""
 
 
+class ArtifactTenantConflictError(ValueError):
+    pass
+
+
 def list_artifacts(config: RagConfig, *, tenant_id: str) -> list[MindMapArtifact]:
     artifact_dir = config.object_store_dir / ARTIFACTS_DIR / tenant_id
     if not artifact_dir.exists():
@@ -132,7 +136,7 @@ def load_metadata_artifact(
 
 def save_metadata_artifact(config: RagConfig, artifact: MindMapArtifact) -> None:
     with connect_metadata_db(config) as conn:
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO artifacts(
                 id, tenant_id, workspace_id, title, status, artifact_type, source_doc_ids,
@@ -140,7 +144,6 @@ def save_metadata_artifact(config: RagConfig, artifact: MindMapArtifact) -> None
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                tenant_id = excluded.tenant_id,
                 workspace_id = excluded.workspace_id,
                 title = excluded.title,
                 status = excluded.status,
@@ -150,6 +153,7 @@ def save_metadata_artifact(config: RagConfig, artifact: MindMapArtifact) -> None
                 table_json = excluded.table_json,
                 error = excluded.error,
                 updated_at = excluded.updated_at
+            WHERE artifacts.tenant_id = excluded.tenant_id
             """,
             (
                 artifact.id,
@@ -166,6 +170,8 @@ def save_metadata_artifact(config: RagConfig, artifact: MindMapArtifact) -> None
                 artifact.updated_at,
             ),
         )
+        if int(cursor.rowcount or 0) != 1:
+            raise ArtifactTenantConflictError("Artifact ID is owned by another tenant")
 
 
 def delete_metadata_artifact(
