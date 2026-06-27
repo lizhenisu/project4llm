@@ -10,7 +10,8 @@
     "lint": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test:e2e": "playwright test",
     "test:e2e:ubuntu26": "PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64 playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "test:layout": "node --test tests/unit/mindmap-layout.test.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",

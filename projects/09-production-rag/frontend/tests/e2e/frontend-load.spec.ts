@@ -423,6 +423,118 @@ test.describe("browser-level frontend load smoke", () => {
     await expect(image).toHaveAttribute("decoding", "async");
   });
 
+  test("keeps expanded long-label mind-map nodes collision free", async ({ page, baseURL }) => {
+    const now = Date.now();
+    const artifact = {
+      id: "mindmap-collision-smoke",
+      title: "长文本防碰撞思维导图",
+      status: "ready",
+      tenant_id: "queued-upload-tenant",
+      workspace_id: "default",
+      source_doc_ids: [],
+      created_at: now,
+      updated_at: now,
+      artifact_type: "mindmap",
+      root: {
+        id: "mindmap-root",
+        label: "生产级 RAG 系统",
+        children: [
+          {
+            id: "mindmap-retrieval",
+            label: "检索链路",
+            children: [
+              {
+                id: "mindmap-retrieval-1",
+                label: "这是一个非常长的第三级节点，包含查询重写、混合向量检索、关键词召回以及跨编码器重排序等多个步骤。",
+              },
+              {
+                id: "mindmap-retrieval-2",
+                label: "上下文组装需要同时考虑字符预算、每文档片段上限、相关性阈值以及引用证据的多样性。",
+              },
+              {
+                id: "mindmap-retrieval-3",
+                label: "long-unbroken-ascii-token-for-browser-layout-collision-regression-check".repeat(3),
+              },
+            ],
+          },
+          {
+            id: "mindmap-ingestion",
+            label: "文档摄取与索引",
+            children: [
+              {
+                id: "mindmap-ingestion-1",
+                label: "解析 PDF、抽取图片、生成文本与图片向量，并将版本化片段批量写入 Milvus。",
+              },
+              {
+                id: "mindmap-ingestion-2",
+                label: "失败任务采用指数退避重试，长期 processing 任务由恢复流程重新排队，避免永久停滞。",
+              },
+            ],
+          },
+          {
+            id: "mindmap-observability",
+            label: "监控与容量",
+            children: [
+              {
+                id: "mindmap-observability-1",
+                label: "Prometheus 采集 HTTP histogram、模型调用、连接池和 ingestion backlog，Grafana 展示 p95 与告警。",
+              },
+            ],
+          },
+        ],
+      },
+      table: null,
+    };
+
+    await seedBrowserSession(page, 750);
+    await mockStartupApi(page);
+    await page.route("**/api/sources**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ sources: [] }),
+      });
+    });
+    await page.unroute("**/api/artifacts**");
+    await page.route("**/api/artifacts**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ artifacts: [artifact] }),
+      });
+    });
+
+    await page.goto(`${(baseURL || "http://127.0.0.1:5173").replace(/\/$/, "")}/#token=browser-load-token-750`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.getByText("长文本防碰撞思维导图", { exact: true }).click();
+    await expect(page.locator(".mindmap-detail")).toBeVisible();
+    const branches = page.locator(".react-flow__node.mindmap-flow-node.branch");
+    await expect(branches).toHaveCount(3);
+    for (let index = 0; index < 3; index += 1) {
+      await branches.nth(index).click();
+    }
+    const leaves = page.locator(".react-flow__node.mindmap-flow-node.leaf");
+    await expect(leaves).toHaveCount(6);
+    await page.waitForTimeout(600);
+
+    const geometry = await leaves.evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const rect = node.getBoundingClientRect();
+        return {
+          text: node.textContent || "",
+          top: rect.top,
+          bottom: rect.bottom,
+          left: rect.left,
+          right: rect.right,
+          height: rect.height,
+        };
+      }),
+    );
+    expect(geometry.some((item) => item.height > Math.min(...geometry.map((entry) => entry.height)) * 1.8)).toBe(true);
+    expect(findOverlappingNodePairs(geometry)).toEqual([]);
+  });
+
   test("keeps final answers stable after high-frequency streamed stages", async ({ page, baseURL }) => {
     const now = Date.now();
     let savedMessages = 0;
@@ -1322,6 +1434,24 @@ function summarizePageMetrics(metrics: Array<PageMetrics | null>) {
 function percentile(values: number[], pct: number) {
   const index = Math.min(values.length - 1, Math.round((pct / 100) * (values.length - 1)));
   return round(values[index], 2);
+}
+
+function findOverlappingNodePairs(
+  rectangles: Array<{ text: string; top: number; bottom: number; left: number; right: number }>,
+) {
+  const overlaps: string[] = [];
+  for (let leftIndex = 0; leftIndex < rectangles.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < rectangles.length; rightIndex += 1) {
+      const left = rectangles[leftIndex];
+      const right = rectangles[rightIndex];
+      const horizontalOverlap = left.left < right.right - 0.5 && right.left < left.right - 0.5;
+      const verticalOverlap = left.top < right.bottom - 0.5 && right.top < left.bottom - 0.5;
+      if (horizontalOverlap && verticalOverlap) {
+        overlaps.push(`${left.text} <> ${right.text}`);
+      }
+    }
+  }
+  return overlaps;
 }
 
 function envInt(name: string, fallback: number) {
