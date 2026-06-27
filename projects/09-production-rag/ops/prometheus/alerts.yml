@@ -1,0 +1,79 @@
+groups:
+  - name: production-rag
+    interval: 30s
+    rules:
+      - alert: ProductionRagApiDown
+        expr: up{job="production-rag-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Production RAG API scrape target is down
+          description: Prometheus has been unable to scrape the API for two minutes.
+
+      - alert: ProductionRagHighHttp5xxRate
+        expr: |
+          sum(rate(rag_http_responses_total{status_family="5xx"}[5m]))
+          /
+          clamp_min(sum(rate(rag_http_requests_total[5m])), 0.001)
+          > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Production RAG HTTP 5xx rate is above 5%
+          description: The normalized API route error ratio has remained high for ten minutes.
+
+      - alert: ProductionRagHttpP95LatencyHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(rag_http_request_latency_seconds_bucket[10m]))
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Production RAG HTTP p95 latency is above 5 seconds
+          description: Review route, model API, metadata pool, and Milvus metrics to locate the bottleneck.
+
+      - alert: ProductionRagQueryStreamRejections
+        expr: |
+          sum(rate(rag_query_stream_events_total{event=~"rejected_.*"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Query streams are being rejected continuously
+          description: Global, tenant, or principal stream capacity has been saturated for five minutes.
+
+      - alert: ProductionRagModelApiFailureRateHigh
+        expr: |
+          sum(rate(rag_model_api_operation_calls_total{outcome="failure"}[10m]))
+          /
+          clamp_min(sum(rate(rag_model_api_operation_calls_total[10m])), 0.001)
+          > 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: External model API failure rate is above 10%
+          description: Inspect per-operation retries and latency before raising provider concurrency.
+
+      - alert: ProductionRagMetadataPoolTimeout
+        expr: increase(rag_metadata_pool_timeouts_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Metadata connection pool acquisition timed out
+          description: Reduce API concurrency or tune PostgreSQL/PgBouncer capacity.
+
+      - alert: ProductionRagIngestionBacklogHigh
+        expr: sum(rag_ingestion_tasks{status=~"queued|processing"}) > 1000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Ingestion backlog is above 1000 tasks
+          description: Processing throughput has not kept pace with accepted uploads.
