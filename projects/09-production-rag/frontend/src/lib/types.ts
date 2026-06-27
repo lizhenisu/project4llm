@@ -16,6 +16,9 @@ export type SourceItem = {
   selected?: boolean;
   error?: string;
   retryable?: boolean;
+  attempt_count?: number;
+  next_attempt_at?: number;
+  dead_lettered?: boolean;
 };
 
 export type SourceContent = {

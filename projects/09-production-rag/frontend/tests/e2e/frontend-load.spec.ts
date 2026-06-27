@@ -164,8 +164,14 @@ test.describe("browser-level frontend load smoke", () => {
   test("shows stable status text and recovery guidance for ingestion", async ({ page, baseURL }) => {
     const staleSource = {
       ...mockSource("stale-ingestion.txt", 700, "processing"),
+      attempt_count: 2,
       created_at: Date.now() - 35 * 60 * 1000,
       updated_at: Date.now() - 31 * 60 * 1000,
+    };
+    const retryWaitingSource = {
+      ...mockSource("retry-waiting.txt", 702, "queued"),
+      attempt_count: 1,
+      next_attempt_at: Date.now() + 60_000,
     };
     await seedBrowserSession(page, 700);
     await mockStartupApi(page);
@@ -173,7 +179,7 @@ test.describe("browser-level frontend load smoke", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ sources: [staleSource] }),
+        body: JSON.stringify({ sources: [staleSource, retryWaitingSource] }),
       });
     });
 
@@ -183,13 +189,19 @@ test.describe("browser-level frontend load smoke", () => {
     await expect(row.getByText("处理中")).toBeVisible();
     await expect(row.getByText("处理时间已超过 30 分钟")).toBeVisible();
     await expect(row.getByText("疑似停滞，系统将自动尝试恢复")).toBeVisible();
+    await expect(row.getByText("第 2 次尝试")).toBeVisible();
     await expect(row.getByText(/已等待|已处理|完成时间取决于当前队列/)).toHaveCount(0);
+    const retryRow = page.locator(".source-row.status-queued", { hasText: "retry-waiting.txt" });
+    await expect(retryRow.getByText("等待自动重试 · 已尝试 1 次")).toBeVisible();
+    await expect(retryRow.getByText(/秒后|分钟后/)).toHaveCount(0);
   });
 
   test("requeues a retryable failed ingestion source", async ({ page, baseURL }) => {
     const failedSource = {
       ...mockSource("retryable-ingestion.txt", 701, "failed"),
       retryable: true,
+      attempt_count: 3,
+      dead_lettered: true,
       error: "Synthetic terminal ingestion failure",
     };
     let currentSource = failedSource;
@@ -205,6 +217,9 @@ test.describe("browser-level frontend load smoke", () => {
           ...failedSource,
           status: "queued",
           retryable: false,
+          attempt_count: 0,
+          next_attempt_at: 0,
+          dead_lettered: false,
           error: "",
           updated_at: Date.now(),
         };
@@ -228,6 +243,7 @@ test.describe("browser-level frontend load smoke", () => {
     const row = page.locator(".source-row", { hasText: failedSource.title });
     await expect(row).toHaveClass(/status-failed/);
     await expect(row.getByText("Synthetic terminal ingestion failure")).toBeVisible();
+    await expect(row.getByText("已停止自动重试 · 共尝试 3 次，可选择重新处理")).toBeVisible();
     await row.locator(".row-icon-more").click();
     await page.getByRole("button", { name: "重新处理" }).click();
     await expect.poll(() => retryRequests).toBe(1);

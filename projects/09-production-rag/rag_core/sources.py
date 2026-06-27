@@ -88,6 +88,9 @@ class SourceSummary:
     updated_at: int | None = None
     child_doc_ids: list[str] = field(default_factory=list)
     error: str = ""
+    attempt_count: int = 0
+    next_attempt_at: int = 0
+    dead_lettered: bool = False
 
 
 @dataclass(frozen=True)
@@ -1159,7 +1162,8 @@ def list_source_tasks(*, config: RagConfig, tenant_id: str) -> list[SourceSummar
         rows = conn.execute(
             """
             SELECT doc_id, title, source_type, source_uri, doc_version, acl_groups,
-                   status, error, created_at, updated_at
+                   status, error, attempt_count, next_attempt_at, dead_lettered_at,
+                   created_at, updated_at
             FROM source_tasks
             WHERE tenant_id = ?
             ORDER BY updated_at DESC
@@ -1181,6 +1185,9 @@ def list_source_tasks(*, config: RagConfig, tenant_id: str) -> list[SourceSummar
             updated_at=int(row["updated_at"] or 0),
             child_doc_ids=[],
             error=str(row["error"] or ""),
+            attempt_count=int(row["attempt_count"] or 0),
+            next_attempt_at=int(row["next_attempt_at"] or 0),
+            dead_lettered=int(row["dead_lettered_at"] or 0) > 0,
         )
         for row in rows
     ]

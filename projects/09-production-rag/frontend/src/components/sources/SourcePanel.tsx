@@ -301,11 +301,20 @@ function sourceStatusLabel(status: SourceItem["status"]) {
 }
 
 function sourceProgressDetail(source: SourceItem) {
+  const attemptCount = Math.max(0, source.attempt_count || 0);
+  if (source.status === "queued" && attemptCount > 0 && (source.next_attempt_at || 0) > 0) {
+    return `等待自动重试 · 已尝试 ${attemptCount} 次`;
+  }
+  if (source.status === "failed" && source.dead_lettered) {
+    return `已停止自动重试 · 共尝试 ${attemptCount} 次，可选择重新处理`;
+  }
   if (source.status === "processing") {
     const age = sourceStatusAgeMs(source);
     if (age >= PROCESSING_STALE_WARNING_MS) {
-      return "处理时间已超过 30 分钟，疑似停滞，系统将自动尝试恢复";
+      const attemptDetail = attemptCount > 0 ? `（第 ${attemptCount} 次尝试）` : "";
+      return `处理时间已超过 30 分钟，疑似停滞，系统将自动尝试恢复${attemptDetail}`;
     }
+    if (attemptCount > 1) return `第 ${attemptCount} 次处理尝试`;
   }
   return "";
 }

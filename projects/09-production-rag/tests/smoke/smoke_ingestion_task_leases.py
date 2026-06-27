@@ -26,6 +26,7 @@ from rag_core.sources import (  # noqa: E402
     delete_source_task,
     fail_source_task,
     list_queued_source_tasks,
+    list_source_tasks,
     renew_source_task_lease,
     requeue_stale_processing_source_tasks,
     retry_or_fail_source_task,
@@ -163,6 +164,14 @@ def test_retry_backoff_and_dead_letter(config) -> None:
     assert int(row["dead_lettered_at"]) == 0
     waiting_recovery = source_task_recovery_metrics_snapshot(config=config, tenant_id=TENANT_ID)
     assert waiting_recovery["retry_waiting"] >= 1
+    waiting_source = next(
+        item
+        for item in list_source_tasks(config=config, tenant_id=TENANT_ID)
+        if item.doc_id == source.doc_id
+    )
+    assert waiting_source.attempt_count == 1
+    assert waiting_source.next_attempt_at == int(row["next_attempt_at"])
+    assert waiting_source.dead_lettered is False
     assert not any(
         record.source.doc_id == source.doc_id
         for record in list_queued_source_tasks(config=config, limit=1000)
@@ -207,6 +216,14 @@ def test_retry_backoff_and_dead_letter(config) -> None:
     assert int(row["attempt_count"]) == 2
     assert int(row["next_attempt_at"]) == 0
     assert int(row["dead_lettered_at"]) > 0
+    failed_source = next(
+        item
+        for item in list_source_tasks(config=config, tenant_id=TENANT_ID)
+        if item.doc_id == source.doc_id
+    )
+    assert failed_source.attempt_count == 2
+    assert failed_source.next_attempt_at == 0
+    assert failed_source.dead_lettered is True
     recovery = source_task_recovery_metrics_snapshot(config=config, tenant_id=TENANT_ID)
     assert recovery["dead_lettered"] >= 1
     assert recovery["retries_recorded"] >= 1

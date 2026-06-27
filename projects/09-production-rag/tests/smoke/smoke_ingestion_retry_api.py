@@ -52,6 +52,18 @@ def test_retry_failed_task_is_tenant_scoped_and_atomic() -> None:
         "X-RAG-ACL-Groups": "engineering",
     }
     api = TestClient(serve.create_app())
+    listed = api.get(f"/sources?tenant_id={tenant_a}", headers=headers)
+    assert listed.status_code == 200, listed.text
+    listed_failed = next(
+        source
+        for source in listed.json()["sources"]
+        if source["doc_id"] == failed.doc_id
+    )
+    assert listed_failed["attempt_count"] == 3
+    assert listed_failed["next_attempt_at"] == 0
+    assert listed_failed["dead_lettered"] is True
+    assert listed_failed["retryable"] is True
+
     with patch("serve.submit_upload_ingestion_job", return_value=True) as submit_job:
         response = api.post(
             f"/sources/{failed.doc_id}/retry?tenant_id={tenant_a}",

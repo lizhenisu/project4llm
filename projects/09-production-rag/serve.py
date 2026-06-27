@@ -758,6 +758,9 @@ class SourceResponse(BaseModel):
     child_doc_ids: list[str] = Field(default_factory=list)
     error: str = ""
     retryable: bool = False
+    attempt_count: int = 0
+    next_attempt_at: int = 0
+    dead_lettered: bool = False
 
 
 class SourceListResponse(BaseModel):
@@ -2564,6 +2567,9 @@ def source_to_response(source) -> SourceResponse:
         child_doc_ids=source.child_doc_ids,
         error=getattr(source, "error", ""),
         retryable=source.status == "failed",
+        attempt_count=getattr(source, "attempt_count", 0),
+        next_attempt_at=getattr(source, "next_attempt_at", 0),
+        dead_lettered=getattr(source, "dead_lettered", False),
     )
 
 
