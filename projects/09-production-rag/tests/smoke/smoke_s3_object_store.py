@@ -15,6 +15,11 @@ from rag_core.object_store import archive_source_documents, load_archived_source
 from rag_core.document_scope import build_scope_plan
 from rag_core.jsonl_store import read_object_bytes_by_relative_path
 from rag_core.sources import save_uploaded_file
+from rag_core.section_summaries import (
+    delete_source_section_summaries,
+    load_source_section_summaries,
+    save_source_section_summaries,
+)
 from rag_core.source_guides import load_source_guide, save_source_guide
 from rag_core.text_utils import now_ms
 from rag_core.types import SourceDocument
@@ -83,6 +88,13 @@ def main() -> None:
                 guide="This guide is stored in S3.",
                 model="smoke",
             )
+            assert save_source_section_summaries(
+                object_store_dir,
+                tenant_id=tenant_id,
+                source_doc_id="doc-a",
+                doc_version=1,
+                docs=[doc],
+            ) == 1
             assert "stored in S3" in (load_source_guide(
                 object_store_dir,
                 tenant_id=tenant_id,
@@ -100,6 +112,16 @@ def main() -> None:
             assert scope_plan.route.coverage_required is True
             assert scope_plan.coverage()["covered_doc_count"] == 1
             assert scope_plan.guides[0].guide == "This guide is stored in S3."
+            extraction_plan = build_scope_plan(
+                config=config,
+                tenant_id=tenant_id,
+                query="从这份资料中提取关键内容",
+                doc_ids=["doc-a"],
+                doc_version=1,
+                include_all_sources=False,
+            )
+            assert len(extraction_plan.section_summaries) == 1
+            assert extraction_plan.section_summaries[0].summary == "S3 object store smoke content."
             purged = purge_source_documents(
                 object_store_dir,
                 tenant_id=tenant_id,
@@ -108,6 +130,17 @@ def main() -> None:
             )
             assert purged["archived_documents"] == 1
             assert load_archived_source_documents(object_store_dir) == []
+            assert delete_source_section_summaries(
+                object_store_dir,
+                tenant_id=tenant_id,
+                source_doc_ids={"doc-a"},
+                doc_version=1,
+            ) == 1
+            assert load_source_section_summaries(
+                object_store_dir,
+                tenant_id=tenant_id,
+                source_keys={("doc-a", 1)},
+            ) == []
     finally:
         for key, value in old_env.items():
             if value is None:

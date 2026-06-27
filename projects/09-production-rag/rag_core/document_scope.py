@@ -11,6 +11,7 @@ from rag_core.config import RagConfig
 from rag_core.jsonl_store import object_exists, read_object_jsonl
 from rag_core.object_store import load_archived_source_documents
 from rag_core.pipeline import StageCallback, emit_stage
+from rag_core.section_summaries import SourceSectionSummary, load_source_section_summaries
 from rag_core.source_guides import SOURCE_GUIDES_PATH, current_source_guide_version
 from rag_core.types import SearchHit
 from rag_core.types import SourceDocument
@@ -74,6 +75,7 @@ class ScopePlan:
     missing_doc_ids: list[str]
     current_versions: dict[str, int]
     coverage_mode: str
+    section_summaries: list[SourceSectionSummary] = field(default_factory=list)
 
     @property
     def should_use_document_pipeline(self) -> bool:
@@ -188,6 +190,15 @@ def build_scope_plan(
         if not source_guide_matches_any_doc_id(doc_id, covered_ids)
     ]
     coverage_mode = coverage_mode_for(route)
+    section_summaries = (
+        load_source_section_summaries(
+            config.object_store_dir,
+            tenant_id=tenant_id,
+            source_keys={(guide.source_doc_id, guide.doc_version) for guide in guides},
+        )
+        if route.coverage_required and route.intent in detailed_section_intents()
+        else []
+    )
     return ScopePlan(
         route=route,
         selected_doc_ids=selected_doc_ids,
@@ -196,6 +207,7 @@ def build_scope_plan(
         missing_doc_ids=missing_doc_ids,
         current_versions=current_versions,
         coverage_mode=coverage_mode,
+        section_summaries=section_summaries,
     )
 
 
@@ -291,7 +303,12 @@ def answer_document_scope(
         "文档摘要检索",
         "正在读取解析范围内的文档摘要和归档正文。",
     )
-    guide_hits = source_guide_hits(plan.guides, tenant_id=tenant_id, acl_groups=acl_groups or [])
+    guide_hits = source_guide_hits(
+        plan.guides,
+        section_summaries=plan.section_summaries,
+        tenant_id=tenant_id,
+        acl_groups=acl_groups or [],
+    )
     emit_stage(
         stage_callback,
         "search",
@@ -452,7 +469,10 @@ def answer_document_scope(
         doc_version=None,
         current_versions=plan.current_versions,
         embedding_model="source_guides",
-        source_types=["source_summary"],
+        source_types=[
+            "source_summary",
+            *(["section_summary"] if plan.section_summaries else []),
+        ],
         doc_ids=plan.resolved_doc_ids,
         filter_expr=document_scope_filter_expr(tenant_id=tenant_id, doc_ids=plan.resolved_doc_ids),
         retrieval_mode="document_scope_coverage",
@@ -665,10 +685,11 @@ def source_docs_to_fallback_guide(*, doc_id: str, docs: list[SourceDocument]) ->
 def source_guide_hits(
     guides: list[SourceGuideRecord],
     *,
+    section_summaries: list[SourceSectionSummary] | None = None,
     tenant_id: str,
     acl_groups: list[str],
 ) -> list[SearchHit]:
-    return [
+    guide_hits = [
         SearchHit(
             id=f"source-guide-{guide.source_doc_id}-{guide.doc_version}",
             score=1.0,
@@ -688,6 +709,40 @@ def source_guide_hits(
         )
         for guide in guides
     ]
+    section_hits = [
+        SearchHit(
+            id=(
+                f"section-summary-{section.source_doc_id}-"
+                f"{section.doc_version}-{section.section_index}"
+            ),
+            score=1.0,
+            text=f"文档标题: {section.title}\n章节提取摘要:\n{section.summary}",
+            doc_id=section.source_doc_id,
+            title=section.title,
+            source_uri=f"section-summary://{section.source_doc_id}/{section.section_index}",
+            source_type="section_summary",
+            chunk_index=section.section_index,
+            tenant_id=tenant_id,
+            acl_groups=acl_groups,
+            metadata={
+                "doc_version": section.doc_version,
+                "coverage_mode": "document_scope_section",
+                "source_doc_id": section.source_doc_id,
+                "section_index": section.section_index,
+            },
+        )
+        for section in (section_summaries or [])
+    ]
+    return [*guide_hits, *section_hits]
+
+
+def detailed_section_intents() -> set[str]:
+    return {
+        SELECTED_DOC_COMPARE,
+        SELECTED_DOC_SYNTHESIS,
+        SELECTED_DOC_EXTRACT,
+        REPORT_GENERATION,
+    }
 
 
 def build_document_scope_query(*, query: str, plan: ScopePlan, map_reduce: bool) -> str:

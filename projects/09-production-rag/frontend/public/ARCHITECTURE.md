@@ -680,7 +680,8 @@ object_store/
 ├── canonical/
 │   ├── source_documents.jsonl              # 所有版本的文档归档
 │   ├── deleted_documents.jsonl             # 删除墓碑记录
-│   └── source_guides.jsonl                # LLM 生成的文档摘要
+│   ├── source_guides.jsonl                  # LLM 生成的文档摘要
+│   └── source_section_summaries.jsonl       # 章节级提取摘要
 ├── current_versions.json                   # {tenant: {doc_id: version}}
 └── artifacts/
     └── <tenant>/
@@ -732,6 +733,12 @@ load_current_versions(object_store_dir, tenant_id)
 - 查询改写阶段提供“资料摘要”
 - 对 PDF 页、图片等子文档查询提供父文档语义背景
 - 重建对象存储时恢复摘要缓存，避免重复 LLM 调用
+
+### 12.5 章节级提取摘要
+
+`canonical/source_section_summaries.jsonl` 按租户、来源文档、版本和章节序号保存确定性提取摘要。
+比较、综合、信息抽取和报告任务会把这些摘要作为独立证据加入上下文预算；普通文档总结仍优先使用更紧凑的源指南。
+该层不增加模型调用，支持本地与 S3/MinIO 后端，并在删除来源时同步清理。
 
 ---
 

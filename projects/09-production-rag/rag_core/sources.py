@@ -39,6 +39,7 @@ from rag_core.object_store import (
     purge_source_documents,
 )
 from rag_core.pii import apply_pii_policy
+from rag_core.section_summaries import delete_source_section_summaries, save_source_section_summaries
 from rag_core.source_guides import delete_source_guides, get_or_create_source_guide, load_source_guide, load_source_guide_full
 from rag_core.text_utils import chunk_document, now_ms
 from rag_core.types import Chunk, SourceDocument
@@ -815,6 +816,13 @@ def generate_ingested_source_guides(
             doc_title=source.title,
             docs=source_docs,
         )
+        save_source_section_summaries(
+            config.object_store_dir,
+            tenant_id=source_docs[0].tenant_id,
+            source_doc_id=source.doc_id,
+            doc_version=source.doc_version,
+            docs=source_docs,
+        )
 
 
 def list_sources(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
@@ -1283,6 +1291,12 @@ def delete_source(
         source_doc_ids={doc_id},
         doc_version=effective_version,
     )
+    deleted_section_summaries = delete_source_section_summaries(
+        config.object_store_dir,
+        tenant_id=tenant_id,
+        source_doc_ids={doc_id},
+        doc_version=effective_version,
+    )
     delete_source_catalog(
         config=config,
         tenant_id=tenant_id,
@@ -1315,6 +1329,7 @@ def delete_source(
         "tombstoned": tombstoned,
         "purged": purged,
         "deleted_source_guides": deleted_source_guides,
+        "deleted_section_summaries": deleted_section_summaries,
     }
 
 
