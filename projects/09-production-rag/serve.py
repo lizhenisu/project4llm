@@ -38,6 +38,7 @@ from rag_core.app_version import app_version
 from rag_core.config import load_config
 from rag_core.conversations import (
     ConversationMessage,
+    ConversationTenantConflictError,
     delete_conversation,
     list_conversation_items,
     load_conversation,
@@ -1862,14 +1863,17 @@ def create_app():
             tenant_id=request.tenant_id,
             acl_groups=[],
         )
-        conversation = save_conversation(
-            config,
-            tenant_id=auth_context.tenant_id,
-            conversation_id=request.id,
-            title=request.title,
-            messages=[message_request_to_domain(message) for message in request.messages],
-            source_doc_ids=request.source_doc_ids,
-        )
+        try:
+            conversation = save_conversation(
+                config,
+                tenant_id=auth_context.tenant_id,
+                conversation_id=request.id,
+                title=request.title,
+                messages=[message_request_to_domain(message) for message in request.messages],
+                source_doc_ids=request.source_doc_ids,
+            )
+        except ConversationTenantConflictError as exc:
+            raise HTTPException(status_code=409, detail="Conversation ID is unavailable") from exc
         return conversation_to_response(conversation)
 
     @app.get("/conversations/{conversation_id}", response_model=ConversationResponse)

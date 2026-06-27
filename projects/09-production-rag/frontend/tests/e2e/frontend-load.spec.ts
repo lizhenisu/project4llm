@@ -535,9 +535,18 @@ test.describe("browser-level frontend load smoke", () => {
     expect(findOverlappingNodePairs(geometry)).toEqual([]);
   });
 
-  test("keeps final answers stable after high-frequency streamed stages", async ({ page, baseURL }) => {
+  test("keeps final answers stable after high-frequency stages and reload", async ({ page, baseURL }) => {
     const now = Date.now();
     let savedMessages = 0;
+    let persistedConversation: {
+      id: string;
+      tenant_id: string;
+      title: string;
+      messages: unknown[];
+      source_doc_ids: string[];
+      created_at: number;
+      updated_at: number;
+    } | null = null;
 
     await page.route("**/api/**", async (route) => {
       const request = route.request();
@@ -583,24 +592,49 @@ test.describe("browser-level frontend load smoke", () => {
         return;
       }
       if (path.endsWith("/conversations") && request.method() === "GET") {
-        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ conversations: [] }) });
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            conversations: persistedConversation
+              ? [{
+                  id: persistedConversation.id,
+                  tenant_id: persistedConversation.tenant_id,
+                  title: persistedConversation.title,
+                  message_count: persistedConversation.messages.length,
+                  source_doc_ids: persistedConversation.source_doc_ids,
+                  created_at: persistedConversation.created_at,
+                  updated_at: persistedConversation.updated_at,
+                }]
+              : [],
+          }),
+        });
         return;
       }
       if (path.endsWith("/conversations") && request.method() === "POST") {
         const body = JSON.parse(request.postData() || "{}") as { messages?: unknown[] };
         savedMessages = body.messages?.length || 0;
+        persistedConversation = {
+          id: "high-frequency-stage-conversation",
+          tenant_id: "browser-load-tenant-960",
+          title: "High frequency stage conversation",
+          messages: body.messages || [],
+          source_doc_ids: [],
+          created_at: now,
+          updated_at: Date.now(),
+        };
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({
-            id: "high-frequency-stage-conversation",
-            tenant_id: "browser-load-tenant-960",
-            title: "High frequency stage conversation",
-            messages: body.messages || [],
-            source_doc_ids: [],
-            created_at: now,
-            updated_at: Date.now(),
-          }),
+          body: JSON.stringify(persistedConversation),
+        });
+        return;
+      }
+      if (path.endsWith("/conversations/high-frequency-stage-conversation") && request.method() === "GET") {
+        await route.fulfill({
+          status: persistedConversation ? 200 : 404,
+          contentType: "application/json",
+          body: JSON.stringify(persistedConversation || { detail: "Conversation not found" }),
         });
         return;
       }
@@ -641,6 +675,9 @@ test.describe("browser-level frontend load smoke", () => {
     await page.waitForTimeout(100);
     await expect(page.getByText("Stable final answer after high-frequency stages.")).toBeVisible();
     await expect.poll(() => savedMessages).toBe(2);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByText("Stable final answer after high-frequency stages.")).toBeVisible();
+    await expect(page.getByText("触发高频 stage")).toBeVisible();
   });
 
   test("compresses large chat image attachments before sending", async ({ page, baseURL }) => {

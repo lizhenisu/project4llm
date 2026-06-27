@@ -14,6 +14,10 @@ from rag_core.text_utils import now_ms
 CONVERSATIONS_DIR = Path("conversations")
 
 
+class ConversationTenantConflictError(ValueError):
+    """Raised when a tenant attempts to reuse another tenant's conversation ID."""
+
+
 @dataclass(frozen=True)
 class ConversationMessage:
     id: str
@@ -241,15 +245,21 @@ def delete_conversation(
 
 def save_conversation_row(config: RagConfig, conversation: Conversation) -> None:
     with connect_metadata_db(config) as conn:
-        conn.execute(
+        existing = conn.execute(
+            "SELECT tenant_id FROM conversations WHERE id = ?",
+            (conversation.id,),
+        ).fetchone()
+        if existing is not None and str(existing["tenant_id"]) != conversation.tenant_id:
+            raise ConversationTenantConflictError("Conversation ID belongs to another tenant")
+        cursor = conn.execute(
             """
             INSERT INTO conversations(id, tenant_id, title, source_doc_ids, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                tenant_id = excluded.tenant_id,
                 title = excluded.title,
                 source_doc_ids = excluded.source_doc_ids,
                 updated_at = excluded.updated_at
+            WHERE conversations.tenant_id = excluded.tenant_id
             """,
             (
                 conversation.id,
@@ -260,6 +270,8 @@ def save_conversation_row(config: RagConfig, conversation: Conversation) -> None
                 conversation.updated_at,
             ),
         )
+        if cursor.rowcount == 0:
+            raise ConversationTenantConflictError("Conversation ID belongs to another tenant")
         conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation.id,))
         for index, message in enumerate(conversation.messages):
             conn.execute(
