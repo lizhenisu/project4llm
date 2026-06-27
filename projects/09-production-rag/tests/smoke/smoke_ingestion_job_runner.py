@@ -27,12 +27,13 @@ def test_ingestion_runner_limits_concurrency_and_cleans_successful_tasks() -> No
     lock = threading.Lock()
     started = threading.Event()
     release = threading.Event()
-    state = {"active": 0, "max_active": 0, "deleted": [], "claims": []}
+    state = {"active": 0, "max_active": 0, "deleted": [], "claims": [], "doc_versions": []}
 
     def fake_ingest_uploaded_path(**kwargs):
         with lock:
             state["active"] += 1
             state["max_active"] = max(state["max_active"], state["active"])
+            state["doc_versions"].append(kwargs["doc_version"])
         started.set()
         release.wait(timeout=5)
         with lock:
@@ -83,6 +84,7 @@ def test_ingestion_runner_limits_concurrency_and_cleans_successful_tasks() -> No
 
     assert state["max_active"] == 1
     assert state["claims"] == ["task-1"]
+    assert state["doc_versions"] == [None]
 
 
 def test_ingestion_runner_limits_per_tenant_inflight_tasks() -> None:

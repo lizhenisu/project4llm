@@ -53,6 +53,7 @@ MAX_EMBEDDABLE_IMAGE_ASPECT_RATIO = 20.0
 SUPPORTED_FILE_SUFFIXES = {".pdf", ".html", ".htm", ".md", ".txt", ".csv", ".tsv"}
 _SOURCE_LIST_CACHE_LOCK = threading.Lock()
 _SOURCE_LIST_CACHE: dict[tuple[str, str, str], tuple[float, list["SourceSummary"]]] = {}
+_REQUESTED_DOC_VERSION_UNSET = object()
 
 
 class UploadTooLargeError(ValueError):
@@ -92,6 +93,7 @@ class IngestSummary:
 class QueuedSourceTask:
     tenant_id: str
     source: SourceSummary
+    requested_doc_version: int | None
 
 
 @dataclass(frozen=True)
@@ -273,19 +275,36 @@ def create_source_task(
         updated_at=timestamp,
         child_doc_ids=[],
     )
-    save_source_task_for_tenant(config=config, tenant_id=tenant_id, source=source)
+    save_source_task_for_tenant(
+        config=config,
+        tenant_id=tenant_id,
+        source=source,
+        requested_doc_version=doc_version,
+    )
     return source
 
 
-def save_source_task_for_tenant(*, config: RagConfig, tenant_id: str, source: SourceSummary, error: str = "") -> None:
+def save_source_task_for_tenant(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    source: SourceSummary,
+    error: str = "",
+    requested_doc_version: int | None | object = _REQUESTED_DOC_VERSION_UNSET,
+) -> None:
+    resolved_requested_version = (
+        source.doc_version
+        if requested_doc_version is _REQUESTED_DOC_VERSION_UNSET
+        else requested_doc_version
+    )
     with connect_metadata_db(config) as conn:
         conn.execute(
             """
             INSERT INTO source_tasks(
                 id, tenant_id, doc_id, title, source_type, source_uri, doc_version,
-                acl_groups, status, error, created_at, updated_at
+                acl_groups, status, error, requested_doc_version, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 error = excluded.error,
@@ -304,6 +323,7 @@ def save_source_task_for_tenant(*, config: RagConfig, tenant_id: str, source: So
                 json.dumps(source.acl_groups, ensure_ascii=False),
                 source.status,
                 error,
+                resolved_requested_version,
                 source.created_at or now_ms(),
                 source.updated_at or now_ms(),
             ),
@@ -1103,7 +1123,7 @@ def list_queued_source_tasks(*, config: RagConfig, limit: int = 100) -> list[Que
         rows = conn.execute(
             """
             SELECT tenant_id, doc_id, title, source_type, source_uri, doc_version, acl_groups,
-                   status, error, created_at, updated_at
+                   status, error, requested_doc_version, created_at, updated_at
             FROM source_tasks
             WHERE status = 'queued'
             ORDER BY created_at ASC
@@ -1128,6 +1148,11 @@ def list_queued_source_tasks(*, config: RagConfig, limit: int = 100) -> list[Que
                 updated_at=int(row["updated_at"] or 0),
                 child_doc_ids=[],
                 error=str(row["error"] or ""),
+            ),
+            requested_doc_version=(
+                int(row["requested_doc_version"])
+                if row["requested_doc_version"] is not None
+                else None
             ),
         )
         for row in rows

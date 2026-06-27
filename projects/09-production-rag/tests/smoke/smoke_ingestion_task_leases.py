@@ -22,8 +22,10 @@ from rag_core.ingestion_jobs import IngestionJobRunner  # noqa: E402
 from rag_core.sources import (  # noqa: E402
     SourceSummary,
     claim_source_task_for_processing,
+    create_source_task,
     delete_source_task,
     fail_source_task,
+    list_queued_source_tasks,
     renew_source_task_lease,
     requeue_stale_processing_source_tasks,
     save_source_task_for_tenant,
@@ -44,6 +46,7 @@ def main() -> None:
         )
         ensure_schema(config)
         test_atomic_claim_and_owner_guard(config)
+        test_requested_version_survives_persistence(config)
         test_expired_lease_can_be_reclaimed(config)
         test_two_runners_execute_once_and_renew(config)
         test_restarted_worker_recovers_expired_process_lease(config)
@@ -100,6 +103,34 @@ def test_atomic_claim_and_owner_guard(config) -> None:
         task_id=source.doc_id,
         lease_owner=owner,
     ) is True
+
+
+def test_requested_version_survives_persistence(config) -> None:
+    auto_source = create_source_task(
+        config=config,
+        tenant_id=TENANT_ID,
+        path=config.object_store_dir / "auto-version.pdf",
+        acl_groups=["engineering"],
+        doc_version=None,
+    )
+    explicit_source = create_source_task(
+        config=config,
+        tenant_id=TENANT_ID,
+        path=config.object_store_dir / "explicit-version.pdf",
+        acl_groups=["engineering"],
+        doc_version=7,
+    )
+    queued = {
+        record.source.doc_id: record
+        for record in list_queued_source_tasks(config=config, limit=1000)
+        if record.tenant_id == TENANT_ID
+    }
+    assert queued[auto_source.doc_id].source.doc_version == 1
+    assert queued[auto_source.doc_id].requested_doc_version is None
+    assert queued[explicit_source.doc_id].source.doc_version == 7
+    assert queued[explicit_source.doc_id].requested_doc_version == 7
+    assert delete_source_task(config=config, tenant_id=TENANT_ID, task_id=auto_source.doc_id)
+    assert delete_source_task(config=config, tenant_id=TENANT_ID, task_id=explicit_source.doc_id)
 
 
 def test_expired_lease_can_be_reclaimed(config) -> None:

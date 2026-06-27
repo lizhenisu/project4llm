@@ -79,6 +79,7 @@ class IngestionJobRunner:
             tenant_slot,
             language,
             lease_owner,
+            doc_version,
         )
         return True
 
@@ -130,6 +131,7 @@ class IngestionJobRunner:
                         tenant_slot,
                         "zh",
                         lease_owner,
+                        record.requested_doc_version,
                     )
                     scheduled = True
                     break
@@ -146,6 +148,7 @@ class IngestionJobRunner:
         tenant_slot: threading.BoundedSemaphore,
         language: str,
         lease_owner: str,
+        requested_doc_version: int | None,
     ) -> None:
         stop_renewal = threading.Event()
         lease_valid = threading.Event()
@@ -164,7 +167,7 @@ class IngestionJobRunner:
                 path=Path(source.source_uri),
                 tenant_id=tenant_id,
                 acl_groups=source.acl_groups,
-                doc_version=source.doc_version,
+                doc_version=requested_doc_version,
                 language=language,
             )
             if lease_valid.is_set():
