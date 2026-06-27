@@ -565,7 +565,7 @@ def normalize_table(raw: dict[str, Any], *, default_title: str) -> dict[str, Any
         clean_row = [clean_table_cell(value) for value in values[: len(clean_columns)]]
         if len(clean_row) < len(clean_columns):
             clean_row.extend(["未提及"] * (len(clean_columns) - len(clean_row)))
-        if any(cell and cell != "未提及" for cell in clean_row):
+        if table_row_has_information(clean_row):
             clean_rows.append(clean_row)
     return {
         "title": clean_table_cell(raw.get("title")) or default_title or "数据表格",
@@ -590,6 +590,8 @@ def merge_tables(tables: list[dict[str, Any]], *, default_title: str) -> dict[st
         for raw_row in table.get("rows") or []:
             row = [clean_table_cell(value) for value in list(raw_row)]
             row = align_table_row(row, table_columns, columns)
+            if not table_row_has_information(row):
+                continue
             row_key = tuple(row)
             if row_key in seen_rows:
                 continue
@@ -617,6 +619,40 @@ def align_table_row(row: list[str], source_columns: list[Any], target_columns: l
 
 def clean_table_cell(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()[:260]
+
+
+def table_row_has_information(row: list[str]) -> bool:
+    return any(table_cell_has_information(cell) for cell in row)
+
+
+def table_cell_has_information(value: Any) -> bool:
+    cell = clean_table_cell(value)
+    if not cell:
+        return False
+    normalized = re.sub(r"[\s。.!！,，;；:：_\-/—–]+", "", cell).lower()
+    empty_markers = {
+        "无",
+        "暂无",
+        "未知",
+        "不详",
+        "未提及",
+        "未说明",
+        "没有提及",
+        "无相关信息",
+        "暂无信息",
+        "unknown",
+        "na",
+        "notmentioned",
+        "notspecified",
+        "null",
+        "none",
+    }
+    if normalized in empty_markers:
+        return False
+    return re.fullmatch(
+        r"(?:文档|资料|原文|来源)?(?:中|内)?(?:未提及|未说明|没有提及|无相关信息|暂无信息)",
+        normalized,
+    ) is None
 
 
 def source_page_no(doc) -> int:

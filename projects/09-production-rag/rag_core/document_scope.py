@@ -214,7 +214,7 @@ def classify_document_route(
             scope=RETRIEVAL_DISCOVERED_DOCUMENTS,
             coverage_required=False,
             explicit_doc_refs=[],
-            reason="no selected or explicit document scope",
+            reason="当前没有选中或明确提及的文档，按普通对话处理。",
             confidence=0.9,
         )
     explicit_refs = [guide.source_doc_id for guide in explicit_guides]
@@ -228,14 +228,14 @@ def classify_document_route(
             scope=scope,
             coverage_required=False,
             explicit_doc_refs=explicit_refs,
-            reason="question appears answerable from a few relevant chunks",
+            reason="该问题可由少量相关证据回答，无需逐份覆盖范围内的全部文档。",
             confidence=0.72 if not explicit_guides else 0.82,
         )
     coverage_required = True
-    reason = "query asks for summary, synthesis, comparison, extraction, or report generation over the resolved document scope"
+    reason = "该任务需要对解析范围内的文档进行总结、综合、比较、抽取或报告生成。"
     if intent == LOCAL_QA and is_ambiguous_scope_query(normalized) and len(selected_doc_ids) >= 2:
         intent = SELECTED_DOC_SYNTHESIS
-        reason = "ambiguous broad query with multiple selected documents; prefer coverage-aware synthesis"
+        reason = "问题表述较宽泛且选中了多个文档，采用覆盖式综合以避免遗漏。"
     return DocumentRoute(
         intent=intent,
         scope=scope,
@@ -280,20 +280,66 @@ def answer_document_scope(
         "coverage_plan",
         "active",
         "覆盖范围规划",
-        f"正在按 {plan.route.intent} 处理 {len(plan.resolved_doc_ids)} 个文档。",
+        f"正在按“{document_intent_label(plan.route.intent)}”处理 {len(plan.resolved_doc_ids)} 个文档。",
         **plan.route.as_dict(),
         **plan.coverage(),
     )
+    emit_stage(
+        stage_callback,
+        "search",
+        "active",
+        "文档摘要检索",
+        "正在读取解析范围内的文档摘要和归档正文。",
+    )
     guide_hits = source_guide_hits(plan.guides, tenant_id=tenant_id, acl_groups=acl_groups or [])
+    emit_stage(
+        stage_callback,
+        "search",
+        "done",
+        "文档摘要检索",
+        f"已读取 {len(guide_hits)} 份文档证据。",
+        candidate_count=len(guide_hits),
+    )
+    emit_stage(
+        stage_callback,
+        "context",
+        "active",
+        "上下文组装",
+        "正在根据上下文预算组织文档证据。",
+    )
     max_chars = max(1000, config.max_context_chars)
     start = perf_counter()
     if total_hit_chars(guide_hits) <= max_chars:
         coverage_mode = ALL_DOCS_SUMMARY if plan.route.scope != EXPLICIT_NAMED_DOCUMENTS else EXPLICIT_DOCS_ONLY
         final_hits = guide_hits
+        emit_stage(
+            stage_callback,
+            "context",
+            "done",
+            "上下文组装",
+            f"已选择 {len(final_hits)} 份文档证据进入回答上下文。",
+            context_count=len(final_hits),
+        )
+        emit_stage(
+            stage_callback,
+            "answer",
+            "active",
+            "大模型最终输出",
+            "正在基于完整文档范围生成最终回答。",
+        )
         generation = generate_answer(
             config,
             build_document_scope_query(query=query, plan=plan, map_reduce=False),
             final_hits,
+        )
+        emit_stage(
+            stage_callback,
+            "answer",
+            "done",
+            "大模型最终输出",
+            "最终回答已生成。",
+            latency_ms=generation.latency_ms,
+            llm_model=generation.llm_model,
         )
         document_map_count = 0
     else:
@@ -348,10 +394,34 @@ def answer_document_scope(
             "正在合并批次摘要生成最终回答。",
         )
         final_hits = partial_hits
+        emit_stage(
+            stage_callback,
+            "context",
+            "done",
+            "上下文组装",
+            f"已将 {len(final_hits)} 个批次摘要组装为最终回答上下文。",
+            context_count=len(final_hits),
+        )
+        emit_stage(
+            stage_callback,
+            "answer",
+            "active",
+            "大模型最终输出",
+            "正在综合全部批次摘要生成最终回答。",
+        )
         generation = generate_answer(
             config,
             build_document_scope_query(query=query, plan=plan, map_reduce=False),
             final_hits,
+        )
+        emit_stage(
+            stage_callback,
+            "answer",
+            "done",
+            "大模型最终输出",
+            "最终回答已生成。",
+            latency_ms=generation.latency_ms,
+            llm_model=generation.llm_model,
         )
         emit_stage(
             stage_callback,
@@ -411,7 +481,7 @@ def answer_document_scope(
     )
     return DocumentAnswerResult(
         request_id=resolved_request_id,
-        answer=prepend_coverage_note(generation.answer, plan=plan, coverage_mode=coverage_mode),
+        answer=generation.answer,
         hits=final_hits,
         candidates=guide_hits,
         reranked=guide_hits,
@@ -643,22 +713,24 @@ def build_document_scope_query(*, query: str, plan: ScopePlan, map_reduce: bool)
     )
 
 
-def prepend_coverage_note(answer: str, *, plan: ScopePlan, coverage_mode: str) -> str:
-    note = (
-        f"覆盖范围：已覆盖 {len(plan.guides)}/{len(plan.resolved_doc_ids)} 个解析范围文档"
-        f"（模式：{coverage_mode}）。"
-    )
-    if plan.missing_doc_ids:
-        note += f" 未覆盖：{', '.join(plan.missing_doc_ids)}。"
-    return f"{note}\n\n{answer}"
-
-
 def coverage_mode_for(route: DocumentRoute) -> str:
     if not route.coverage_required:
         return TOP_K
     if route.scope == EXPLICIT_NAMED_DOCUMENTS:
         return EXPLICIT_DOCS_ONLY
     return ALL_DOCS_SUMMARY
+
+
+def document_intent_label(intent: str) -> str:
+    return {
+        LOCAL_QA: "局部问答",
+        SELECTED_DOC_SUMMARY: "选中文档总结",
+        SELECTED_DOC_COMPARE: "选中文档比较",
+        SELECTED_DOC_SYNTHESIS: "选中文档综合",
+        SELECTED_DOC_EXTRACT: "选中文档信息抽取",
+        REPORT_GENERATION: "报告生成",
+        OPEN_CHAT: "普通对话",
+    }.get(intent, "文档任务")
 
 
 def document_scope_filter_expr(*, tenant_id: str, doc_ids: list[str]) -> str:

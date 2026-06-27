@@ -152,7 +152,7 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
   });
 
-  test("shows elapsed time and recovery guidance for stale ingestion", async ({ page, baseURL }) => {
+  test("shows stable status text and recovery guidance for ingestion", async ({ page, baseURL }) => {
     const staleSource = {
       ...mockSource("stale-ingestion.txt", 700, "processing"),
       created_at: Date.now() - 35 * 60 * 1000,
@@ -171,8 +171,10 @@ test.describe("browser-level frontend load smoke", () => {
     await page.goto(baseURL || "http://127.0.0.1:5173", { waitUntil: "domcontentloaded" });
     const row = page.locator(".source-row.is-stale-task", { hasText: "stale-ingestion.txt" });
     await expect(row).toBeVisible();
-    await expect(row.getByText(/已持续 31 分钟/)).toBeVisible();
+    await expect(row.getByText("处理中")).toBeVisible();
+    await expect(row.getByText("处理时间已超过 30 分钟")).toBeVisible();
     await expect(row.getByText("疑似停滞，系统将自动尝试恢复")).toBeVisible();
+    await expect(row.getByText(/已等待|已处理|完成时间取决于当前队列/)).toHaveCount(0);
   });
 
   test("queues extra uploads beyond the per-page upload limit", async ({ page, baseURL }) => {
@@ -227,6 +229,8 @@ test.describe("browser-level frontend load smoke", () => {
     await expect(page.locator(".source-row.status-uploading", { hasText: names[0] })).toBeVisible();
     await expect(page.locator(".source-row.status-uploading", { hasText: names[1] })).toBeVisible();
     await expect(page.locator(".source-row.status-queued", { hasText: names[2] })).toBeVisible();
+    await expect(page.locator(".source-row.status-queued", { hasText: names[2] }).getByText("排队中")).toBeVisible();
+    await expect(page.getByText(/已等待|完成时间取决于当前队列/)).toHaveCount(0);
     expect(uploadPostCount).toBe(2);
 
     readyUploads.add(0);

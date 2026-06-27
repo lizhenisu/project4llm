@@ -156,6 +156,7 @@ def test_missing_source_guides_fall_back_to_archived_documents() -> None:
 
 def test_answer_query_uses_all_selected_doc_guides_for_summary() -> None:
     captured: dict[str, object] = {}
+    stages: list[dict[str, object]] = []
     with tempfile.TemporaryDirectory() as tmp:
         config = fake_config(tmp)
         write_guides(config.object_store_dir, count=6)
@@ -171,14 +172,29 @@ def test_answer_query_uses_all_selected_doc_guides_for_summary() -> None:
                 doc_ids=[f"doc-{index}" for index in range(1, 7)],
                 doc_version=1,
                 request_id="smoke-doc-scope-summary",
+                stage_callback=stages.append,
             )
 
-    assert result.answer.startswith("覆盖范围：已覆盖 6/6 个解析范围文档")
+    assert result.answer == "document answer [1] [2] [3] [4] [5] [6]"
     assert result.trace.retrieval_mode == "document_scope_coverage"
     assert result.trace.intent_router["intent"] == SELECTED_DOC_SUMMARY
     assert result.trace.coverage_plan["covered_doc_count"] == 6
     assert len(captured["hits"]) == 6
     assert all(hit.source_type == "source_summary" for hit in captured["hits"])
+    assert [stage["stage"] for stage in stages] == [
+        "intent_router",
+        "scope_resolution",
+        "coverage_plan",
+        "search",
+        "search",
+        "context",
+        "context",
+        "answer",
+        "answer",
+        "coverage_plan",
+    ]
+    assert all("False" not in str(stage["detail"]) for stage in stages)
+    assert all("True" not in str(stage["detail"]) for stage in stages)
 
 
 def test_explicit_local_question_narrows_scope_then_uses_top_k() -> None:
@@ -264,9 +280,11 @@ def test_large_scope_uses_map_reduce_when_guides_exceed_budget() -> None:
     assert result.trace.coverage_plan["covered_doc_count"] == 5
     assert result.trace.coverage_plan["document_map_batches"] >= 2
     assert len(captured["calls"]) >= 3
-    assert result.answer.startswith("覆盖范围：已覆盖 5/5 个解析范围文档")
+    assert result.answer == "final reduced answer [1]"
     reduce_stages = [stage for stage in stages if stage["stage"] == "document_reduce"]
     assert [stage["status"] for stage in reduce_stages] == ["active", "done"]
+    assert [stage["status"] for stage in stages if stage["stage"] == "answer"] == ["active", "done"]
+    assert [stage["status"] for stage in stages if stage["stage"] == "context"] == ["active", "done"]
 
 
 def write_guides(object_store_dir: Path, *, count: int, guide_suffix: str = "") -> None:

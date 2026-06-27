@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from rag_core.artifacts import create_table_artifact, load_artifact
+from rag_core.artifacts import create_table_artifact, load_artifact, merge_tables, normalize_table
 from rag_core.config import load_config
 from rag_core.object_store import archive_source_documents
 from rag_core.types import SourceDocument
@@ -29,14 +29,21 @@ class FakeOpenAI:
         assert "JSON schema" in user_prompt
         self.calls.append({"messages": messages, "temperature": temperature})
         if "SECOND_CHUNK_UNIQUE_MARKER" in user_prompt:
-            rows = [["后半部分岗位", "覆盖长文档后半段", "不能丢弃第二块"]]
+            rows = [
+                ["未提及", "未提及", "未提及"],
+                ["后半部分岗位", "覆盖长文档后半段", "不能丢弃第二块"],
+            ]
         elif "岗位职责" in user_prompt:
             rows = [
                 ["大模型应用开发实习生", "开发 RAG 与智能体应用", "熟悉 Python 和 LLM"],
+                ["文档中未提及。", "暂无", "N/A"],
                 ["前端工程实习生", "构建知识库交互界面", "熟悉 TypeScript"],
             ]
         else:
-            rows = [["补充说明", "覆盖长文档中间部分", "不能跳过中间块"]]
+            rows = [
+                ["未说明", "未知", "无相关信息"],
+                ["补充说明", "覆盖长文档中间部分", "不能跳过中间块"],
+            ]
         content = {
             "title": "实习岗位数据表格",
             "columns": ["岗位", "职责", "要求"],
@@ -112,6 +119,31 @@ def main() -> None:
     assert loaded.table["columns"] == ["岗位", "职责", "要求"]
     assert loaded.table["rows"][0][0] == "大模型应用开发实习生"
     assert loaded.table["rows"][-1][0] == "后半部分岗位"
+    assert all(any(cell not in {"未提及", "未说明", "暂无"} for cell in row) for row in loaded.table["rows"])
+    assert normalize_table(
+        {
+            "columns": ["甲", "乙"],
+            "rows": [["未提及。", "N/A"], ["有效信息", "未提及"]],
+        },
+        default_title="测试",
+    )["rows"] == [["有效信息", "未提及"]]
+    assert merge_tables(
+        [
+            {
+                "title": "测试",
+                "columns": ["甲", "乙"],
+                "rows": [["有效信息", "值"]],
+                "summary": "",
+            },
+            {
+                "title": "测试",
+                "columns": ["丙", "丁"],
+                "rows": [["无法对齐", "仍无法对齐"]],
+                "summary": "",
+            },
+        ],
+        default_title="测试",
+    )["rows"] == [["有效信息", "值"]]
     print("table artifact llm smoke passed")
 
 

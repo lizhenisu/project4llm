@@ -68,7 +68,10 @@ def answer_query(
         "scope_resolution",
         "done",
         "文档范围解析",
-        f"已解析 {len(scope_plan.resolved_doc_ids)} 个文档，覆盖要求为 {scope_plan.route.coverage_required}。",
+        (
+            f"已解析 {len(scope_plan.resolved_doc_ids)} 个文档；"
+            f"{'需要逐份覆盖全部文档' if scope_plan.route.coverage_required else '无需逐份覆盖全部文档'}。"
+        ),
         selected_doc_ids=scope_plan.selected_doc_ids,
         resolved_doc_ids=scope_plan.resolved_doc_ids,
         missing_or_skipped_doc_ids=scope_plan.missing_doc_ids,
