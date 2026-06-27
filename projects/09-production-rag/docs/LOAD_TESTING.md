@@ -92,3 +92,23 @@ The directory contains:
 - `concurrency-*.stdout` and `concurrency-*.stderr`: raw runner logs for each level.
 
 The report directory is runtime output. Do not commit it if it contains source identifiers, filenames, or other user-private data.
+
+## Conversation API load
+
+To isolate PostgreSQL conversation persistence from model and Milvus latency, run
+the create/update/list/read/delete workflow against one or more API instances:
+
+```bash
+source .venv/bin/activate
+python projects/09-production-rag/tests/load/conversation_api_load.py \
+  --base-urls http://127.0.0.1:18181,http://127.0.0.1:18182 \
+  --token synthetic-test-token \
+  --users 1000 \
+  --concurrency 100
+```
+
+Each virtual user owns a synthetic tenant and a unique conversation. Consecutive
+operations rotate across the supplied API origins, validate read-after-write
+consistency, and delete the conversation at the end. The summary reports workflow
+and request throughput plus per-operation p50/p95/p99 latency. Use a synthetic
+token and tenant prefix, and do not commit output from runs against real users.
