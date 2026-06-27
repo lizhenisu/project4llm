@@ -27,6 +27,7 @@ from rag_core.types import SearchHit, SourceDocument, TraceInfo
 
 def main() -> None:
     test_router_requires_coverage_for_selected_doc_summary()
+    test_page_ids_collapse_to_unique_uploaded_documents()
     test_ambiguous_risk_question_requires_selected_doc_coverage()
     test_missing_source_guides_fall_back_to_archived_documents()
     test_answer_query_uses_all_selected_doc_guides_for_summary()
@@ -52,6 +53,45 @@ def test_router_requires_coverage_for_selected_doc_summary() -> None:
     assert plan.resolved_doc_ids == [f"doc-{index}" for index in range(1, 7)]
     assert len(plan.guides) == 6
     assert plan.coverage()["covered_doc_count"] == 6
+
+
+def test_page_ids_collapse_to_unique_uploaded_documents() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = fake_config(tmp)
+        rows = []
+        selected = []
+        for document_index in range(1, 4):
+            source_id = f"paper-{document_index}"
+            selected.extend(f"{source_id}/page-{page_index}" for page_index in range(1, 20))
+            for revision in range(1, 5):
+                rows.append(
+                    {
+                        "tenant_id": "team_a",
+                        "source_doc_id": source_id,
+                        "doc_version": 1,
+                        "title": f"Paper {document_index}",
+                        "guide": f"Paper {document_index} summary revision {revision}.",
+                    }
+                )
+        path = config.object_store_dir / "canonical" / "source_guides.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_jsonl(path, rows)
+
+        plan = build_scope_plan(
+            config=config,
+            tenant_id="team_a",
+            query="总结这些资料的核心内容",
+            doc_ids=selected,
+            doc_version=1,
+            include_all_sources=False,
+        )
+
+    assert len(selected) == 57
+    assert plan.selected_doc_ids == ["paper-1", "paper-2", "paper-3"]
+    assert plan.resolved_doc_ids == ["paper-1", "paper-2", "paper-3"]
+    assert len(plan.guides) == 3
+    assert plan.coverage()["covered_doc_count"] == 3
+    assert plan.guides[0].guide.endswith("revision 4.")
 
 
 def test_ambiguous_risk_question_requires_selected_doc_coverage() -> None:
@@ -169,6 +209,7 @@ def test_explicit_local_question_narrows_scope_then_uses_top_k() -> None:
 
 def test_large_scope_uses_map_reduce_when_guides_exceed_budget() -> None:
     captured: dict[str, object] = {"calls": []}
+    stages: list[dict[str, object]] = []
     with tempfile.TemporaryDirectory() as tmp:
         config = fake_config(tmp, max_context_chars=180)
         write_guides(config.object_store_dir, count=5, guide_suffix=" " + ("long evidence " * 20))
@@ -184,6 +225,7 @@ def test_large_scope_uses_map_reduce_when_guides_exceed_budget() -> None:
                 doc_ids=[f"doc-{index}" for index in range(1, 6)],
                 doc_version=1,
                 request_id="smoke-doc-scope-map-reduce",
+                stage_callback=stages.append,
             )
 
     assert result.trace.coverage_plan["coverage_mode"] == PER_DOC_MAP_REDUCE
@@ -191,6 +233,8 @@ def test_large_scope_uses_map_reduce_when_guides_exceed_budget() -> None:
     assert result.trace.coverage_plan["document_map_batches"] >= 2
     assert len(captured["calls"]) >= 3
     assert result.answer.startswith("覆盖范围：已覆盖 5/5 个解析范围文档")
+    reduce_stages = [stage for stage in stages if stage["stage"] == "document_reduce"]
+    assert [stage["status"] for stage in reduce_stages] == ["active", "done"]
 
 
 def write_guides(object_store_dir: Path, *, count: int, guide_suffix: str = "") -> None:

@@ -148,6 +148,10 @@ def build_scope_plan(
         doc_version=doc_version,
         current_versions=None if include_all_sources else current_versions,
     )
+    selected_doc_ids = collapse_selected_doc_ids(
+        selected_doc_ids,
+        available_guides=available_guides,
+    )
     explicit_guides = match_explicit_guides(query=query, guides=available_guides)
     route = classify_document_route(
         query=query,
@@ -349,6 +353,14 @@ def answer_document_scope(
             build_document_scope_query(query=query, plan=plan, map_reduce=False),
             final_hits,
         )
+        emit_stage(
+            stage_callback,
+            "document_reduce",
+            "done",
+            "文档综合归纳",
+            "批次摘要已合并，最终回答已生成。",
+            latency_ms=generation.latency_ms,
+        )
         document_map_count = len(partial_hits)
     latency_ms = elapsed_ms(start)
     emit_stage(
@@ -418,7 +430,7 @@ def load_available_source_guides(
     path = config.object_store_dir / SOURCE_GUIDES_PATH
     if not path.exists():
         return []
-    guides: list[SourceGuideRecord] = []
+    guides_by_source: dict[str, SourceGuideRecord] = {}
     for row in read_jsonl(path):
         if str(row.get("tenant_id")) != tenant_id:
             continue
@@ -434,16 +446,31 @@ def load_available_source_guides(
             current = current_source_guide_version(source_doc_id, current_doc_versions=current_versions)
             if current != row_version:
                 continue
-        guides.append(
-            SourceGuideRecord(
-                tenant_id=tenant_id,
-                source_doc_id=source_doc_id,
-                doc_version=row_version,
-                title=str(row.get("title") or source_doc_id).strip(),
-                guide=guide,
-            )
+        guides_by_source[source_doc_id] = SourceGuideRecord(
+            tenant_id=tenant_id,
+            source_doc_id=source_doc_id,
+            doc_version=row_version,
+            title=str(row.get("title") or source_doc_id).strip(),
+            guide=guide,
         )
-    return guides
+    return list(guides_by_source.values())
+
+
+def collapse_selected_doc_ids(
+    selected_doc_ids: list[str],
+    *,
+    available_guides: list[SourceGuideRecord],
+) -> list[str]:
+    """Convert page/image child IDs into logical uploaded-document IDs."""
+    collapsed: list[str] = []
+    for doc_id in selected_doc_ids:
+        matching_source_ids = [
+            guide.source_doc_id
+            for guide in available_guides
+            if source_guide_matches_any_doc_id(guide.source_doc_id, {doc_id})
+        ]
+        collapsed.extend(matching_source_ids or [doc_id])
+    return stable_unique(collapsed)
 
 
 def match_explicit_guides(*, query: str, guides: list[SourceGuideRecord]) -> list[SourceGuideRecord]:
