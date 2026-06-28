@@ -6,6 +6,7 @@ import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import type { ChatMessage, Citation, RagProgressStage, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
+import { ProtectedImage } from "../ui/ProtectedImage";
 
 const markdownRemarkPlugins = [remarkMath];
 const markdownRehypePlugins = [rehypeKatex];
@@ -22,6 +23,8 @@ type Props = {
   busy: boolean;
   conversationTitle: string;
   typingMessageId: string | null;
+  assetToken?: string;
+  assetApiBaseUrl?: string;
   onTypingComplete: () => void;
   onAsk: (query: string, imageDataUrl?: string | null) => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
@@ -35,6 +38,8 @@ export function ChatPanel({
   busy,
   conversationTitle,
   typingMessageId,
+  assetToken,
+  assetApiBaseUrl,
   onTypingComplete,
   onAsk,
   onFeedback,
@@ -261,6 +266,8 @@ export function ChatPanel({
                   onTypingComplete={handleTypingComplete}
                   onFeedback={handleFeedback}
                   onPreviewImage={setPreviewImage}
+                  assetToken={assetToken}
+                  assetApiBaseUrl={assetApiBaseUrl}
                 />
               ),
             )}
@@ -342,7 +349,14 @@ export function ChatPanel({
           </button>
         </div>
       </div>
-      {previewImage ? <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} /> : null}
+      {previewImage ? (
+        <ImagePreview
+          image={previewImage}
+          assetToken={assetToken}
+          assetApiBaseUrl={assetApiBaseUrl}
+          onClose={() => setPreviewImage(null)}
+        />
+      ) : null}
     </section>
   );
 }
@@ -454,12 +468,16 @@ const AssistantMessage = memo(function AssistantMessage({
   onTypingComplete,
   onFeedback,
   onPreviewImage,
+  assetToken,
+  assetApiBaseUrl,
 }: {
   message: ChatMessage;
   typing: boolean;
   onTypingComplete: () => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
   onPreviewImage: (image: { url: string; title: string }) => void;
+  assetToken?: string;
+  assetApiBaseUrl?: string;
 }) {
   const [copied, setCopied] = useState(false);
   const [ragOpen, setRagOpen] = useState(false);
@@ -510,7 +528,14 @@ const AssistantMessage = memo(function AssistantMessage({
         <ReactMarkdown remarkPlugins={markdownRemarkPlugins} rehypePlugins={markdownRehypePlugins}>{text}</ReactMarkdown>
       )}
       {typing && !done ? <span className="type-caret" aria-hidden="true" /> : null}
-      {showControls && message.citations?.length ? <Citations message={message} onPreviewImage={onPreviewImage} /> : null}
+      {showControls && message.citations?.length ? (
+        <Citations
+          message={message}
+          onPreviewImage={onPreviewImage}
+          assetToken={assetToken}
+          assetApiBaseUrl={assetApiBaseUrl}
+        />
+      ) : null}
       {showControls ? (
         <div className="message-actions">
           <button type="button" onClick={() => {
@@ -649,9 +674,13 @@ function useTypewriter(content: string, enabled: boolean) {
 function Citations({
   message,
   onPreviewImage,
+  assetToken,
+  assetApiBaseUrl,
 }: {
   message: ChatMessage;
   onPreviewImage: (image: { url: string; title: string }) => void;
+  assetToken?: string;
+  assetApiBaseUrl?: string;
 }) {
   return (
     <div className="citations">
@@ -673,7 +702,14 @@ function Citations({
                       aria-label={`查看${image.title || "引用图片"}`}
                       onClick={() => onPreviewImage({ url: image.url, title: image.title || "引用图片" })}
                     >
-                      <img src={image.url} alt={image.title || "引用图片"} loading="lazy" decoding="async" />
+                      <ProtectedImage
+                        src={image.url}
+                        token={assetToken}
+                        apiBaseUrl={assetApiBaseUrl}
+                        alt={image.title || "引用图片"}
+                        loading="lazy"
+                        decoding="async"
+                      />
                     </button>
                     {image.title ? <figcaption>{image.title}</figcaption> : null}
                   </figure>
@@ -687,7 +723,17 @@ function Citations({
   );
 }
 
-function ImagePreview({ image, onClose }: { image: { url: string; title: string }; onClose: () => void }) {
+function ImagePreview({
+  image,
+  assetToken,
+  assetApiBaseUrl,
+  onClose,
+}: {
+  image: { url: string; title: string };
+  assetToken?: string;
+  assetApiBaseUrl?: string;
+  onClose: () => void;
+}) {
   return (
     <div className="modal-backdrop image-preview-backdrop" role="presentation" onMouseDown={onClose}>
       <div
@@ -700,7 +746,13 @@ function ImagePreview({ image, onClose }: { image: { url: string; title: string 
         <button className="close-button" type="button" aria-label="关闭图片预览" onClick={onClose}>
           <X size={18} />
         </button>
-        <img src={image.url} alt={image.title} decoding="async" />
+        <ProtectedImage
+          src={image.url}
+          token={assetToken}
+          apiBaseUrl={assetApiBaseUrl}
+          alt={image.title}
+          decoding="async"
+        />
       </div>
     </div>
   );

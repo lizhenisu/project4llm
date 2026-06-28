@@ -47,6 +47,9 @@ async function mockWorkspaceShell(page: Page) {
 
 async function mockSourceAssetRoute(page: Page) {
   await page.route("**/api/source-assets/**", async (route) => {
+    const request = route.request();
+    expect(new URL(request.url()).searchParams.has("token")).toBe(false);
+    expect(request.headers().authorization).toBe("Bearer test-session");
     await route.fulfill({
       contentType: "image/png",
       body: Buffer.from(ONE_PIXEL_PNG_BASE64, "base64"),
@@ -1074,7 +1077,7 @@ test("opens parsed source content from a document-level source row", async ({ pa
   await expect(reader.getByText("Attention Is All You Need")).toBeVisible();
   const sourceImage = reader.getByRole("img", { name: "Image 1" });
   await expect(sourceImage).toBeVisible();
-  await expect(sourceImage).toHaveAttribute("src", /\/api\/source-assets\/uploads\/team_a\/regression\/paper\.assets\/page-1-image-1\.png/);
+  await expect(sourceImage).toHaveAttribute("src", /^blob:/);
   await expect.poll(async () => sourceImage.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
   await expect(reader.getByText("第 1 页")).toHaveCount(0);
 });
@@ -1218,7 +1221,7 @@ test("sends an attached chat image as a multimodal query", async ({ page }) => {
 
   const citationImage = page.getByRole("img", { name: "Figure 1" });
   await expect(citationImage).toBeVisible();
-  await expect(citationImage).toHaveAttribute("src", /\/api\/source-assets\/uploads\/team_a\/regression\/paper\.assets\/page-1-image-1\.png/);
+  await expect(citationImage).toHaveAttribute("src", /^blob:/);
   await expect.poll(async () => citationImage.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
   await page.getByRole("button", { name: "查看Figure 1" }).click();
   const citationImageDialog = page.getByRole("dialog", { name: "Figure 1" });

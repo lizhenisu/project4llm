@@ -601,6 +601,19 @@ test.describe("browser-level frontend load smoke", () => {
 
     await seedBrowserSession(page, 950);
     await mockStartupApi(page);
+    await page.route("**/api/source-assets/**", async (route) => {
+      const request = route.request();
+      expect(new URL(request.url()).searchParams.has("token")).toBe(false);
+      expect(request.headers().authorization).toBe("Bearer browser-load-token-950");
+      await route.fulfill({
+        status: 200,
+        contentType: "image/png",
+        body: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+          "base64",
+        ),
+      });
+    });
     await page.route("**/api/sources**", async (route) => {
       const request = route.request();
       const path = new URL(request.url()).pathname;

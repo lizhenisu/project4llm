@@ -1592,20 +1592,13 @@ def create_app():
             if not media_type.startswith("image/"):
                 raise HTTPException(status_code=404, detail="Asset not found")
             return Response(content=body, media_type=media_type)
-        asset_parts = asset_path.split("/")
-        if len(asset_parts) < 3 or asset_parts[0] != "uploads":
-            raise HTTPException(status_code=404, detail="Asset not found")
-        requested_tenant = asset_parts[1]
-        if requested_tenant != auth_context.tenant_id:
-            raise HTTPException(status_code=404, detail="Asset not found")
-        try:
-            object_store_dir = config.object_store_dir.expanduser().resolve()
-            path = (object_store_dir / asset_path).expanduser().resolve()
-            path.relative_to(object_store_dir)
-        except (OSError, ValueError):
+        path = resolve_local_source_asset(
+            object_store_dir=config.object_store_dir,
+            asset_path=asset_path,
+            tenant_id=auth_context.tenant_id,
+        )
+        if path is None:
             raise HTTPException(status_code=404, detail="Asset not found") from None
-        if not path.is_file():
-            raise HTTPException(status_code=404, detail="Asset not found")
         media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         if not media_type.startswith("image/"):
             raise HTTPException(status_code=404, detail="Asset not found")
@@ -2587,6 +2580,31 @@ def s3_asset_belongs_to_tenant(object_uri: str, tenant_id: str) -> bool:
         return False
     expected_prefix = s3_key(Path("uploads") / tenant_id).rstrip("/") + "/"
     return key.startswith(expected_prefix) and len(key) > len(expected_prefix)
+
+
+def resolve_local_source_asset(
+    *,
+    object_store_dir: Path,
+    asset_path: str,
+    tenant_id: str,
+) -> Path | None:
+    asset_parts = asset_path.split("/")
+    if (
+        len(asset_parts) < 3
+        or asset_parts[0] != "uploads"
+        or asset_parts[1] != tenant_id
+        or any(part in {"", ".", ".."} for part in asset_parts)
+    ):
+        return None
+    try:
+        tenant_upload_dir = (
+            object_store_dir.expanduser().resolve() / "uploads" / tenant_id
+        ).resolve()
+        path = (object_store_dir.expanduser().resolve() / asset_path).resolve()
+        path.relative_to(tenant_upload_dir)
+    except (OSError, ValueError):
+        return None
+    return path if path.is_file() else None
 
 
 def validate_query_image_data_url(request: QueryRequest, config) -> None:

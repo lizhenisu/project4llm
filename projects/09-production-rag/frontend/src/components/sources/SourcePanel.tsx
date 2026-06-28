@@ -3,6 +3,7 @@ import { useRef, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import type { SourceContent, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
+import { ProtectedImage } from "../ui/ProtectedImage";
 
 const INITIAL_VISIBLE_SOURCE_COUNT = 80;
 const SOURCE_VISIBLE_INCREMENT = 80;
@@ -19,6 +20,8 @@ type Props = {
   activeContent: SourceContent | null;
   contentLoading: boolean;
   contentError: string;
+  assetToken?: string;
+  assetApiBaseUrl?: string;
   onCloseContent: () => void;
 };
 
@@ -33,6 +36,8 @@ export function SourcePanel({
   activeContent,
   contentLoading,
   contentError,
+  assetToken,
+  assetApiBaseUrl,
   onCloseContent,
 }: Props) {
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -293,6 +298,8 @@ export function SourcePanel({
           content={activeContent}
           loading={contentLoading}
           error={contentError}
+          assetToken={assetToken}
+          assetApiBaseUrl={assetApiBaseUrl}
           onClose={onCloseContent}
         />
       ) : null}
@@ -365,11 +372,15 @@ function SourceReader({
   content,
   loading,
   error,
+  assetToken,
+  assetApiBaseUrl,
   onClose,
 }: {
   content: SourceContent;
   loading: boolean;
   error: string;
+  assetToken?: string;
+  assetApiBaseUrl?: string;
   onClose: () => void;
 }) {
   return (
@@ -409,8 +420,10 @@ function SourceReader({
               content.blocks.map((block, index) =>
                 block.type === "image" && block.url ? (
                   <figure className="source-document-image" key={`${index}-${block.url.slice(0, 32)}`}>
-                    <img
+                    <ProtectedImage
                       src={block.url}
+                      token={assetToken}
+                      apiBaseUrl={assetApiBaseUrl}
                       alt={block.title || block.page || "Document image"}
                       loading="lazy"
                       decoding="async"

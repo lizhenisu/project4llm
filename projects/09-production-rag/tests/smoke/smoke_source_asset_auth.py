@@ -32,6 +32,11 @@ def main() -> None:
         image_path = object_store / "uploads" / "tenant-asset-smoke" / "upload-1" / "image.png"
         image_path.parent.mkdir(parents=True)
         image_path.write_bytes(tiny_png())
+        other_image = object_store / "uploads" / "other-tenant" / "upload-2" / "private.png"
+        other_image.parent.mkdir(parents=True)
+        other_image.write_bytes(tiny_png())
+        symlink_path = image_path.parent / "other-tenant-link.png"
+        symlink_path.symlink_to(other_image)
         os.environ["RAG_RUNTIME_DIR"] = str(root / "runtime")
         os.environ["RAG_OBJECT_STORE_DIR"] = str(object_store)
         os.environ["RAG_METADATA_DATABASE_URL"] = ""
@@ -69,6 +74,19 @@ def main() -> None:
                     "?tenant_id=tenant-asset-smoke&token=session-token"
                 )
                 assert legacy_path.status_code == 404, legacy_path.text
+                traversal_path = serve.resolve_local_source_asset(
+                    object_store_dir=object_store,
+                    asset_path=(
+                        "uploads/tenant-asset-smoke/../other-tenant/upload-2/private.png"
+                    ),
+                    tenant_id="tenant-asset-smoke",
+                )
+                assert traversal_path is None
+                symlink_escape = api.get(
+                    "/source-assets/uploads/tenant-asset-smoke/upload-1/"
+                    "other-tenant-link.png?tenant_id=tenant-asset-smoke&token=session-token"
+                )
+                assert symlink_escape.status_code == 404, symlink_escape.text
 
                 valid_s3_uri = "s3://asset-smoke-bucket/app/uploads/tenant-asset-smoke/upload-1/image.png"
                 invalid_s3_uris = [

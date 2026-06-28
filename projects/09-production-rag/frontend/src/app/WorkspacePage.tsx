@@ -1357,6 +1357,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             activeContent={activeSourceContent}
             contentLoading={sourceContentLoading}
             contentError={sourceContentError}
+            assetToken={settings.token}
+            assetApiBaseUrl={settings.apiBaseUrl}
             onCloseContent={() => {
               setActiveSourceContent(null);
               setSourceContentError("");
@@ -1373,6 +1375,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             busy={busy}
             conversationTitle={conversationTitle}
             typingMessageId={typingMessageId}
+            assetToken={settings.token}
+            assetApiBaseUrl={settings.apiBaseUrl}
             onTypingComplete={() => setTypingMessageId(null)}
             onAsk={handleAsk}
             onFeedback={handleFeedback}

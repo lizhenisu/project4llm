@@ -435,15 +435,22 @@ function normalizeMetadataAssets(settings: Settings, metadata: Record<string, un
 }
 
 function normalizeAssetUrl(settings: Settings, url: string | undefined): string | undefined {
-  if (!url?.startsWith("/source-assets/")) {
+  if (!url) {
+    return url;
+  }
+  const parsedUrl = new URL(url, window.location.origin);
+  if (
+    !parsedUrl.pathname.startsWith("/source-assets/")
+    && !parsedUrl.pathname.startsWith("/api/source-assets/")
+  ) {
     return url;
   }
   const apiBaseUrl = settings.apiBaseUrl.replace(/\/+$/, "");
-  const normalizedUrl = new URL(`${apiBaseUrl}${url}`, window.location.origin);
+  const normalizedUrl = url.startsWith("/source-assets/")
+    ? new URL(`${apiBaseUrl}${url}`, window.location.origin)
+    : parsedUrl;
   normalizedUrl.searchParams.set("tenant_id", settings.tenantId);
-  if (settings.token) {
-    normalizedUrl.searchParams.set("token", settings.token);
-  }
+  normalizedUrl.searchParams.delete("token");
   return normalizedUrl.toString();
 }
 
