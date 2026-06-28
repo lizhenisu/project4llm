@@ -44,6 +44,9 @@ class QaEvaluation:
 def main() -> None:
     args = parse_args()
     cases = parse_markdown_qa(args.input)
+    if args.case_number:
+        selected_numbers = set(args.case_number)
+        cases = [case for case in cases if case.number in selected_numbers]
     if args.limit:
         cases = cases[: args.limit]
     if not cases:
@@ -126,6 +129,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=positive_int, default=1)
     parser.add_argument("--timeout", type=positive_float, default=180.0)
     parser.add_argument("--limit", type=non_negative_int, default=0)
+    parser.add_argument(
+        "--case-number",
+        action="append",
+        type=positive_int,
+        default=[],
+        help="Evaluate only this numbered Markdown case. Repeat for multiple cases.",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--resume",
@@ -322,19 +332,30 @@ Retrieved evidence:
 RAG answer:
 {answer}
 """
-    response = call_model_api_with_retries(
-        "markdown_qa_judge",
-        lambda: client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=2048,
-            response_format={"type": "json_object"},
-        ),
-    )
-    message = response.choices[0].message
-    content = message.content or getattr(message, "reasoning_content", None) or ""
-    parsed = parse_json_object(content)
+    parsed: dict[str, Any] | None = None
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            response = call_model_api_with_retries(
+                "markdown_qa_judge",
+                lambda: client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                    max_tokens=2048,
+                    response_format={"type": "json_object"},
+                ),
+            )
+            message = response.choices[0].message
+            content = message.content or getattr(message, "reasoning_content", None) or ""
+            parsed = parse_json_object(content)
+            break
+        except (ValueError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            last_error = exc
+            if attempt < 3:
+                time.sleep(float(attempt))
+    if parsed is None:
+        raise RuntimeError(f"Judge returned invalid JSON after 3 attempts: {last_error}")
     return {
         "answer_correctness": bounded_score(parsed.get("answer_correctness")),
         "groundedness": bounded_score(parsed.get("groundedness")),

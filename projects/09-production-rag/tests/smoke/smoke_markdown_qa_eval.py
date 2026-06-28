@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -13,6 +14,7 @@ from eval_markdown_qa import (  # noqa: E402
     MarkdownQaCase,
     QaEvaluation,
     bounded_score,
+    judge_answer,
     parse_json_object,
     parse_markdown_qa,
     summarize_evaluations,
@@ -44,6 +46,25 @@ def main() -> None:
         "answer_correctness": 0.9
     }
     assert bounded_score(1.5) == 1.0
+    judge_client = FakeJudgeClient([
+        "",
+        '{"answer_correctness":1,"groundedness":0.9,'
+        '"retrieval_sufficiency":0.8,"issue":""}',
+    ])
+    judgment = judge_answer(
+        judge_client,
+        model="synthetic",
+        case=MarkdownQaCase(3, "q3", "a3"),
+        answer="a3",
+        citations=[{"text": "a3"}],
+    )
+    assert judgment == {
+        "answer_correctness": 1.0,
+        "groundedness": 0.9,
+        "retrieval_sufficiency": 0.8,
+        "issue": "",
+    }
+    assert judge_client.calls == 2
     summary = summarize_evaluations(
         [
             QaEvaluation(1, "q1", "a1", 2, 100.0, 1.0, 0.9, 0.8, ""),
@@ -55,6 +76,21 @@ def main() -> None:
     assert summary["latency_ms"] == {"avg": 200.0, "p95": 300.0}
     assert [item["number"] for item in summary["weak_cases"]] == [2]
     print("smoke_markdown_qa_eval=ok")
+
+
+class FakeJudgeClient:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = iter(responses)
+        self.calls = 0
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=self.create),
+        )
+
+    def create(self, **_kwargs):
+        self.calls += 1
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=next(self.responses)))]
+        )
 
 
 if __name__ == "__main__":

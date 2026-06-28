@@ -61,6 +61,16 @@ def per_source_candidate_limit(candidate_limit: int, source_count: int) -> int:
     )
 
 
+def context_chunks_per_source(
+    configured_limit: int,
+    context_limit: int,
+    selected_source_groups: list[tuple[str, list[str]]],
+) -> int:
+    if len(selected_source_groups) == 1:
+        return max(configured_limit, context_limit)
+    return configured_limit
+
+
 def source_fanout_limit() -> int:
     try:
         return max(1, int(os.environ.get("RAG_RETRIEVAL_SOURCE_FANOUT_LIMIT", "8")))

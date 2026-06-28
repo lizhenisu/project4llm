@@ -8,7 +8,11 @@ from unittest.mock import patch
 
 from rag_core.context import explain_context_packing
 from rag_core.pipeline import retrieve_and_rerank
-from rag_core.retrieval_scope import group_selected_doc_ids, round_robin_hit_groups
+from rag_core.retrieval_scope import (
+    context_chunks_per_source,
+    group_selected_doc_ids,
+    round_robin_hit_groups,
+)
 from rag_core.types import RewriteResult, SearchHit
 from search_multimodal import retrieve_multimodal
 
@@ -46,6 +50,7 @@ def main() -> None:
     test_context_helper_backfills_later_hits()
     test_context_limit_counts_pdf_pages_as_one_source()
     test_selected_doc_groups_round_robin_across_sources()
+    test_single_selected_source_can_fill_context()
     test_text_pipeline_fans_out_small_multi_source_scope()
     test_multimodal_fans_out_small_multi_source_scope()
     test_text_pipeline_backfills_after_doc_limit()
@@ -113,6 +118,21 @@ def test_selected_doc_groups_round_robin_across_sources() -> None:
         "third-paper/page-1",
         "attention/page-2",
     ]
+
+
+def test_single_selected_source_can_fill_context() -> None:
+    one_source = group_selected_doc_ids([
+        "attention/page-1",
+        "attention/page-2",
+    ])
+    three_sources = group_selected_doc_ids([
+        "attention/page-1",
+        "autoformer/page-1",
+        "third-paper/page-1",
+    ])
+    assert context_chunks_per_source(2, 5, one_source) == 5
+    assert context_chunks_per_source(2, 5, three_sources) == 2
+    assert context_chunks_per_source(2, 5, []) == 2
 
 
 def test_multimodal_fans_out_small_multi_source_scope() -> None:

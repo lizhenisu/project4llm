@@ -14,6 +14,7 @@ from rag_core.versioning import load_current_versions
 from rag_core.rerankers import build_reranker
 from rag_core.retrieval_scope import (
     annotate_retrieval_source,
+    context_chunks_per_source,
     group_selected_doc_ids,
     per_source_candidate_limit,
     round_robin_hit_groups,
@@ -250,7 +251,11 @@ def retrieve_and_rerank(
         reranked,
         max_selected=context_limit,
         max_chars=config.max_context_chars,
-        max_chunks_per_doc=config.max_chunks_per_doc,
+        max_chunks_per_doc=context_chunks_per_source(
+            config.max_chunks_per_doc,
+            context_limit,
+            selected_source_groups,
+        ),
         min_rerank_score=config.min_rerank_score,
         text_unit_counter=getattr(embedding_model, "count_tokens", None),
     )
