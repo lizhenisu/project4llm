@@ -12,7 +12,7 @@ from collections import Counter
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 from urllib.parse import quote
 
 from rag_core.config import RagConfig
@@ -97,6 +97,8 @@ class SourceSummary:
     attempt_count: int = 0
     next_attempt_at: int = 0
     dead_lettered: bool = False
+    ingestion_stage: str = ""
+    progress_percent: int = 0
 
 
 @dataclass(frozen=True)
@@ -199,8 +201,10 @@ def ingest_uploaded_path(
     acl_groups: list[str],
     doc_version: int | None = None,
     language: str = "zh",
+    progress_callback: Callable[[str, int], None] | None = None,
 ) -> IngestSummary:
     input_dir = path.parent
+    report_ingestion_progress(progress_callback, "parsing", 10)
     docs = load_documents_for_path(
         path,
         input_dir=input_dir,
@@ -209,12 +213,18 @@ def ingest_uploaded_path(
         acl_groups=acl_groups or ["default"],
         language=language,
     )
+    report_ingestion_progress(progress_callback, "parsed", 25)
     docs = apply_uploaded_content_identity(docs, path=path, input_dir=input_dir)
     docs = apply_object_store_source_uris(config=config, docs=docs, path=path, input_dir=input_dir)
     if doc_version is None:
         version = next_source_doc_version(config, docs)
         docs = [replace(doc, doc_version=version) for doc in docs]
-    return ingest_source_documents(config=config, docs=docs)
+    report_ingestion_progress(progress_callback, "preparing", 30)
+    return ingest_source_documents(
+        config=config,
+        docs=docs,
+        progress_callback=progress_callback,
+    )
 
 
 def apply_object_store_source_uris(
@@ -307,6 +317,8 @@ def create_source_task(
         created_at=timestamp,
         updated_at=timestamp,
         child_doc_ids=[],
+        ingestion_stage="queued",
+        progress_percent=0,
     )
     save_source_task_for_tenant(
         config=config,
@@ -339,12 +351,15 @@ def save_source_task_for_tenant(
             """
             INSERT INTO source_tasks(
                 id, tenant_id, doc_id, title, source_type, source_uri, doc_version,
-                acl_groups, status, error, requested_doc_version, created_at, updated_at
+                acl_groups, status, error, ingestion_stage, progress_percent,
+                requested_doc_version, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 error = excluded.error,
+                ingestion_stage = excluded.ingestion_stage,
+                progress_percent = excluded.progress_percent,
                 lease_owner = '',
                 lease_expires_at = 0,
                 next_attempt_at = 0,
@@ -365,6 +380,8 @@ def save_source_task_for_tenant(
                 json.dumps(source.acl_groups, ensure_ascii=False),
                 source.status,
                 error,
+                source.ingestion_stage or source.status,
+                max(0, min(100, int(source.progress_percent))),
                 resolved_requested_version,
                 source.created_at or now_ms(),
                 source.updated_at or now_ms(),
@@ -540,7 +557,8 @@ def fail_source_task(
         cursor = conn.execute(
             """
             UPDATE source_tasks
-            SET status = 'failed', error = ?, updated_at = ?, lease_owner = '', lease_expires_at = 0
+            SET status = 'failed', error = ?, updated_at = ?, lease_owner = '', lease_expires_at = 0,
+                ingestion_stage = 'failed'
             WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
             """,
             (error[:500], failed.updated_at, tenant_id, source.doc_id, lease_owner),
@@ -587,7 +605,8 @@ def retry_or_fail_source_task(
                 UPDATE source_tasks
                 SET status = 'queued', error = ?, updated_at = ?,
                     lease_owner = '', lease_expires_at = 0,
-                    next_attempt_at = ?, dead_lettered_at = 0
+                    next_attempt_at = ?, dead_lettered_at = 0,
+                    ingestion_stage = 'waiting_retry', progress_percent = 0
                 WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
                 """,
                 (
@@ -606,7 +625,8 @@ def retry_or_fail_source_task(
                 UPDATE source_tasks
                 SET status = 'failed', error = ?, updated_at = ?,
                     lease_owner = '', lease_expires_at = 0,
-                    next_attempt_at = 0, dead_lettered_at = ?
+                    next_attempt_at = 0, dead_lettered_at = ?,
+                    ingestion_stage = 'failed'
                 WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
                 """,
                 (
@@ -654,7 +674,8 @@ def retry_failed_source_task(
             UPDATE source_tasks
             SET status = 'queued', error = '', updated_at = ?,
                 lease_owner = '', lease_expires_at = 0, attempt_count = 0,
-                next_attempt_at = 0, dead_lettered_at = 0
+                next_attempt_at = 0, dead_lettered_at = 0,
+                ingestion_stage = 'queued', progress_percent = 0
             WHERE tenant_id = ? AND id = ? AND status = 'failed'
             """,
             (timestamp, tenant_id, task_id),
@@ -685,6 +706,8 @@ def retry_failed_source_task(
         updated_at=timestamp,
         child_doc_ids=[],
         error="",
+        ingestion_stage="queued",
+        progress_percent=0,
     )
     return QueuedSourceTask(
         tenant_id=tenant_id,
@@ -705,7 +728,13 @@ def update_source_task_status(
     status: str,
     error: str = "",
 ) -> SourceSummary:
-    updated = replace(source, status=status, updated_at=now_ms())
+    updated = replace(
+        source,
+        status=status,
+        ingestion_stage=status,
+        progress_percent=0 if status in {"queued", "failed"} else source.progress_percent,
+        updated_at=now_ms(),
+    )
     save_source_task_for_tenant(config=config, tenant_id=tenant_id, source=updated, error=error[:500])
     return updated
 
@@ -783,10 +812,16 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) -> IngestSummary:
+def ingest_source_documents(
+    *,
+    config: RagConfig,
+    docs: list[SourceDocument],
+    progress_callback: Callable[[str, int], None] | None = None,
+) -> IngestSummary:
     if not docs:
         return IngestSummary(sources=[], document_count=0, chunk_count=0)
 
+    report_ingestion_progress(progress_callback, "preparing", 32)
     client = connect(config)
     ensure_collection(client, config, reset=False)
     redacted_docs = [
@@ -802,6 +837,7 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
         )
         for doc in docs
     ]
+    report_ingestion_progress(progress_callback, "chunking", 40)
     text_model = build_embedding_model(config)
     chunks = [
         chunk
@@ -814,7 +850,9 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
         )
     ]
     image_chunks = pdf_image_chunks(redacted_docs)
+    report_ingestion_progress(progress_callback, "text_embedding", 50)
     dense_vectors = text_model.encode([chunk.text for chunk in chunks])
+    report_ingestion_progress(progress_callback, "text_embedding", 62)
     zero_image = zero_image_vector(config)
     entities = [
         chunk_to_entity(
@@ -828,6 +866,7 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
     ]
     image_docs: list[SourceDocument] = []
     if image_chunks:
+        report_ingestion_progress(progress_callback, "image_embedding", 66)
         image_model = build_image_embedding_model(config)
         image_dense_vectors = text_model.encode([chunk.text for chunk in image_chunks])
         image_vectors = encode_pdf_image_vectors(config=config, image_model=image_model, chunks=image_chunks)
@@ -858,11 +897,14 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
             )
             for chunk in image_chunks
         ]
+    report_ingestion_progress(progress_callback, "summarizing", 72)
     canonical_docs = [*redacted_docs, *image_docs]
     all_chunks = [*chunks, *image_chunks]
     sources = summarize_ingested_sources(canonical_docs, all_chunks)
     generate_ingested_source_guides(config=config, sources=sources, docs=redacted_docs)
+    report_ingestion_progress(progress_callback, "indexing", 82)
     upsert_entities(client, collection_name=config.collection_name, entities=entities)
+    report_ingestion_progress(progress_callback, "persisting", 92)
     archive_source_documents(config.object_store_dir, canonical_docs)
     publish_current_versions(config.object_store_dir, canonical_docs, config=config)
     for tenant_id in {doc.tenant_id for doc in canonical_docs}:
@@ -872,6 +914,7 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
             if any(doc.tenant_id == tenant_id and doc.doc_id in source.child_doc_ids for doc in canonical_docs)
         ]
         save_source_catalog_for_tenant(config=config, tenant_id=tenant_id, sources=tenant_sources)
+    report_ingestion_progress(progress_callback, "finalizing", 99)
     for tenant_id in {doc.tenant_id for doc in canonical_docs}:
         invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     return IngestSummary(
@@ -879,6 +922,15 @@ def ingest_source_documents(*, config: RagConfig, docs: list[SourceDocument]) ->
         document_count=len(canonical_docs),
         chunk_count=len(all_chunks),
     )
+
+
+def report_ingestion_progress(
+    callback: Callable[[str, int], None] | None,
+    stage: str,
+    progress_percent: int,
+) -> None:
+    if callback is not None:
+        callback(stage, max(0, min(100, int(progress_percent))))
 
 
 def pdf_image_chunks(docs: list[SourceDocument]) -> list[Chunk]:
@@ -1210,6 +1262,7 @@ def list_source_tasks(*, config: RagConfig, tenant_id: str) -> list[SourceSummar
             """
             SELECT doc_id, title, source_type, source_uri, doc_version, acl_groups,
                    status, error, attempt_count, next_attempt_at, dead_lettered_at,
+                   ingestion_stage, progress_percent,
                    created_at, updated_at
             FROM source_tasks
             WHERE tenant_id = ?
@@ -1235,6 +1288,8 @@ def list_source_tasks(*, config: RagConfig, tenant_id: str) -> list[SourceSummar
             attempt_count=int(row["attempt_count"] or 0),
             next_attempt_at=int(row["next_attempt_at"] or 0),
             dead_lettered=int(row["dead_lettered_at"] or 0) > 0,
+            ingestion_stage=str(row["ingestion_stage"] or ""),
+            progress_percent=max(0, min(100, int(row["progress_percent"] or 0))),
         )
         for row in rows
     ]
@@ -1369,7 +1424,8 @@ def list_queued_source_tasks(*, config: RagConfig, limit: int = 100) -> list[Que
         rows = conn.execute(
             """
             SELECT tenant_id, doc_id, title, source_type, source_uri, doc_version, acl_groups,
-                   status, error, requested_doc_version, created_at, updated_at
+                   status, error, requested_doc_version, ingestion_stage, progress_percent,
+                   created_at, updated_at
             FROM source_tasks
             WHERE status = 'queued' AND next_attempt_at <= ?
             ORDER BY next_attempt_at ASC, created_at ASC
@@ -1394,6 +1450,8 @@ def list_queued_source_tasks(*, config: RagConfig, limit: int = 100) -> list[Que
                 updated_at=int(row["updated_at"] or 0),
                 child_doc_ids=[],
                 error=str(row["error"] or ""),
+                ingestion_stage=str(row["ingestion_stage"] or ""),
+                progress_percent=max(0, min(100, int(row["progress_percent"] or 0))),
             ),
             requested_doc_version=(
                 int(row["requested_doc_version"])
@@ -1437,7 +1495,7 @@ def requeue_stale_processing_source_tasks(
             f"""
             UPDATE source_tasks
             SET status = 'queued', updated_at = ?, error = '', lease_owner = '', lease_expires_at = 0,
-                next_attempt_at = ?
+                next_attempt_at = ?, ingestion_stage = 'queued', progress_percent = 0
             WHERE id IN ({placeholders})
               AND status = 'processing'
               AND (
@@ -1461,7 +1519,13 @@ def claim_source_task_for_processing(
     lease_owner: str,
     lease_ms: int,
 ) -> SourceSummary | None:
-    updated = replace(source, status="processing", updated_at=now_ms())
+    updated = replace(
+        source,
+        status="processing",
+        ingestion_stage="parsing",
+        progress_percent=5,
+        updated_at=now_ms(),
+    )
     lease_expires_at = updated.updated_at + max(1000, int(lease_ms))
     with connect_metadata_db(config) as conn:
         cursor = conn.execute(
@@ -1469,7 +1533,7 @@ def claim_source_task_for_processing(
             UPDATE source_tasks
             SET status = 'processing', updated_at = ?, error = '',
                 lease_owner = ?, lease_expires_at = ?, attempt_count = attempt_count + 1,
-                next_attempt_at = 0
+                next_attempt_at = 0, ingestion_stage = 'parsing', progress_percent = 5
             WHERE tenant_id = ? AND id = ? AND status = 'queued' AND next_attempt_at <= ?
             """,
             (
@@ -1513,6 +1577,39 @@ def renew_source_task_lease(
         )
     renewed = int(cursor.rowcount or 0) == 1
     return renewed
+
+
+def update_source_task_progress(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    task_id: str,
+    lease_owner: str,
+    ingestion_stage: str,
+    progress_percent: int,
+) -> bool:
+    clean_stage = ingestion_stage.strip()[:64] or "processing"
+    timestamp = now_ms()
+    with connect_metadata_db(config) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE source_tasks
+            SET ingestion_stage = ?, progress_percent = ?, updated_at = ?
+            WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
+            """,
+            (
+                clean_stage,
+                max(0, min(99, int(progress_percent))),
+                timestamp,
+                tenant_id,
+                task_id,
+                lease_owner,
+            ),
+        )
+    updated = int(cursor.rowcount or 0) == 1
+    if updated:
+        invalidate_source_list_cache(config=config, tenant_id=tenant_id)
+    return updated
 
 
 def load_source_title_overrides(*, config: RagConfig, tenant_id: str) -> dict[tuple[str, int], str]:

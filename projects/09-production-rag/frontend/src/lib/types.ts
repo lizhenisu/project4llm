@@ -19,6 +19,8 @@ export type SourceItem = {
   attempt_count?: number;
   next_attempt_at?: number;
   dead_lettered?: boolean;
+  ingestion_stage?: string;
+  progress_percent?: number;
 };
 
 export type SourceContent = {

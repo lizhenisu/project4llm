@@ -430,6 +430,8 @@ CREATE TABLE IF NOT EXISTS source_tasks (
     acl_groups TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     error TEXT NOT NULL DEFAULT '',
+    ingestion_stage TEXT NOT NULL DEFAULT 'queued',
+    progress_percent INTEGER NOT NULL DEFAULT 0,
     lease_owner TEXT NOT NULL DEFAULT '',
     lease_expires_at INTEGER NOT NULL DEFAULT 0,
     attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -532,6 +534,8 @@ def ensure_sqlite_columns(conn: sqlite3.Connection) -> None:
     ensure_sqlite_column(conn, table="source_tasks", column="requested_doc_version", definition="INTEGER")
     ensure_sqlite_column(conn, table="source_tasks", column="next_attempt_at", definition="INTEGER NOT NULL DEFAULT 0")
     ensure_sqlite_column(conn, table="source_tasks", column="dead_lettered_at", definition="INTEGER NOT NULL DEFAULT 0")
+    ensure_sqlite_column(conn, table="source_tasks", column="ingestion_stage", definition="TEXT NOT NULL DEFAULT 'queued'")
+    ensure_sqlite_column(conn, table="source_tasks", column="progress_percent", definition="INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
@@ -565,6 +569,8 @@ def ensure_postgres_columns(conn: PostgresConnection) -> None:
     ensure_postgres_column(conn, table="source_tasks", column="requested_doc_version", definition="BIGINT")
     ensure_postgres_column(conn, table="source_tasks", column="next_attempt_at", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="dead_lettered_at", definition="BIGINT NOT NULL DEFAULT 0")
+    ensure_postgres_column(conn, table="source_tasks", column="ingestion_stage", definition="TEXT NOT NULL DEFAULT 'queued'")
+    ensure_postgres_column(conn, table="source_tasks", column="progress_percent", definition="BIGINT NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"

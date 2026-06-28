@@ -64,6 +64,8 @@ def test_retry_failed_task_is_tenant_scoped_and_atomic() -> None:
     assert listed_failed["next_attempt_at"] == 0
     assert listed_failed["dead_lettered"] is True
     assert listed_failed["retryable"] is True
+    assert listed_failed["ingestion_stage"] == "failed"
+    assert listed_failed["progress_percent"] == 0
 
     with patch("serve.submit_upload_ingestion_job", return_value=True) as submit_job:
         response = api.post(
@@ -74,6 +76,8 @@ def test_retry_failed_task_is_tenant_scoped_and_atomic() -> None:
     assert response.json()["status"] == "queued"
     assert response.json()["source"]["status"] == "queued"
     assert response.json()["source"]["retryable"] is False
+    assert response.json()["source"]["ingestion_stage"] == "queued"
+    assert response.json()["source"]["progress_percent"] == 0
     submit_job.assert_called_once()
     assert submit_job.call_args.kwargs["tenant_id"] == tenant_a
     assert submit_job.call_args.kwargs["doc_version"] is None
@@ -143,7 +147,8 @@ def task_row(config, tenant_id: str, task_id: str):
     with connect_metadata_db(config) as conn:
         row = conn.execute(
             """
-            SELECT status, error, attempt_count, next_attempt_at, dead_lettered_at
+            SELECT status, error, attempt_count, next_attempt_at, dead_lettered_at,
+                   ingestion_stage, progress_percent
             FROM source_tasks
             WHERE tenant_id = ? AND id = ?
             """,

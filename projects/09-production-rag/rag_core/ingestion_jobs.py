@@ -16,6 +16,7 @@ from rag_core.sources import list_queued_source_tasks
 from rag_core.sources import requeue_stale_processing_source_tasks
 from rag_core.sources import renew_source_task_lease
 from rag_core.sources import retry_or_fail_source_task
+from rag_core.sources import update_source_task_progress
 
 
 _RUNNER_LOCK = threading.Lock()
@@ -167,6 +168,20 @@ class IngestionJobRunner:
         renewal_thread.start()
         try:
             config = load_config()
+
+            def report_progress(stage: str, progress_percent: int) -> None:
+                updated = update_source_task_progress(
+                    config=config,
+                    tenant_id=tenant_id,
+                    task_id=source.doc_id,
+                    lease_owner=lease_owner,
+                    ingestion_stage=stage,
+                    progress_percent=progress_percent,
+                )
+                if not updated:
+                    lease_valid.clear()
+                    raise RuntimeError("Source task lease was lost during ingestion")
+
             ingest_uploaded_path(
                 config=config,
                 path=Path(source.source_uri),
@@ -174,6 +189,7 @@ class IngestionJobRunner:
                 acl_groups=source.acl_groups,
                 doc_version=requested_doc_version,
                 language=language,
+                progress_callback=report_progress,
             )
             if lease_valid.is_set():
                 delete_source_task(

@@ -834,6 +834,8 @@ class SourceResponse(BaseModel):
     attempt_count: int = 0
     next_attempt_at: int = 0
     dead_lettered: bool = False
+    ingestion_stage: str = ""
+    progress_percent: int = 0
 
 
 class SourceListResponse(BaseModel):
@@ -2770,6 +2772,8 @@ def source_to_response(source) -> SourceResponse:
         attempt_count=getattr(source, "attempt_count", 0),
         next_attempt_at=getattr(source, "next_attempt_at", 0),
         dead_lettered=getattr(source, "dead_lettered", False),
+        ingestion_stage=getattr(source, "ingestion_stage", ""),
+        progress_percent=max(0, min(100, int(getattr(source, "progress_percent", 0)))),
     )
 
 

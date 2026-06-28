@@ -150,6 +150,18 @@ export function SourcePanel({
                 {progressDetail ? (
                   <small className={`source-progress${staleTask ? " is-stale" : ""}`}>{progressDetail}</small>
                 ) : null}
+                {source.status === "processing" && normalizedProgress(source) > 0 ? (
+                  <div
+                    className="source-progress-track"
+                    role="progressbar"
+                    aria-label={`${source.title} 处理进度`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={normalizedProgress(source)}
+                  >
+                    <span style={{ width: `${normalizedProgress(source)}%` }} />
+                  </div>
+                ) : null}
                 {source.error ? <small className="error-text">{source.error}</small> : null}
               </div>
 
@@ -314,9 +326,33 @@ function sourceProgressDetail(source: SourceItem) {
       const attemptDetail = attemptCount > 0 ? `（第 ${attemptCount} 次尝试）` : "";
       return `处理时间已超过 30 分钟，疑似停滞，系统将自动尝试恢复${attemptDetail}`;
     }
+    const stage = ingestionStageLabel(source.ingestion_stage);
+    const progress = normalizedProgress(source);
+    const attemptDetail = attemptCount > 1 ? ` · 第 ${attemptCount} 次尝试` : "";
+    if (stage && progress > 0) return `${stage} · ${progress}%${attemptDetail}`;
     if (attemptCount > 1) return `第 ${attemptCount} 次处理尝试`;
   }
   return "";
+}
+
+function normalizedProgress(source: SourceItem) {
+  return Math.max(0, Math.min(100, Math.round(source.progress_percent || 0)));
+}
+
+function ingestionStageLabel(stage?: string) {
+  const labels: Record<string, string> = {
+    parsing: "正在解析文件",
+    parsed: "文件解析完成",
+    preparing: "正在准备文档",
+    chunking: "正在切分文档",
+    text_embedding: "正在生成文本向量",
+    image_embedding: "正在生成图片向量",
+    summarizing: "正在生成来源摘要",
+    indexing: "正在写入向量索引",
+    persisting: "正在保存摄取结果",
+    finalizing: "正在完成收尾",
+  };
+  return stage ? labels[stage] || "正在处理文档" : "";
 }
 
 function sourceStatusAgeMs(source: SourceItem) {

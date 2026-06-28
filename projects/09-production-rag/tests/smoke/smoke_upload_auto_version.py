@@ -66,8 +66,9 @@ def main() -> None:
         )
 
         captured_versions: list[int] = []
+        progress: list[tuple[str, int]] = []
 
-        def capture_ingest(*, config, docs):
+        def capture_ingest(*, config, docs, progress_callback=None):
             captured_versions.extend(doc.doc_version for doc in docs)
             return IngestSummary(sources=[], document_count=len(docs), chunk_count=0)
 
@@ -81,9 +82,11 @@ def main() -> None:
                 tenant_id=TENANT_ID,
                 acl_groups=["engineering"],
                 doc_version=queued.requested_doc_version,
+                progress_callback=lambda stage, percent: progress.append((stage, percent)),
             )
 
     assert captured_versions == [3]
+    assert progress == [("parsing", 10), ("parsed", 25), ("preparing", 30)]
     print("smoke_upload_auto_version=ok")
 
 

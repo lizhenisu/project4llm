@@ -32,6 +32,7 @@ from rag_core.sources import (  # noqa: E402
     retry_or_fail_source_task,
     save_source_task_for_tenant,
     source_task_recovery_metrics_snapshot,
+    update_source_task_progress,
 )
 from rag_core.text_utils import now_ms  # noqa: E402
 
@@ -80,6 +81,31 @@ def test_atomic_claim_and_owner_guard(config) -> None:
     wrong_owner = "owner-b" if owner == "owner-a" else "owner-a"
     assert int(row["attempt_count"]) == 1
     assert int(row["lease_expires_at"]) > now_ms()
+    assert row["ingestion_stage"] == "parsing"
+    assert int(row["progress_percent"]) == 5
+    assert update_source_task_progress(
+        config=config,
+        tenant_id=TENANT_ID,
+        task_id=source.doc_id,
+        lease_owner=wrong_owner,
+        ingestion_stage="indexing",
+        progress_percent=82,
+    ) is False
+    assert update_source_task_progress(
+        config=config,
+        tenant_id=TENANT_ID,
+        task_id=source.doc_id,
+        lease_owner=owner,
+        ingestion_stage="indexing",
+        progress_percent=82,
+    ) is True
+    progress_source = next(
+        item
+        for item in list_source_tasks(config=config, tenant_id=TENANT_ID)
+        if item.doc_id == source.doc_id
+    )
+    assert progress_source.ingestion_stage == "indexing"
+    assert progress_source.progress_percent == 82
     assert renew_source_task_lease(
         config=config,
         tenant_id=TENANT_ID,
@@ -325,6 +351,7 @@ def test_two_runners_execute_once_and_renew(config) -> None:
     def fake_ingest_uploaded_path(**kwargs):
         with lock:
             executions.append(kwargs["tenant_id"])
+        kwargs["progress_callback"]("text_embedding", 50)
         started.set()
         release.wait(timeout=5)
 
@@ -363,6 +390,9 @@ def test_two_runners_execute_once_and_renew(config) -> None:
             accepted = list(executor.map(submit, [runner_a, runner_b]))
         assert accepted == [True, True]
         assert started.wait(timeout=5)
+        progress_row = task_row(config, source.doc_id)
+        assert progress_row["ingestion_stage"] == "text_embedding"
+        assert int(progress_row["progress_percent"]) == 50
         first_expiry = int(task_row(config, source.doc_id)["lease_expires_at"])
         time.sleep(0.5)
         renewed_expiry = int(task_row(config, source.doc_id)["lease_expires_at"])
@@ -441,7 +471,7 @@ def task_row(config, task_id: str, *, required: bool = True):
         row = conn.execute(
             """
             SELECT status, error, lease_owner, lease_expires_at, attempt_count,
-                   next_attempt_at, dead_lettered_at, updated_at
+                   next_attempt_at, dead_lettered_at, ingestion_stage, progress_percent, updated_at
             FROM source_tasks
             WHERE tenant_id = ? AND id = ?
             """,

@@ -1564,6 +1564,8 @@ test("shows marquee feedback for active source and studio tasks", async ({ page 
             status: "processing",
             current: false,
             child_doc_ids: [],
+            ingestion_stage: "text_embedding",
+            progress_percent: 62,
           },
         ],
       },
@@ -1596,6 +1598,11 @@ test("shows marquee feedback for active source and studio tasks", async ({ page 
   const artifactRow = page.locator(".artifact-row.is-active-task");
   await expect(sourceRow).toBeVisible();
   await expect(artifactRow).toBeVisible();
+  await expect(sourceRow.getByText("正在生成文本向量 · 62%")).toBeVisible();
+  await expect(sourceRow.getByRole("progressbar", { name: "正在解析.pdf 处理进度" })).toHaveAttribute(
+    "aria-valuenow",
+    "62",
+  );
   await expect
     .poll(async () => sourceRow.evaluate((node) => getComputedStyle(node, "::after").animationName))
     .toBe("task-marquee");
