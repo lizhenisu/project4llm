@@ -157,9 +157,9 @@ make benchmark
 容器化 API 验收：
 
 ```bash
-docker compose up -d milvus rag-api
+docker compose up -d milvus rag-api rag-web
 docker compose --profile ingest run --rm rag-ingest
-RAG_API_URL=http://127.0.0.1:8008 make deploy-smoke
+RAG_API_URL=http://127.0.0.1:8080/api make deploy-smoke
 ```
 
 如果生产 API 启用 header auth context：
@@ -169,7 +169,7 @@ export RAG_REQUIRE_AUTH_CONTEXT=1
 export RAG_API_TOKEN=dev-only-token
 export RAG_DEPLOY_TENANT_ID=team_a
 export RAG_DEPLOY_ACL_GROUPS=ops,support
-RAG_API_URL=http://127.0.0.1:8008 make deploy-smoke
+RAG_API_URL=http://127.0.0.1:8080/api make deploy-smoke
 ```
 
 通过标准：

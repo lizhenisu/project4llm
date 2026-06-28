@@ -129,7 +129,6 @@ services:
     build:
       context: ../..
       dockerfile: projects/09-production-rag/Dockerfile
-    container_name: rag-api
     env_file:
       - ./.env
     environment:
@@ -159,8 +158,8 @@ services:
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
       RAG_EMBEDDING_BACKEND: ${RAG_EMBEDDING_BACKEND:-siliconflow}
       RAG_RERANK_BACKEND: ${RAG_RERANK_BACKEND:-siliconflow}
-    ports:
-      - "8008:8008"
+    expose:
+      - "8008"
     volumes:
       - ./runtime:/app/projects/09-production-rag/runtime
       - ./volumes/db:/app/projects/09-production-rag/runtime/db

@@ -131,7 +131,7 @@ sudo bash scripts/setup_caddy.sh your-domain.com
 
 # 6. 检查服务状态
 docker compose ps
-curl http://localhost:8008/health
+curl http://localhost:8080/api/health
 
 # 7. 访问前端
 # http://<服务器IP>:8080

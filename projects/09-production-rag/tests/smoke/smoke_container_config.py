@@ -104,6 +104,9 @@ def main() -> None:
 
     rag_api = services["rag-api"]
     rag_api_env = rag_api["environment"]
+    assert "container_name" not in rag_api
+    assert "ports" not in rag_api
+    assert rag_api["expose"] == ["8008"]
     assert rag_api_env["MILVUS_URI"] == "http://milvus:19530"
     assert rag_api_env["RAG_OBJECT_STORE_DIR"] == EXPECTED_OBJECT_STORE_PATH
     assert rag_api_env["RAG_OBJECT_STORE_BACKEND"] == "${RAG_OBJECT_STORE_BACKEND:-s3}"
@@ -166,6 +169,8 @@ def main() -> None:
     assert 'CMD ["./scripts/start_api.sh"]' in dockerfile
     assert "COPY projects/09-production-rag /app/projects/09-production-rag" in dockerfile
     assert "requirements-api.txt" in dockerfile
+    assert "ARG PIP_INDEX_URL=" in dockerfile
+    assert '--index-url "${PIP_INDEX_URL}"' in dockerfile
     assert "uv sync" not in dockerfile
 
     start_api = (PROJECT_DIR / "scripts" / "start_api.sh").read_text(encoding="utf-8")

@@ -62,12 +62,15 @@ cp .env.example .env
 docker compose up -d
 
 # 3. 验证部署
-curl http://localhost:8008/health
+curl http://localhost:8080/api/health
 # 应返回 {"status":"ok"}
 
 # API 只负责持久化上传任务，rag-worker 独立执行解析和索引。
 # 按处理吞吐需要可横向扩展 worker；数据库租约会协调任务归属。
 docker compose up -d --scale rag-worker=3
+
+# API 同样可以横向扩展；rag-web 会通过 Docker DNS 动态发现并轮询副本。
+docker compose up -d --scale rag-api=3 --scale rag-worker=3
 
 # 多 API 副本必须共享同一个 RAG_METADATA_DATABASE_URL。
 # Compose 中 API/worker/ingest 均通过 PgBouncer transaction pooling
@@ -81,7 +84,7 @@ sudo bash scripts/setup_caddy.sh your-domain.com
 
 # 访问 https://your-domain.com
 # 前端: http://localhost:8080
-# API:  http://localhost:8008
+# API:  http://localhost:8080/api
 # Milvus: localhost:19530
 
 # 5. （可选）批量摄入
