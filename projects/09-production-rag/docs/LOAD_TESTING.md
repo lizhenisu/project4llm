@@ -166,3 +166,33 @@ MILVUS_URI=http://127.0.0.1:19530 \
 RAG_COLLECTION=rag_milvus_capacity \
 python projects/09-production-rag/tests/load/milvus_seed_load.py drop
 ```
+
+## SSE connection pressure
+
+Point the API's model URLs at the mock service with a deliberate response delay,
+then run the stream client through the Nginx `/api` route:
+
+```bash
+source .venv/bin/activate
+python projects/09-production-rag/tests/load/rag_query_load.py \
+  --base-url http://127.0.0.1:8080/api \
+  --endpoint /query/stream \
+  --token synthetic-sse-api-token \
+  --tenant-id synthetic-sse-tenant \
+  --acl-group engineering \
+  --external-mode mock \
+  --warmup 10 \
+  --requests 200 \
+  --concurrency 200 \
+  --max-failure-rate 0 \
+  --max-p95-ms 15000 \
+  --max-first-event-p95-ms 5000 \
+  --min-throughput-rps 10 \
+  --min-accepted-rate 1
+```
+
+The runner creates the requested number of client workers; `--concurrency 200`
+therefore means up to 200 simultaneous HTTP streams rather than the Python
+default executor's smaller worker count. The summary keeps connection acceptance,
+stream completion, capacity rejection, first-event latency, and total latency
+separate.
