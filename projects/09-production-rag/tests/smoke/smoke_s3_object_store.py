@@ -13,7 +13,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from rag_core.object_store import archive_source_documents, load_archived_source_documents, purge_source_documents
 from rag_core.document_scope import build_scope_plan
-from rag_core.jsonl_store import read_object_bytes_by_relative_path
+from rag_core.jsonl_store import object_exists, object_uri_for_relative_path, read_object_bytes_by_relative_path
 from rag_core.sources import save_uploaded_file
 from rag_core.section_summaries import (
     delete_source_section_summaries,
@@ -65,15 +65,17 @@ def main() -> None:
                 Path("uploads") / tenant_id / uploaded.parent.name / uploaded.name,
             )
             assert stored_body == b"s3 upload smoke"
+            uploaded_relative_path = Path("uploads") / tenant_id / uploaded.parent.name / uploaded.name
             doc = SourceDocument(
                 tenant_id=tenant_id,
                 doc_id="doc-a",
                 doc_version=1,
                 source_type="txt",
-                source_uri="s3://production-rag/smoke/doc-a.txt",
+                source_uri=object_uri_for_relative_path(uploaded_relative_path),
                 title="S3 Smoke Doc",
                 text="S3 object store smoke content.",
                 acl_groups=["engineering"],
+                metadata={"source_uri_local_work_path": str(uploaded)},
             )
             assert archive_source_documents(object_store_dir, [doc]) == 1
             loaded = load_archived_source_documents(object_store_dir)
@@ -129,6 +131,10 @@ def main() -> None:
                 doc_version=1,
             )
             assert purged["archived_documents"] == 1
+            assert purged["upload_dirs"] == 1
+            assert purged["uploaded_objects"] == 1
+            assert not uploaded.exists()
+            assert not object_exists(object_store_dir, uploaded_relative_path)
             assert load_archived_source_documents(object_store_dir) == []
             assert delete_source_section_summaries(
                 object_store_dir,

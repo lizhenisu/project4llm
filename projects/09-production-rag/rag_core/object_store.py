@@ -6,7 +6,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable
 
-from rag_core.jsonl_store import object_exists, read_object_jsonl, write_object_jsonl
+from rag_core.jsonl_store import (
+    delete_object_by_uri,
+    object_exists,
+    object_store_backend,
+    parse_s3_uri,
+    read_object_jsonl,
+    s3_bucket,
+    s3_key,
+    write_object_jsonl,
+)
 from rag_core.text_utils import now_ms
 from rag_core.types import SourceDocument
 
@@ -64,7 +73,12 @@ def purge_source_documents(
 ) -> dict[str, int]:
     target_doc_ids = {str(doc_id) for doc_id in doc_ids}
     if not target_doc_ids:
-        return {"archived_documents": 0, "delete_tombstones": 0, "upload_dirs": 0}
+        return {
+            "archived_documents": 0,
+            "delete_tombstones": 0,
+            "upload_dirs": 0,
+            "uploaded_objects": 0,
+        }
 
     with OBJECT_STORE_INDEX_LOCK:
         source_rows = read_object_jsonl(object_store_dir, SOURCE_DOCUMENTS_PATH)
@@ -95,10 +109,15 @@ def purge_source_documents(
         tenant_id=tenant_id,
         rows=removed_rows,
     )
+    uploaded_objects = purge_uploaded_objects_for_rows(
+        tenant_id=tenant_id,
+        rows=removed_rows,
+    )
     return {
         "archived_documents": len(removed_rows),
         "delete_tombstones": tombstone_removed,
         "upload_dirs": upload_dirs,
+        "uploaded_objects": uploaded_objects,
     }
 
 
@@ -225,6 +244,7 @@ def purge_upload_dirs_for_rows(
 def upload_dirs_for_row(object_store_dir: Path, *, tenant_id: str, row: dict) -> set[Path]:
     candidates = [
         str(row.get("source_uri") or ""),
+        str((row.get("metadata") or {}).get("source_uri_local_work_path") or ""),
         str((row.get("metadata") or {}).get("linked_source_uri") or ""),
         str((row.get("metadata") or {}).get("image_uri") or ""),
     ]
@@ -238,6 +258,42 @@ def upload_dirs_for_row(object_store_dir: Path, *, tenant_id: str, row: dict) ->
             path=Path(candidate),
         )
     }
+
+
+def purge_uploaded_objects_for_rows(*, tenant_id: str, rows: list[dict]) -> int:
+    if object_store_backend() != "s3":
+        return 0
+    expected_prefix = s3_key(Path("uploads") / tenant_id).rstrip("/") + "/"
+    uris = {
+        uri
+        for row in rows
+        for uri in source_object_uris(row)
+        if uri.startswith("s3://")
+    }
+    removed = 0
+    for uri in uris:
+        try:
+            bucket, key = parse_s3_uri(uri)
+        except ValueError:
+            continue
+        if bucket != s3_bucket() or not key.startswith(expected_prefix):
+            continue
+        removed += int(delete_object_by_uri(uri))
+    return removed
+
+
+def source_object_uris(row: dict) -> set[str]:
+    metadata = row.get("metadata") or {}
+    candidates = {
+        str(row.get("source_uri") or ""),
+        str(metadata.get("linked_source_uri") or ""),
+        str(metadata.get("image_uri") or ""),
+    }
+    for block in metadata.get("display_blocks") or []:
+        if isinstance(block, dict):
+            candidates.add(str(block.get("path") or ""))
+            candidates.add(str(block.get("image_uri") or ""))
+    return {candidate for candidate in candidates if candidate}
 
 
 def upload_dirs_for_path(object_store_dir: Path, *, tenant_id: str, path: Path) -> set[Path]:

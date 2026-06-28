@@ -67,6 +67,22 @@ def delete_object(object_store_dir: Path, relative_path: Path) -> bool:
     return True
 
 
+def delete_object_by_uri(uri: str) -> bool:
+    if not uri.startswith("s3://"):
+        return False
+    bucket, key = parse_s3_uri(uri)
+    if bucket != s3_bucket():
+        return False
+    client = s3_client()
+    existed = True
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+    except Exception:
+        existed = False
+    client.delete_object(Bucket=bucket, Key=key)
+    return existed
+
+
 def upload_file_to_object_store(local_path: Path, relative_path: Path, *, content_type: str | None = None) -> str:
     if object_store_backend() == "s3":
         ensure_s3_bucket()
