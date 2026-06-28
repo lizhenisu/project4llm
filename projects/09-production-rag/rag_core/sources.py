@@ -1659,7 +1659,13 @@ def delete_source(
     client = connect(config)
     ensure_collection(client, config, reset=False)
     source = get_source(config=config, tenant_id=tenant_id, doc_id=doc_id, doc_version=doc_version)
-    target_doc_ids = source.child_doc_ids if source is not None else [doc_id]
+    logical_doc_ids, target_doc_ids = source_delete_scope(
+        config=config,
+        tenant_id=tenant_id,
+        doc_id=doc_id,
+        doc_version=doc_version,
+        source=source,
+    )
     filter_expr = (
         f"tenant_id == {milvus_string_literal(tenant_id)} "
         f"and doc_id in [{', '.join(milvus_string_literal(item) for item in target_doc_ids)}]"
@@ -1667,7 +1673,11 @@ def delete_source(
     if doc_version is not None:
         filter_expr += f" and doc_version == {doc_version}"
     result = client.delete(collection_name=config.collection_name, filter=filter_expr)
-    effective_version = doc_version if doc_version is not None else source.doc_version if source is not None else None
+    # Omitting doc_version means deleting the logical source, including every
+    # historical version. Do not silently narrow that request to the currently
+    # visible catalog row: stale ready rows can otherwise make a re-upload look
+    # instantly complete while retrieval correctly rejects the old vectors.
+    effective_version = doc_version
     unpublished = {
         target_doc_id: unpublish_current_version(
             config.object_store_dir,
@@ -1697,42 +1707,55 @@ def delete_source(
     deleted_source_guides = delete_source_guides(
         config.object_store_dir,
         tenant_id=tenant_id,
-        source_doc_ids={doc_id},
+        source_doc_ids=logical_doc_ids,
         doc_version=effective_version,
     )
     deleted_section_summaries = delete_source_section_summaries(
         config.object_store_dir,
         tenant_id=tenant_id,
-        source_doc_ids={doc_id},
+        source_doc_ids=logical_doc_ids,
         doc_version=effective_version,
     )
-    delete_source_catalog(
-        config=config,
-        tenant_id=tenant_id,
-        doc_id=source.doc_id if source is not None else doc_id,
-        doc_version=effective_version,
-        child_doc_ids=target_doc_ids,
-    )
-    if source is not None:
-        with connect_metadata_db(config) as conn:
+    for logical_doc_id in logical_doc_ids:
+        delete_source_catalog(
+            config=config,
+            tenant_id=tenant_id,
+            doc_id=logical_doc_id,
+            doc_version=effective_version,
+            child_doc_ids=target_doc_ids,
+        )
+    with connect_metadata_db(config) as conn:
+        logical_placeholders = ", ".join("?" for _ in logical_doc_ids)
+        target_placeholders = ", ".join("?" for _ in target_doc_ids)
+        if effective_version is None:
             conn.execute(
-                """
+                f"""
                 DELETE FROM source_title_overrides
-                WHERE tenant_id = ? AND doc_id = ? AND doc_version = ?
+                WHERE tenant_id = ? AND doc_id IN ({logical_placeholders})
                 """,
-                (tenant_id, source.doc_id, source.doc_version),
+                (tenant_id, *sorted(logical_doc_ids)),
             )
+        else:
             conn.execute(
-                """
-                DELETE FROM source_tasks
-                WHERE tenant_id = ? AND (doc_id = ? OR doc_id IN ({placeholders}))
-                """.format(placeholders=", ".join("?" for _ in target_doc_ids)),
-                (tenant_id, source.doc_id, *target_doc_ids),
+                f"""
+                DELETE FROM source_title_overrides
+                WHERE tenant_id = ? AND doc_id IN ({logical_placeholders}) AND doc_version = ?
+                """,
+                (tenant_id, *sorted(logical_doc_ids), effective_version),
             )
+        conn.execute(
+            f"""
+            DELETE FROM source_tasks
+            WHERE tenant_id = ?
+              AND (doc_id IN ({logical_placeholders}) OR doc_id IN ({target_placeholders}))
+            """,
+            (tenant_id, *sorted(logical_doc_ids), *target_doc_ids),
+        )
     invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     return {
         "filter": filter_expr,
         "milvus": result,
+        "logical_doc_ids": sorted(logical_doc_ids),
         "target_doc_ids": target_doc_ids,
         "unpublished": unpublished,
         "tombstoned": tombstoned,
@@ -1740,6 +1763,61 @@ def delete_source(
         "deleted_source_guides": deleted_source_guides,
         "deleted_section_summaries": deleted_section_summaries,
     }
+
+
+def source_delete_scope(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    doc_id: str,
+    doc_version: int | None,
+    source: SourceSummary | None,
+) -> tuple[set[str], list[str]]:
+    catalog = list_source_catalog(config=config, tenant_id=tenant_id)
+    directly_matching = [
+        item
+        for item in catalog
+        if (item.doc_id == doc_id or doc_id in item.child_doc_ids)
+        and (doc_version is None or item.doc_version == doc_version)
+    ]
+    logical_doc_ids = {item.doc_id for item in directly_matching}
+    if source is not None:
+        logical_doc_ids.add(source.doc_id)
+    if not logical_doc_ids:
+        logical_doc_ids.add(doc_id)
+
+    matching_catalog = [
+        item
+        for item in catalog
+        if item.doc_id in logical_doc_ids
+        and (doc_version is None or item.doc_version == doc_version)
+    ]
+    target_doc_ids = {
+        child_doc_id
+        for item in matching_catalog
+        for child_doc_id in (item.child_doc_ids or [item.doc_id])
+    }
+    if source is not None and (doc_version is None or source.doc_version == doc_version):
+        target_doc_ids.update(source.child_doc_ids or [source.doc_id])
+
+    for archived in load_archived_source_documents(config.object_store_dir, include_deleted=True):
+        if archived.tenant_id != tenant_id:
+            continue
+        archived_identity, _title = source_document_identity(
+            doc_id=archived.doc_id,
+            title=archived.title,
+            source_uri=archived.source_uri,
+            metadata=archived.metadata,
+        )
+        if archived_identity not in logical_doc_ids:
+            continue
+        if doc_version is not None and archived.doc_version != doc_version:
+            continue
+        target_doc_ids.add(archived.doc_id)
+
+    if not target_doc_ids:
+        target_doc_ids.add(doc_id)
+    return logical_doc_ids, sorted(target_doc_ids)
 
 
 def next_doc_version(config: RagConfig, *, tenant_id: str, doc_id: str) -> int:
