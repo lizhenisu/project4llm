@@ -93,6 +93,7 @@ class SourceSummary:
     created_at: int | None = None
     updated_at: int | None = None
     child_doc_ids: list[str] = field(default_factory=list)
+    workspace_alias_ids: list[str] = field(default_factory=list)
     error: str = ""
     attempt_count: int = 0
     next_attempt_at: int = 0
@@ -467,6 +468,56 @@ def save_source_catalog_for_tenant(*, config: RagConfig, tenant_id: str, sources
     invalidate_source_list_cache(config=config, tenant_id=tenant_id)
 
 
+def save_source_task_resolutions(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    task_id: str,
+    sources: list[SourceSummary],
+) -> None:
+    if not sources:
+        return
+    timestamp = now_ms()
+    with connect_metadata_db(config) as conn:
+        for source in sources:
+            conn.execute(
+                """
+                INSERT INTO source_task_resolutions(
+                    tenant_id, task_id, source_doc_id, doc_version, resolved_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(tenant_id, task_id, source_doc_id, doc_version)
+                DO UPDATE SET resolved_at = excluded.resolved_at
+                """,
+                (tenant_id, task_id, source.doc_id, source.doc_version, timestamp),
+            )
+    invalidate_source_list_cache(config=config, tenant_id=tenant_id)
+
+
+def load_source_task_resolution_aliases(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+) -> dict[tuple[str, int], list[str]]:
+    with connect_metadata_db(config) as conn:
+        rows = conn.execute(
+            """
+            SELECT task_id, source_doc_id, doc_version
+            FROM source_task_resolutions
+            WHERE tenant_id = ?
+            ORDER BY resolved_at, task_id
+            """,
+            (tenant_id,),
+        ).fetchall()
+    aliases: dict[tuple[str, int], list[str]] = defaultdict(list)
+    for row in rows:
+        key = (str(row["source_doc_id"]), int(row["doc_version"]))
+        task_id = str(row["task_id"])
+        if task_id not in aliases[key]:
+            aliases[key].append(task_id)
+    return aliases
+
+
 def list_source_catalog(*, config: RagConfig, tenant_id: str) -> list[SourceSummary]:
     with connect_metadata_db(config) as conn:
         rows = conn.execute(
@@ -481,6 +532,7 @@ def list_source_catalog(*, config: RagConfig, tenant_id: str) -> list[SourceSumm
         ).fetchall()
     title_overrides = load_source_title_overrides(config=config, tenant_id=tenant_id)
     current_versions = load_current_versions(config.object_store_dir, tenant_id=tenant_id, config=config)
+    resolution_aliases = load_source_task_resolution_aliases(config=config, tenant_id=tenant_id)
     summaries: list[SourceSummary] = []
     for row in rows:
         doc_id = str(row["doc_id"])
@@ -505,6 +557,7 @@ def list_source_catalog(*, config: RagConfig, tenant_id: str) -> list[SourceSumm
                 created_at=int(row["created_at"] or 0),
                 updated_at=int(row["updated_at"] or 0),
                 child_doc_ids=[str(item) for item in child_doc_ids],
+                workspace_alias_ids=resolution_aliases.get((doc_id, doc_version), []),
             )
         )
     return summaries
@@ -538,6 +591,19 @@ def delete_source_catalog(
                     "DELETE FROM source_catalog WHERE tenant_id = ? AND doc_id = ? AND doc_version = ?",
                     (tenant_id, child_doc_id, doc_version),
                 )
+        if doc_version is None:
+            conn.execute(
+                "DELETE FROM source_task_resolutions WHERE tenant_id = ? AND source_doc_id = ?",
+                (tenant_id, doc_id),
+            )
+        else:
+            conn.execute(
+                """
+                DELETE FROM source_task_resolutions
+                WHERE tenant_id = ? AND source_doc_id = ? AND doc_version = ?
+                """,
+                (tenant_id, doc_id, doc_version),
+            )
     invalidate_source_list_cache(config=config, tenant_id=tenant_id)
 
 

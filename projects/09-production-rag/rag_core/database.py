@@ -477,6 +477,17 @@ CREATE TABLE IF NOT EXISTS admission_locks (
     updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS source_task_resolutions (
+    tenant_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    source_doc_id TEXT NOT NULL,
+    doc_version INTEGER NOT NULL,
+    resolved_at INTEGER NOT NULL,
+    PRIMARY KEY(tenant_id, task_id, source_doc_id, doc_version)
+);
+CREATE INDEX IF NOT EXISTS idx_source_task_resolutions_source
+ON source_task_resolutions(tenant_id, source_doc_id, doc_version);
+
 CREATE TABLE IF NOT EXISTS source_catalog (
     tenant_id TEXT NOT NULL,
     doc_id TEXT NOT NULL,

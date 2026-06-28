@@ -13,7 +13,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from rag_core.ingestion_jobs import IngestionJobRunner
-from rag_core.sources import SourceSummary
+from rag_core.sources import IngestSummary, SourceSummary
 
 
 def main() -> None:
@@ -27,7 +27,14 @@ def test_ingestion_runner_limits_concurrency_and_cleans_successful_tasks() -> No
     lock = threading.Lock()
     started = threading.Event()
     release = threading.Event()
-    state = {"active": 0, "max_active": 0, "deleted": [], "claims": [], "doc_versions": []}
+    state = {
+        "active": 0,
+        "max_active": 0,
+        "deleted": [],
+        "claims": [],
+        "doc_versions": [],
+        "resolutions": [],
+    }
 
     def fake_ingest_uploaded_path(**kwargs):
         with lock:
@@ -38,9 +45,22 @@ def test_ingestion_runner_limits_concurrency_and_cleans_successful_tasks() -> No
         release.wait(timeout=5)
         with lock:
             state["active"] -= 1
+        return IngestSummary(
+            sources=[replace(fake_source("resolved-doc"), status="ready")],
+            document_count=1,
+            chunk_count=1,
+        )
 
     def fake_delete_source_task(**kwargs):
+        assert state["resolutions"] == [
+            ("task-1", ["resolved-doc"]),
+        ]
         state["deleted"].append(kwargs["task_id"])
+
+    def fake_save_source_task_resolutions(**kwargs):
+        state["resolutions"].append(
+            (kwargs["task_id"], [source.doc_id for source in kwargs["sources"]])
+        )
 
     def fake_claim_source_task_for_processing(**kwargs):
         state["claims"].append(kwargs["source"].doc_id)
@@ -52,6 +72,10 @@ def test_ingestion_runner_limits_concurrency_and_cleans_successful_tasks() -> No
             patch("rag_core.ingestion_jobs.load_config", return_value=SimpleNamespace()),
             patch("rag_core.ingestion_jobs.ingest_uploaded_path", side_effect=fake_ingest_uploaded_path),
             patch("rag_core.ingestion_jobs.delete_source_task", side_effect=fake_delete_source_task),
+            patch(
+                "rag_core.ingestion_jobs.save_source_task_resolutions",
+                side_effect=fake_save_source_task_resolutions,
+            ),
             patch("rag_core.ingestion_jobs.claim_source_task_for_processing", side_effect=fake_claim_source_task_for_processing),
         )
         for manager in patches:

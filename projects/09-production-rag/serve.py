@@ -829,6 +829,7 @@ class SourceResponse(BaseModel):
     created_at: int | None = None
     updated_at: int | None = None
     child_doc_ids: list[str] = Field(default_factory=list)
+    workspace_alias_ids: list[str] = Field(default_factory=list)
     error: str = ""
     retryable: bool = False
     attempt_count: int = 0
@@ -2767,6 +2768,7 @@ def source_to_response(source) -> SourceResponse:
         created_at=source.created_at,
         updated_at=source.updated_at,
         child_doc_ids=source.child_doc_ids,
+        workspace_alias_ids=getattr(source, "workspace_alias_ids", []),
         error=getattr(source, "error", ""),
         retryable=source.status == "failed",
         attempt_count=getattr(source, "attempt_count", 0),

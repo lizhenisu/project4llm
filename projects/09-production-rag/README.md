@@ -113,6 +113,7 @@ docker compose --profile ingest up rag-ingest
 ├── ingest_*.py               # 文档摄入脚本（files/pdf/markdown/text/tables/images）
 ├── eval_retrieval.py         # 检索评估
 ├── eval_answer.py            # 答案评估
+├── eval_markdown_qa.py       # 真实 Markdown 问答集 API + LLM judge 评估
 ├── release_gate.py           # 发布门禁
 ├── benchmark_latency.py      # 延时基准测试
 ├── Makefile                  # 常用命令快捷入口

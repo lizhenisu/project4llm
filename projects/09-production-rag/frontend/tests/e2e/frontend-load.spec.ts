@@ -315,6 +315,62 @@ test.describe("browser-level frontend load smoke", () => {
     expect(maxSourceGetInFlight).toBeLessThanOrEqual(1);
   });
 
+  test("keeps an upload visible when it resolves while the page is refreshing", async ({ page, baseURL }) => {
+    const title = "refresh-safe-upload.pdf";
+    const pending = {
+      ...mockSource(title, 910, "processing"),
+      doc_id: "upload-refresh-safe-task",
+      source_uri: "mock://refresh-safe-work-copy.pdf",
+    };
+    const ready = {
+      ...mockSource(title, 910, "ready"),
+      doc_id: "refresh-safe-logical-source",
+      source_uri: "mock://refresh-safe-canonical.pdf",
+      child_doc_ids: ["refresh-safe-logical-source/page-1"],
+      workspace_alias_ids: [pending.doc_id],
+    };
+    let uploaded = false;
+    let completed = false;
+
+    await seedBrowserSession(page, 910);
+    await mockStartupApi(page);
+    await page.route("**/api/sources**", async (route) => {
+      const request = route.request();
+      if (request.method() === "POST" && request.url().includes("/sources/upload")) {
+        uploaded = true;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ sources: [pending] }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ sources: !uploaded ? [] : completed ? [ready] : [pending] }),
+      });
+    });
+
+    await page.goto(baseURL || "http://127.0.0.1:5173", { waitUntil: "domcontentloaded" });
+    await chooseUploadFile(page, title);
+    await expect(page.locator(".source-row.status-processing", { hasText: title })).toBeVisible();
+    await expect.poll(() =>
+      page.evaluate(
+        (taskId) => Object.values(localStorage).some((value) => value.includes(taskId)),
+        pending.doc_id,
+      ),
+    ).toBe(true);
+
+    completed = true;
+    for (let index = 0; index < 7; index += 1) {
+      await page.reload({ waitUntil: "domcontentloaded" });
+    }
+    const resolvedRow = page.locator(".source-row.status-ready", { hasText: title });
+    await expect(resolvedRow).toBeVisible();
+    await expect(resolvedRow).toContainText("refresh-safe-upload.pdf");
+  });
+
   test("renders large source lists incrementally", async ({ page, baseURL }) => {
     const sources = Array.from({ length: 120 }, (_, index) =>
       mockSource(`bulk-source-${index.toString().padStart(3, "0")}.txt`, index, "ready"),

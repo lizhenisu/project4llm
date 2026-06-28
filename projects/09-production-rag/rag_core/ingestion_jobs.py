@@ -16,6 +16,7 @@ from rag_core.sources import list_queued_source_tasks
 from rag_core.sources import requeue_stale_processing_source_tasks
 from rag_core.sources import renew_source_task_lease
 from rag_core.sources import retry_or_fail_source_task
+from rag_core.sources import save_source_task_resolutions
 from rag_core.sources import update_source_task_progress
 
 
@@ -182,7 +183,7 @@ class IngestionJobRunner:
                     lease_valid.clear()
                     raise RuntimeError("Source task lease was lost during ingestion")
 
-            ingest_uploaded_path(
+            summary = ingest_uploaded_path(
                 config=config,
                 path=Path(source.source_uri),
                 tenant_id=tenant_id,
@@ -192,6 +193,14 @@ class IngestionJobRunner:
                 progress_callback=report_progress,
             )
             if lease_valid.is_set():
+                resolved_sources = list(getattr(summary, "sources", []) or [])
+                if resolved_sources:
+                    save_source_task_resolutions(
+                        config=config,
+                        tenant_id=tenant_id,
+                        task_id=source.doc_id,
+                        sources=resolved_sources,
+                    )
                 delete_source_task(
                     config=config,
                     tenant_id=tenant_id,

@@ -13,6 +13,7 @@ export type SourceItem = {
   created_at?: number | null;
   updated_at?: number | null;
   child_doc_ids?: string[];
+  workspace_alias_ids?: string[];
   selected?: boolean;
   error?: string;
   retryable?: boolean;

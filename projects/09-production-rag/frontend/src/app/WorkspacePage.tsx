@@ -2546,11 +2546,19 @@ function sourceReferencedByOtherWorkspace(
 }
 
 function sourceMatchesWorkspace(source: SourceItem, workspaceIds: Set<string>) {
-  return workspaceIds.has(source.doc_id) || Boolean(source.child_doc_ids?.some((docId) => workspaceIds.has(docId)));
+  return (
+    workspaceIds.has(source.doc_id) ||
+    Boolean(source.child_doc_ids?.some((docId) => workspaceIds.has(docId))) ||
+    Boolean(source.workspace_alias_ids?.some((aliasId) => workspaceIds.has(aliasId)))
+  );
 }
 
 function sourceIdsForWorkspace(sources: SourceItem[]) {
-  return sources.flatMap((source) => [source.doc_id, ...(source.child_doc_ids || [])]);
+  return sources.flatMap((source) => [
+    source.doc_id,
+    ...(source.child_doc_ids || []),
+    ...(source.workspace_alias_ids || []),
+  ]);
 }
 
 function dedupeStrings(values: string[]) {
