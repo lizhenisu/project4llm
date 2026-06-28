@@ -1,4 +1,4 @@
-export type SourceStatus = "uploading" | "processing" | "ready" | "failed";
+export type SourceStatus = "uploading" | "queued" | "processing" | "ready" | "failed";
 
 export type SourceItem = {
   doc_id: string;
@@ -13,8 +13,16 @@ export type SourceItem = {
   created_at?: number | null;
   updated_at?: number | null;
   child_doc_ids?: string[];
+  workspace_alias_ids?: string[];
   selected?: boolean;
   error?: string;
+  retryable?: boolean;
+  attempt_count?: number;
+  next_attempt_at?: number;
+  dead_lettered?: boolean;
+  ingestion_stage?: string;
+  progress_percent?: number;
+  progress_detail?: string;
 };
 
 export type SourceContent = {

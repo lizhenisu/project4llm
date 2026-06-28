@@ -33,7 +33,11 @@ def main() -> None:
         first_doc = stamped_doc(first_path, first_dir)
         second_doc = stamped_doc(second_path, second_dir)
         duplicate_doc = stamped_doc(duplicate_path, duplicate_dir)
-        config = SimpleNamespace(object_store_dir=root / "object_store")
+        config = SimpleNamespace(
+            object_store_dir=root / "object_store",
+            runtime_dir=root / "runtime",
+            metadata_database_url=None,
+        )
         archive_source_documents(config.object_store_dir, [first_doc])
         first_repeat_version = next_source_doc_version(config, [duplicate_doc])
         second_content_version = next_source_doc_version(config, [second_doc])

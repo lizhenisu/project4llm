@@ -18,6 +18,12 @@ def main() -> None:
         "MILVUS_TOKEN",
         "RAG_COLLECTION",
         "RAG_OBJECT_STORE_DIR",
+        "RAG_OBJECT_STORE_BACKEND",
+        "RAG_S3_ENDPOINT_URL",
+        "RAG_S3_ACCESS_KEY_ID",
+        "RAG_S3_SECRET_ACCESS_KEY",
+        "RAG_S3_BUCKET",
+        "RAG_S3_PREFIX",
         "RAG_RUNTIME_DIR",
         "RAG_TEXT_INPUT",
         "RAG_IMAGE_INPUT",
@@ -57,12 +63,22 @@ def main() -> None:
         "HF_PARALLEL_LOADING_WORKERS",
         "MINIO_ROOT_USER",
         "MINIO_ROOT_PASSWORD",
+        "POSTGRES_DB",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "RAG_METADATA_DATABASE_URL",
+        "PGBOUNCER_MAX_CLIENT_CONN",
+        "PGBOUNCER_DEFAULT_POOL_SIZE",
+        "PGBOUNCER_RESERVE_POOL_SIZE",
+        "PGBOUNCER_MAX_DB_CONNECTIONS",
     }
     assert required_env_keys.issubset(env_example.keys())
 
     compose = yaml.safe_load((PROJECT_DIR / "docker-compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
-    assert {"milvus", "rag-api", "rag-ingest", "minio"}.issubset(services.keys())
+    assert {"milvus", "rag-api", "rag-worker", "rag-ingest", "minio", "postgres", "pgbouncer"}.issubset(
+        services.keys()
+    )
 
     minio_env = services["minio"]["environment"]
     assert "MINIO_ROOT_USER" in minio_env
@@ -70,43 +86,98 @@ def main() -> None:
     assert "MINIO_ACCESS_KEY" not in minio_env
     assert "MINIO_SECRET_KEY" not in minio_env
 
+    postgres_env = services["postgres"]["environment"]
+    assert postgres_env["POSTGRES_DB"] == "${POSTGRES_DB:-production_rag}"
+    assert postgres_env["POSTGRES_USER"] == "${POSTGRES_USER:-rag}"
+    assert postgres_env["POSTGRES_PASSWORD"] == "${POSTGRES_PASSWORD:-rag_password}"
+
+    pgbouncer = services["pgbouncer"]
+    pgbouncer_env = pgbouncer["environment"]
+    assert "image" not in pgbouncer
+    assert pgbouncer["build"]["context"] == "./ops/pgbouncer"
+    assert pgbouncer_env["POSTGRES_HOST"] == "postgres"
+    assert pgbouncer_env["PGBOUNCER_MAX_CLIENT_CONN"] == "${PGBOUNCER_MAX_CLIENT_CONN:-200}"
+    assert pgbouncer_env["PGBOUNCER_DEFAULT_POOL_SIZE"] == "${PGBOUNCER_DEFAULT_POOL_SIZE:-20}"
+    assert pgbouncer_env["PGBOUNCER_MAX_DB_CONNECTIONS"] == "${PGBOUNCER_MAX_DB_CONNECTIONS:-60}"
+    assert pgbouncer["depends_on"]["postgres"]["condition"] == "service_healthy"
+    assert "pg_isready" in pgbouncer["healthcheck"]["test"][1]
+
     rag_api = services["rag-api"]
     rag_api_env = rag_api["environment"]
+    assert "container_name" not in rag_api
+    assert "ports" not in rag_api
+    assert rag_api["expose"] == ["8008"]
     assert rag_api_env["MILVUS_URI"] == "http://milvus:19530"
     assert rag_api_env["RAG_OBJECT_STORE_DIR"] == EXPECTED_OBJECT_STORE_PATH
+    assert rag_api_env["RAG_OBJECT_STORE_BACKEND"] == "${RAG_OBJECT_STORE_BACKEND:-s3}"
+    assert rag_api_env["RAG_S3_ENDPOINT_URL"] == "${RAG_S3_ENDPOINT_URL:-http://minio:9000}"
+    assert rag_api_env["RAG_S3_BUCKET"] == "${RAG_S3_BUCKET:-production-rag}"
     assert rag_api_env["RAG_RUNTIME_DIR"] == EXPECTED_RUNTIME_PATH
     assert "./.env" in rag_api.get("env_file", [])
     assert rag_api_env["RAG_QUERY_REWRITE_BACKEND"] == "${RAG_QUERY_REWRITE_BACKEND:-llm}"
     assert rag_api_env["RAG_QUERY_REWRITE_HISTORY_TURNS"] == "6"
     assert rag_api_env["RAG_QUERY_REWRITE_MAX_TOKENS"] == "256"
     assert rag_api_env["RAG_ANSWER_BACKEND"] == "${RAG_ANSWER_BACKEND:-llm}"
-    assert rag_api_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-none}"
-    assert rag_api_env["NEW_API_URL"] == "${RAG_LLM_BASE_URL:-https://api.siliconflow.cn}"
-    assert rag_api_env["NEW_API_KEY"] == "${RAG_LLM_API_KEY:-${SILICONFLOW_API_KEY:-}}"
-    assert rag_api_env["LLM_MODEL"] == "${LLM_MODEL:-deepseek-ai/DeepSeek-V4-Flash}"
+    assert rag_api_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}"
+    assert "@pgbouncer:6432/" in rag_api_env["RAG_METADATA_DATABASE_URL"]
+    assert rag_api_env["RAG_INGEST_EXECUTION_MODE"] == "${RAG_INGEST_EXECUTION_MODE:-external}"
+    assert rag_api_env["NEW_API_URL"] == "${NEW_API_URL:-}"
+    assert rag_api_env["NEW_API_KEY"] == "${NEW_API_KEY:-}"
+    assert rag_api_env["LLM_MODEL"] == "${LLM_MODEL:-gemini-3-flash-preview}"
     assert has_volume(rag_api["volumes"], EXPECTED_OBJECT_STORE_PATH)
     assert has_volume(rag_api["volumes"], EXPECTED_RUNTIME_PATH)
+    assert rag_api["depends_on"]["rag-worker"]["condition"] == "service_started"
+    assert rag_api["depends_on"]["pgbouncer"]["condition"] == "service_healthy"
+
+    rag_worker = services["rag-worker"]
+    rag_worker_env = rag_worker["environment"]
+    assert rag_worker["command"] == ["./scripts/start_worker.sh"]
+    assert rag_worker["restart"] == "unless-stopped"
+    assert "container_name" not in rag_worker
+    assert rag_worker_env["MILVUS_URI"] == "http://milvus:19530"
+    assert rag_worker_env["RAG_OBJECT_STORE_BACKEND"] == "${RAG_OBJECT_STORE_BACKEND:-s3}"
+    assert "@pgbouncer:6432/" in rag_worker_env["RAG_METADATA_DATABASE_URL"]
+    assert rag_worker_env["RAG_EMBEDDING_BACKEND"] == "${RAG_EMBEDDING_BACKEND:-siliconflow}"
+    assert rag_worker_env["RAG_RERANK_BACKEND"] == "${RAG_RERANK_BACKEND:-siliconflow}"
+    assert has_volume(rag_worker["volumes"], EXPECTED_OBJECT_STORE_PATH)
+    assert has_volume(rag_worker["volumes"], EXPECTED_RUNTIME_PATH)
+    assert rag_worker["depends_on"]["pgbouncer"]["condition"] == "service_healthy"
 
     rag_ingest = services["rag-ingest"]
     rag_ingest_env = rag_ingest["environment"]
     assert rag_ingest_env["MILVUS_URI"] == "http://milvus:19530"
     assert rag_ingest_env["RAG_OBJECT_STORE_DIR"] == EXPECTED_OBJECT_STORE_PATH
+    assert rag_ingest_env["RAG_OBJECT_STORE_BACKEND"] == "${RAG_OBJECT_STORE_BACKEND:-s3}"
+    assert rag_ingest_env["RAG_S3_ENDPOINT_URL"] == "${RAG_S3_ENDPOINT_URL:-http://minio:9000}"
+    assert rag_ingest_env["RAG_S3_BUCKET"] == "${RAG_S3_BUCKET:-production-rag}"
     assert "./.env" in rag_ingest.get("env_file", [])
     assert "RAG_TEXT_INPUT" in rag_ingest_env
     assert "RAG_IMAGE_INPUT" in rag_ingest_env
-    assert rag_ingest_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-none}"
+    assert rag_ingest_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}"
+    assert "@pgbouncer:6432/" in rag_ingest_env["RAG_METADATA_DATABASE_URL"]
     assert has_volume(rag_ingest["volumes"], EXPECTED_OBJECT_STORE_PATH)
     assert has_volume(rag_ingest["volumes"], "/data")
+    assert rag_ingest["depends_on"]["pgbouncer"]["condition"] == "service_healthy"
+
+    pgbouncer_dockerfile = (PROJECT_DIR / "ops" / "pgbouncer" / "Dockerfile").read_text(encoding="utf-8")
+    assert "apt-get" in pgbouncer_dockerfile
+    assert "install -y --no-install-recommends" in pgbouncer_dockerfile
+    assert "pgbouncer" in pgbouncer_dockerfile
+    assert "USER pgbouncer" in pgbouncer_dockerfile
 
     dockerfile = (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8")
     assert 'CMD ["./scripts/start_api.sh"]' in dockerfile
     assert "COPY projects/09-production-rag /app/projects/09-production-rag" in dockerfile
     assert "requirements-api.txt" in dockerfile
+    assert "ARG PIP_INDEX_URL=" in dockerfile
+    assert '--index-url "${PIP_INDEX_URL}"' in dockerfile
     assert "uv sync" not in dockerfile
 
     start_api = (PROJECT_DIR / "scripts" / "start_api.sh").read_text(encoding="utf-8")
     assert "python check_config.py" in start_api
     assert (PROJECT_DIR / "scripts" / "start_ingest.sh").exists()
+    start_worker = (PROJECT_DIR / "scripts" / "start_worker.sh").read_text(encoding="utf-8")
+    assert "python ingestion_worker.py" in start_worker
 
     print("smoke_container_config=ok")
 

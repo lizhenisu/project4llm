@@ -15,6 +15,7 @@ import {
   deleteArtifact,
   renameArtifact,
   renameSource,
+  retrySource,
   getConversation,
   getAdminSettings,
   getArtifact,
@@ -64,7 +65,7 @@ import {
   saveWorkspaceName,
   saveWorkspaces,
 } from "../lib/storage";
-import type { AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, MindMapArtifact, RagProgressStage, Settings, SourceContent, SourceItem, WorkspaceRecord } from "../lib/types";
+import type { AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, ConversationListItem, MindMapArtifact, RagProgressStage, Settings, SourceContent, SourceItem, WorkspaceRecord } from "../lib/types";
 
 type PanelLayout = {
   source: number;
@@ -86,7 +87,15 @@ const MINDMAP_LAYOUT: PanelLayout = { source: 20, chat: 38, studio: 42 };
 const MIN_LAYOUT: PanelLayout = { source: 17, chat: 31, studio: 22 };
 const ARTIFACT_GENERATION_COOLDOWN_MS = 4_000;
 const ARTIFACT_STATUS_POLL_MS = 1_200;
+const ARTIFACT_STATUS_POLL_HIDDEN_MS = 8_000;
+const ARTIFACT_STATUS_POLL_MAX_MS = 10_000;
+const SOURCE_READY_POLL_BASE_MS = 1_500;
+const SOURCE_READY_POLL_MAX_MS = 8_000;
+const MAX_FRONTEND_UPLOAD_CONCURRENCY = 2;
+const SOURCE_LIST_FRONTEND_COALESCE_MS = 150;
 type ArtifactKind = "mindmap" | "table";
+
+let sourceListRequestSlot: { key: string; promise: Promise<SourceItem[]>; expiresAt: number } | null = null;
 
 function initialRagProgress(enabled: boolean): RagProgressStage[] | undefined {
   if (!enabled) {
@@ -112,6 +121,31 @@ function mergeRagProgress(current: RagProgressStage[] | undefined, incoming: Rag
     return stages;
   }
   return [...stages, incoming];
+}
+
+function listSourcesCoalesced(settings: Settings): Promise<SourceItem[]> {
+  const key = `${settings.apiBaseUrl}|${settings.token}|${settings.tenantId}|${settings.aclGroups.join(",")}`;
+  const now = Date.now();
+  if (sourceListRequestSlot?.key === key && sourceListRequestSlot.expiresAt > now) {
+    return sourceListRequestSlot.promise;
+  }
+  const promise = listSources(settings);
+  sourceListRequestSlot = {
+    key,
+    promise,
+    expiresAt: now + SOURCE_LIST_FRONTEND_COALESCE_MS,
+  };
+  void promise.finally(() => {
+    if (sourceListRequestSlot?.promise === promise) {
+      sourceListRequestSlot.expiresAt = Date.now() + SOURCE_LIST_FRONTEND_COALESCE_MS;
+      window.setTimeout(() => {
+        if (sourceListRequestSlot?.promise === promise && sourceListRequestSlot.expiresAt <= Date.now()) {
+          sourceListRequestSlot = null;
+        }
+      }, SOURCE_LIST_FRONTEND_COALESCE_MS);
+    }
+  }).catch(() => undefined);
+  return promise;
 }
 
 export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => void }) {
@@ -153,6 +187,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   const authTokenRef = useRef<string | null>(auth.token);
   const activeWorkspaceIdRef = useRef(activeWorkspaceId);
   const refreshRunRef = useRef(0);
+  const activeUploadCountRef = useRef(0);
+  const pendingUploadResolversRef = useRef<Array<() => void>>([]);
 
   const isAuthenticated = Boolean(auth.user && auth.token);
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? workspaces[0];
@@ -219,6 +255,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   useEffect(() => {
     if (!isAuthenticated || !settings.token || !hasServerGeneratingArtifact) return;
     let cancelled = false;
+    let timer: number | undefined;
+    let failureCount = 0;
     const workspaceId = activeWorkspaceId;
     const token = settings.token;
 
@@ -226,21 +264,28 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       try {
         const rows = await listArtifacts(settings, workspaceId);
         if (cancelled || token !== authTokenRef.current || workspaceId !== activeWorkspaceIdRef.current) return;
+        failureCount = 0;
         setArtifacts((current) => mergePolledArtifacts(current, rows));
         setActiveArtifact((current) => {
           if (!current) return current;
           return rows.find((artifact) => artifact.id === current.id) ?? current;
         });
       } catch (error) {
+        failureCount += 1;
         console.error("Artifact status polling failed:", error);
+      } finally {
+        if (!cancelled && token === authTokenRef.current && workspaceId === activeWorkspaceIdRef.current) {
+          timer = window.setTimeout(pollArtifacts, artifactPollDelayMs(failureCount));
+        }
       }
     }
 
     void pollArtifacts();
-    const timer = window.setInterval(pollArtifacts, ARTIFACT_STATUS_POLL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
     };
   }, [activeWorkspaceId, hasServerGeneratingArtifact, isAuthenticated, settings]);
 
@@ -349,24 +394,30 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       }
       if (!isCurrentRefresh()) return;
       setStatus("API 已连接");
-      const [sourceRows, artifactRows, announcementRows] = await Promise.all([
-        listSources(nextSettings),
+      const [sourceRows, artifactRows, announcementRows, conversationRows] = await Promise.all([
+        listSourcesCoalesced(nextSettings),
         listArtifacts(nextSettings, workspaceId),
         listAnnouncements(nextSettings),
+        listConversations(nextSettings),
       ]);
       if (!isCurrentRefresh()) return;
       const wSources = loadWorkspaceSources(workspaceId);
       const visibleRows = hasWorkspaceSources(workspaceId)
         ? filterWorkspaceSources(sourceRowsForList(sourceRows), wSources)
         : sourceRowsForList(sourceRows);
-      setSources((current) => mergeSelectedState(applyWorkspaceSourceTitles(visibleRows, workspaceId), current, workspaceId));
+      setSources((current) =>
+        preservePendingSourceRows(
+          mergeSelectedState(applyWorkspaceSourceTitles(visibleRows, workspaceId), current, workspaceId),
+          current,
+        ),
+      );
       const wArtifacts = loadWorkspaceArtifacts(workspaceId);
       const visibleArtifacts = hasWorkspaceArtifacts(workspaceId)
         ? artifactRows.filter((a) => wArtifacts.includes(a.id))
         : artifactRows;
       setArtifacts(visibleArtifacts);
       setAnnouncements(announcementRows);
-      await loadLatestConversation(nextSettings, visibleRows, isCurrentRefresh, workspaceId);
+      await loadLatestConversation(nextSettings, visibleRows, conversationRows, isCurrentRefresh, workspaceId);
     } catch (error) {
       if (!isCurrentRefresh()) return;
       setStatus(error instanceof Error ? error.message : "连接失败");
@@ -376,18 +427,18 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   async function loadLatestConversation(
     nextSettings: Settings,
     sourceRows: SourceItem[],
+    conversationRows: ConversationListItem[],
     isCurrentRefresh: () => boolean,
     workspaceId = activeWorkspaceId,
   ) {
     if (suppressAutoConversationLoadRef.current) {
       return;
     }
-    const rows = await listConversations(nextSettings);
     if (!isCurrentRefresh()) return;
     const workspaceConversations = loadWorkspaceConversations(workspaceId);
     const visibleConversations = hasWorkspaceConversations(workspaceId)
-      ? rows.filter((row) => workspaceConversations.includes(row.id))
-      : rows;
+      ? conversationRows.filter((row) => workspaceConversations.includes(row.id))
+      : conversationRows;
     if (conversationId || visibleConversations.length === 0 || messages.length > 0) {
       return;
     }
@@ -426,20 +477,27 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     const requestWorkspaceId = activeWorkspaceId;
     const isCurrentWorkspace = () => activeWorkspaceIdRef.current === requestWorkspaceId;
     const sourceKeysBeforeUpload = new Set(sources.map(sourceStateKey));
+    const startsImmediately = activeUploadCountRef.current < MAX_FRONTEND_UPLOAD_CONCURRENCY;
     const temp: SourceItem = {
-      doc_id: `upload-${Date.now()}`,
+      doc_id: `upload-${crypto.randomUUID()}`,
       title: file.name,
       source_type: file.name.split(".").pop() || "file",
       source_uri: file.name,
       doc_version: 1,
       chunk_count: 0,
       acl_groups: settings.aclGroups,
-      status: "uploading",
+      status: startsImmediately ? "uploading" : "queued",
       current: false,
       selected: false,
     };
     setSources((items) => [temp, ...items]);
     try {
+      await acquireUploadSlot();
+      if (isCurrentWorkspace()) {
+        setSources((items) =>
+          items.map((item) => (item.doc_id === temp.doc_id ? { ...item, status: "uploading" } : item)),
+        );
+      }
       const uploaded = await uploadSource(settings, file);
       if (isCurrentWorkspace()) {
         setSources((items) => [
@@ -458,7 +516,12 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       const wSources = loadWorkspaceSources(requestWorkspaceId);
       const filteredReady = filterWorkspaceSources(sourceRowsForList(readyRows), wSources);
       if (isCurrentWorkspace()) {
-        setSources((items) => mergeSelectedState(applyWorkspaceSourceTitles(filteredReady, requestWorkspaceId), items, requestWorkspaceId));
+        setSources((items) =>
+          preservePendingSourceRows(
+            mergeSelectedState(applyWorkspaceSourceTitles(filteredReady, requestWorkspaceId), items, requestWorkspaceId),
+            items,
+          ),
+        );
       }
       // Auto-rename workspace if it's still the auto-generated default name
       const currentAutoNamed = activeWorkspace?.auto_named;
@@ -486,6 +549,29 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
           ),
         );
       }
+    } finally {
+      releaseUploadSlot();
+    }
+  }
+
+  async function acquireUploadSlot() {
+    if (activeUploadCountRef.current < MAX_FRONTEND_UPLOAD_CONCURRENCY) {
+      activeUploadCountRef.current += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      pendingUploadResolversRef.current.push(() => {
+        activeUploadCountRef.current += 1;
+        resolve();
+      });
+    });
+  }
+
+  function releaseUploadSlot() {
+    activeUploadCountRef.current = Math.max(0, activeUploadCountRef.current - 1);
+    const next = pendingUploadResolversRef.current.shift();
+    if (next) {
+      next();
     }
   }
 
@@ -507,6 +593,39 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         { ...source, status: "failed", error: error instanceof Error ? error.message : "删除失败" },
         ...items,
       ]);
+    }
+  }
+
+  async function handleRetrySource(source: SourceItem) {
+    const retryingKey = sourceStateKey(source);
+    setSources((items) =>
+      items.map((item) =>
+        sourceStateKey(item) === retryingKey
+          ? { ...item, status: "queued", error: "", retryable: false, updated_at: Date.now() }
+          : item,
+      ),
+    );
+    try {
+      const response = await retrySource(settings, source.doc_id);
+      setSources((items) =>
+        items.map((item) =>
+          sourceStateKey(item) === retryingKey
+            ? { ...response.source, selected: false }
+            : item,
+        ),
+      );
+    } catch (error) {
+      setSources((items) =>
+        items.map((item) =>
+          sourceStateKey(item) === retryingKey
+            ? {
+                ...source,
+                retryable: true,
+                error: error instanceof Error ? error.message : "重新处理失败",
+              }
+            : item,
+        ),
+      );
     }
   }
 
@@ -533,6 +652,50 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     } finally {
       setSourceContentLoading(false);
     }
+  }
+
+  function createRagProgressFrameUpdater(
+    matchesPendingMessage: (message: ChatMessage, index: number) => boolean,
+    isCurrentWorkspace: () => boolean,
+  ) {
+    let frameId: number | null = null;
+    let queuedStage: RagProgressStage | null = null;
+    let queuedProgress: RagProgressStage[] = [];
+
+    const flush = () => {
+      frameId = null;
+      const stage = queuedStage;
+      if (!stage || !isCurrentWorkspace()) return;
+      const progress = queuedProgress;
+      setMessages((current) =>
+        current.map((item, index) =>
+          matchesPendingMessage(item, index)
+            ? {
+                ...item,
+                content: stage.detail || item.content,
+                ragProgress: progress,
+              }
+            : item,
+        ),
+      );
+    };
+
+    return {
+      schedule(stage: RagProgressStage, progress: RagProgressStage[]) {
+        queuedStage = stage;
+        queuedProgress = progress;
+        if (frameId !== null) return;
+        frameId = window.requestAnimationFrame(flush);
+      },
+      cancel() {
+        if (frameId !== null) {
+          window.cancelAnimationFrame(frameId);
+          frameId = null;
+        }
+        queuedStage = null;
+        queuedProgress = [];
+      },
+    };
   }
 
   async function handleAsk(query: string, imageDataUrl?: string | null) {
@@ -580,53 +743,67 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       );
       if (!isCurrentSession()) return;
       targetConversationId = savedPending?.id ?? targetConversationId;
+      const progressUpdater = createRagProgressFrameUpdater(
+        (item) => item.id === pending.id,
+        isCurrentWorkspace,
+      );
       const updateRagProgress = (stage: RagProgressStage) => {
         latestRagProgress = mergeRagProgress(latestRagProgress, stage);
-        if (!isCurrentWorkspace()) return;
-        setMessages((current) =>
-          current.map((item) =>
+        progressUpdater.schedule(stage, latestRagProgress);
+      };
+      try {
+        const response = await queryRagStream(settings, {
+          query,
+          docIds: requestSelectedDocIds,
+          history: requestHistory,
+          imageDataUrl,
+          onEvent: (event) => {
+            if (event.type === "stage") {
+              updateRagProgress(event);
+            }
+          },
+        });
+        progressUpdater.cancel();
+        if (!isCurrentSession()) return;
+        const nextMessages: ChatMessage[] = baseMessages.map((item) =>
             item.id === pending.id
               ? {
                   ...item,
-                  content: stage.detail || item.content,
+                  content: response.answer,
+                  requestId: response.request_id,
+                  citations: response.citations,
+                  status: "done" as const,
                   ragProgress: latestRagProgress,
                 }
               : item,
-          ),
         );
-      };
-      const response = await queryRagStream(settings, {
-        query,
-        docIds: requestSelectedDocIds,
-        history: requestHistory,
-        imageDataUrl,
-        onEvent: (event) => {
-          if (event.type === "stage") {
-            updateRagProgress(event);
-          }
-        },
-      });
-      if (!isCurrentSession()) return;
-      const nextMessages: ChatMessage[] = baseMessages.map((item) =>
-          item.id === pending.id
-            ? {
-                ...item,
-                content: response.answer,
-                requestId: response.request_id,
-                citations: response.citations,
-                status: "done" as const,
-                ragProgress: latestRagProgress,
-              }
-            : item,
-      );
-      if (isCurrentWorkspace()) {
-        setMessages(nextMessages);
-        setTypingMessageId(pending.id);
+        if (isCurrentWorkspace()) {
+          setMessages(nextMessages);
+          setTypingMessageId(pending.id);
+        }
+        await persistConversation(nextMessages, targetConversationId, requestSelectedDocIds, settings, requestWorkspaceId);
+      } finally {
+        progressUpdater.cancel();
       }
-      await persistConversation(nextMessages, targetConversationId, requestSelectedDocIds, settings, requestWorkspaceId);
     } catch (error) {
       if (!isCurrentSession()) return;
       if (isFetchInterrupted(error)) {
+        const interruptedMessages = markPendingAnswerInterrupted(baseMessages, pending.id, latestRagProgress);
+        if (isCurrentWorkspace()) {
+          setMessages(interruptedMessages);
+          setTypingMessageId(null);
+        }
+        try {
+          await persistConversation(
+            interruptedMessages,
+            targetConversationId,
+            requestSelectedDocIds,
+            settings,
+            requestWorkspaceId,
+          );
+        } catch {
+          // The initial sending state was already persisted before streaming began.
+        }
         return;
       }
       const failedMessages: ChatMessage[] = baseMessages.map((item) =>
@@ -680,56 +857,74 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
           ),
         );
       }
+      const progressUpdater = createRagProgressFrameUpdater(
+        (_item, index) => index === pendingIndex,
+        isCurrentWorkspace,
+      );
       const updateRagProgress = (stage: RagProgressStage) => {
         latestRagProgress = mergeRagProgress(latestRagProgress, stage);
-        if (!isCurrentWorkspace()) return;
-        setMessages((current) =>
-          current.map((item, index) =>
-            index === pendingIndex
-              ? {
-                  ...item,
-                  content: stage.detail || item.content,
-                  ragProgress: latestRagProgress,
-                }
-              : item,
-          ),
-        );
+        progressUpdater.schedule(stage, latestRagProgress);
       };
-      const response = await queryRagStream(nextSettings, {
-        query: userMessage.content,
-        docIds: conversation.source_doc_ids,
-        history: conversation.messages
-          .slice(0, userIndex)
-          .map((message) => `${message.role}: ${message.content}`)
-          .slice(-8),
-        imageDataUrl: userMessage.imageDataUrl,
-        onEvent: (event) => {
-          if (event.type === "stage") {
-            updateRagProgress(event);
-          }
-        },
-      });
-      if (!isCurrentSession()) return;
-      const nextMessages: ChatMessage[] = conversation.messages.map((item, index) =>
-        index === pendingIndex
-          ? {
-              ...item,
-              content: response.answer,
-              requestId: response.request_id,
-              citations: response.citations,
-              status: "done" as const,
-              ragProgress: latestRagProgress,
+      try {
+        const response = await queryRagStream(nextSettings, {
+          query: userMessage.content,
+          docIds: conversation.source_doc_ids,
+          history: conversation.messages
+            .slice(0, userIndex)
+            .map((message) => `${message.role}: ${message.content}`)
+            .slice(-8),
+          imageDataUrl: userMessage.imageDataUrl,
+          onEvent: (event) => {
+            if (event.type === "stage") {
+              updateRagProgress(event);
             }
-          : item,
-      );
-      if (isCurrentWorkspace()) {
-        setMessages(nextMessages);
-        setTypingMessageId(pending.id);
+          },
+        });
+        progressUpdater.cancel();
+        if (!isCurrentSession()) return;
+        const nextMessages: ChatMessage[] = conversation.messages.map((item, index) =>
+          index === pendingIndex
+            ? {
+                ...item,
+                content: response.answer,
+                requestId: response.request_id,
+                citations: response.citations,
+                status: "done" as const,
+                ragProgress: latestRagProgress,
+              }
+            : item,
+        );
+        if (isCurrentWorkspace()) {
+          setMessages(nextMessages);
+          setTypingMessageId(pending.id);
+        }
+        await persistConversation(nextMessages, conversation.id, conversation.source_doc_ids, nextSettings, workspaceId);
+      } finally {
+        progressUpdater.cancel();
       }
-      await persistConversation(nextMessages, conversation.id, conversation.source_doc_ids, nextSettings, workspaceId);
     } catch (error) {
       if (!isCurrentSession()) return;
       if (isFetchInterrupted(error)) {
+        const interruptedMessages = markPendingAnswerInterrupted(
+          conversation.messages,
+          pending.id,
+          latestRagProgress,
+        );
+        if (isCurrentWorkspace()) {
+          setMessages(interruptedMessages);
+          setTypingMessageId(null);
+        }
+        try {
+          await persistConversation(
+            interruptedMessages,
+            conversation.id,
+            conversation.source_doc_ids,
+            nextSettings,
+            workspaceId,
+          );
+        } catch {
+          // Keep the server's existing sending state so a later reload can retry recovery.
+        }
         return;
       }
       const failedMessages: ChatMessage[] = conversation.messages.map((item, index) =>
@@ -1099,7 +1294,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
               onClick={() => setAccountMenuOpen((open) => !open)}
             >
               {auth.user?.avatar_url ? (
-                <img src={auth.user.avatar_url} alt="" />
+                <img src={auth.user.avatar_url} alt="" decoding="async" />
               ) : auth.user ? (
                 auth.user.display_name.slice(0, 1).toUpperCase()
               ) : (
@@ -1156,11 +1351,14 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             onSourcesChange={setSources}
             onUpload={handleUpload}
             onDeleteSource={handleDeleteSource}
+            onRetrySource={handleRetrySource}
             onRenameSource={handleRenameSource}
             onOpenSource={handleOpenSource}
             activeContent={activeSourceContent}
             contentLoading={sourceContentLoading}
             contentError={sourceContentError}
+            assetToken={settings.token}
+            assetApiBaseUrl={settings.apiBaseUrl}
             onCloseContent={() => {
               setActiveSourceContent(null);
               setSourceContentError("");
@@ -1177,6 +1375,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             busy={busy}
             conversationTitle={conversationTitle}
             typingMessageId={typingMessageId}
+            assetToken={settings.token}
+            assetApiBaseUrl={settings.apiBaseUrl}
             onTypingComplete={() => setTypingMessageId(null)}
             onAsk={handleAsk}
             onFeedback={handleFeedback}
@@ -1284,7 +1484,7 @@ function AccountMenu({
 
 function AccountAvatar({ user }: { user: AuthUser }) {
   return user.avatar_url ? (
-    <img className="account-avatar-image" src={user.avatar_url} alt="" />
+    <img className="account-avatar-image" src={user.avatar_url} alt="" decoding="async" />
   ) : (
     <span className="account-avatar-fallback">{user.display_name.slice(0, 1).toUpperCase()}</span>
   );
@@ -1413,7 +1613,7 @@ function ProfilePage({ user, settings, onBack }: { user: AuthUser; settings: Set
         <form className="account-section" onSubmit={saveProfile}>
           <div className="profile-hero">
             <div className="profile-avatar">
-              {avatarUrl ? <img src={avatarUrl} alt="" /> : <span>{displayName.slice(0, 1).toUpperCase() || "U"}</span>}
+              {avatarUrl ? <img src={avatarUrl} alt="" decoding="async" /> : <span>{displayName.slice(0, 1).toUpperCase() || "U"}</span>}
             </div>
             <div>
               <strong>{displayName || user.display_name}</strong>
@@ -1965,7 +2165,11 @@ function AdminUsersPanel({
                 </label>
                 <div className="admin-user-main">
                   <div className="admin-user-avatar">
-                    {user.avatar_url ? <img src={user.avatar_url} alt="" /> : <span>{user.display_name.slice(0, 1).toUpperCase()}</span>}
+                    {user.avatar_url ? (
+                      <img src={user.avatar_url} alt="" loading="lazy" decoding="async" />
+                    ) : (
+                      <span>{user.display_name.slice(0, 1).toUpperCase()}</span>
+                    )}
                   </div>
                   <div>
                     <strong>{user.display_name}</strong>
@@ -2089,8 +2293,26 @@ function findPreviousUserMessageIndex(messages: ChatMessage[], fromIndex: number
   return -1;
 }
 
+function markPendingAnswerInterrupted(
+  messages: ChatMessage[],
+  pendingId: string,
+  ragProgress: RagProgressStage[],
+): ChatMessage[] {
+  return messages.map((message) =>
+    message.id === pendingId
+      ? {
+          ...message,
+          content: "连接已中断，刷新页面后将自动恢复回答。",
+          status: "sending" as const,
+          ragProgress,
+        }
+      : message,
+  );
+}
+
 function isFetchInterrupted(error: unknown) {
-  return error instanceof TypeError && error.message === "Failed to fetch";
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  return error instanceof TypeError && /(failed to fetch|networkerror|load failed|fetch failed)/i.test(error.message);
 }
 
 function settingsEqual(left: Settings, right: Settings) {
@@ -2174,9 +2396,11 @@ async function waitForSourcesReady(
   const pendingUris = new Set(pendingSources.map((source) => source.source_uri));
   const pendingTitles = new Set(pendingSources.map((source) => source.title));
   const deadline = Date.now() + 180_000;
+  let attempts = 0;
   while (Date.now() < deadline) {
-    await new Promise((resolve) => window.setTimeout(resolve, 1500));
-    const rows = await listSources(settings);
+    await sleep(sourceReadyPollDelayMs(attempts));
+    attempts += 1;
+    const rows = await listSourcesCoalesced(settings);
     const pendingRows = rows.filter((source) => pendingIds.has(source.doc_id));
     const newReadyRows = rows.filter(
       (source) =>
@@ -2188,7 +2412,7 @@ async function waitForSourcesReady(
       return rows;
     }
   }
-  return listSources(settings);
+  return listSourcesCoalesced(settings);
 }
 
 function resolveUploadedSources(
@@ -2206,6 +2430,31 @@ function resolveUploadedSources(
       !sourceKeysBeforeUpload.has(sourceStateKey(source)) &&
       (pendingUris.has(source.source_uri) || pendingTitles.has(source.title)),
   );
+}
+
+function artifactPollDelayMs(failureCount: number) {
+  const base = documentIsHidden() ? ARTIFACT_STATUS_POLL_HIDDEN_MS : ARTIFACT_STATUS_POLL_MS;
+  const backedOff = Math.min(ARTIFACT_STATUS_POLL_MAX_MS, base * Math.max(1, failureCount + 1));
+  return withJitter(backedOff);
+}
+
+function sourceReadyPollDelayMs(attempt: number) {
+  const visibilityMultiplier = documentIsHidden() ? 3 : 1;
+  const progressMultiplier = attempt < 10 ? 1 : attempt < 30 ? 2 : 4;
+  return withJitter(Math.min(SOURCE_READY_POLL_MAX_MS, SOURCE_READY_POLL_BASE_MS * visibilityMultiplier * progressMultiplier));
+}
+
+function withJitter(valueMs: number) {
+  const jitter = 0.85 + Math.random() * 0.3;
+  return Math.round(valueMs * jitter);
+}
+
+function sleep(delayMs: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, delayMs));
+}
+
+function documentIsHidden() {
+  return typeof document !== "undefined" && document.hidden;
 }
 
 function sourceRowsForList(rows: SourceItem[]) {
@@ -2257,7 +2506,7 @@ function applyWorkspaceSourceTitles(rows: SourceItem[], workspaceId: string) {
 
 async function deleteWorkspaceRemoteData(workspaceId: string, settings: Settings, workspaces: WorkspaceRecord[]) {
   const [sourceRows, conversationRows, artifactRows] = await Promise.all([
-    listSources(settings),
+    listSourcesCoalesced(settings),
     listConversations(settings),
     listArtifacts(settings, workspaceId),
   ]);
@@ -2301,11 +2550,19 @@ function sourceReferencedByOtherWorkspace(
 }
 
 function sourceMatchesWorkspace(source: SourceItem, workspaceIds: Set<string>) {
-  return workspaceIds.has(source.doc_id) || Boolean(source.child_doc_ids?.some((docId) => workspaceIds.has(docId)));
+  return (
+    workspaceIds.has(source.doc_id) ||
+    Boolean(source.child_doc_ids?.some((docId) => workspaceIds.has(docId))) ||
+    Boolean(source.workspace_alias_ids?.some((aliasId) => workspaceIds.has(aliasId)))
+  );
 }
 
 function sourceIdsForWorkspace(sources: SourceItem[]) {
-  return sources.flatMap((source) => [source.doc_id, ...(source.child_doc_ids || [])]);
+  return sources.flatMap((source) => [
+    source.doc_id,
+    ...(source.child_doc_ids || []),
+    ...(source.workspace_alias_ids || []),
+  ]);
 }
 
 function dedupeStrings(values: string[]) {
@@ -2327,6 +2584,20 @@ function mergeSelectedState(next: SourceItem[], current: SourceItem[], workspace
     ...item,
     selected: item.status === "ready" ? (selected.get(sourceStateKey(item)) ?? item.current) : false,
   }));
+}
+
+function preservePendingSourceRows(next: SourceItem[], current: SourceItem[]) {
+  const nextKeys = new Set(next.map(sourceStateKey));
+  const nextTitles = new Set(next.map((source) => source.title));
+  const nextUris = new Set(next.map((source) => source.source_uri));
+  const pendingRows = current.filter(
+    (source) =>
+      source.status !== "ready" &&
+      !nextKeys.has(sourceStateKey(source)) &&
+      !nextTitles.has(source.title) &&
+      !nextUris.has(source.source_uri),
+  );
+  return [...pendingRows, ...next];
 }
 
 function sourceStateKey(source: SourceItem) {

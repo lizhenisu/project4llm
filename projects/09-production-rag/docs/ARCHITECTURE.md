@@ -680,7 +680,8 @@ object_store/
 ├── canonical/
 │   ├── source_documents.jsonl              # 所有版本的文档归档
 │   ├── deleted_documents.jsonl             # 删除墓碑记录
-│   └── source_guides.jsonl                # LLM 生成的文档摘要
+│   ├── source_guides.jsonl                  # LLM 生成的文档摘要
+│   └── source_section_summaries.jsonl       # 章节级提取摘要
 ├── current_versions.json                   # {tenant: {doc_id: version}}
 └── artifacts/
     └── <tenant>/
@@ -732,6 +733,12 @@ load_current_versions(object_store_dir, tenant_id)
 - 查询改写阶段提供“资料摘要”
 - 对 PDF 页、图片等子文档查询提供父文档语义背景
 - 重建对象存储时恢复摘要缓存，避免重复 LLM 调用
+
+### 12.5 章节级提取摘要
+
+`canonical/source_section_summaries.jsonl` 按租户、来源文档、版本和章节序号保存确定性提取摘要。
+比较、综合、信息抽取和报告任务会把这些摘要作为独立证据加入上下文预算；普通文档总结仍优先使用更紧凑的源指南。
+该层不增加模型调用，支持本地与 S3/MinIO 后端，并在删除来源时同步清理。
 
 ---
 
@@ -957,7 +964,7 @@ release_gate.py
 | `NEW_API_URL` | — | OpenAI 兼容端点 |
 | `NEW_API_KEY` | — | OpenAI 兼容 Key |
 | `SILICONFLOW_URL` | `https://api.siliconflow.cn` | SiliconFlow 嵌入/重排/视觉描述端点 |
-| `SILICONFLOW_API_KEY` | — | SiliconFlow 嵌入、重排、PDF 图片描述 Key |
+| `SILICONFLOW_API_KEY` | — | SiliconFlow 嵌入、重排、PDF/用户提问图片描述 Key |
 
 #### 嵌入配置
 
@@ -1001,6 +1008,9 @@ release_gate.py
 | `RAG_MILVUS_URI` | `production_rag.db` (Lite) | Milvus 连接地址 |
 | `RAG_COLLECTION` | `rag_chunks_v1` | 集合名称 |
 | `MILVUS_TOKEN` | — | Milvus 认证 Token |
+| `RAG_MILVUS_GRPC_KEEPALIVE_TIME_MS` | `60000` | Milvus gRPC keepalive 间隔，避免高并发连接下过密 ping |
+| `RAG_MILVUS_GRPC_KEEPALIVE_TIMEOUT_MS` | `20000` | Milvus gRPC keepalive 超时时间 |
+| `RAG_MILVUS_GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS` | `0` | 空闲连接是否继续发送 keepalive ping |
 
 #### 认证
 
@@ -1009,6 +1019,7 @@ release_gate.py
 | `RAG_API_TOKEN` | (未设置) | API Bearer Token |
 | `RAG_REQUIRE_AUTH_CONTEXT` | `false` | 强制要求 ACL 头 |
 | `RAG_FIXED_TEST_LOGIN_TOKEN` | `production-rag-fixed-test-login-token` | 固定测试账号 `test_user` 的专属登录 token |
+| `RAG_AUTH_TOKEN_CACHE_TTL_SECONDS` | `2` | 登录 token 验证短缓存秒数，设为 `0` 可关闭 |
 
 #### PDF 处理
 
@@ -1017,7 +1028,23 @@ release_gate.py
 | `RAG_PDF_IMAGE_CAPTION_BACKEND` | `siliconflow` | 图片描述后端 |
 | `RAG_PDF_IMAGE_CAPTION_MODEL` | `Qwen/Qwen3-VL-8B-Instruct` | 视觉描述模型 |
 | `RAG_PDF_CAPTION_MAX_IMAGES` | `24` | 每 PDF 最多描述图片数 |
+| `RAG_QUERY_IMAGE_CAPTION_BACKEND` | `siliconflow` | 用户提问图片描述后端 |
+| `RAG_QUERY_IMAGE_CAPTION_MODEL` | `Qwen/Qwen3-VL-8B-Instruct` | 用户提问图片描述模型 |
+| `RAG_MAX_QUERY_IMAGE_BYTES` | `2097152` | 用户对话/检索图片解码后的最大字节数，超出后在占用查询队列前返回 `413` |
+| `RAG_MAX_QUERY_REQUEST_BYTES` | `4456448` | `/query`、`/query/stream`、`/search` 请求体最大字节数，用 `Content-Length` 在读取 JSON 前早期拒绝 |
+| `RAG_MAX_CONVERSATION_REQUEST_BYTES` | `8912896` | `/conversations` 保存请求体最大字节数，避免历史消息、引用和图片 data URL 一次性写入过大 |
+| `RAG_MAX_CONVERSATION_IMAGES` | `4` | 单次 `/conversations` 保存最多允许携带的图片消息数 |
+| `RAG_MAX_CONVERSATION_IMAGE_BYTES` | `4194304` | 单次 `/conversations` 保存中所有图片解码后的总字节数上限 |
 | `RAG_PII_POLICY` | `warn` | PII 策略 (warn/redact/fail) |
+
+#### 运行时事件日志
+
+| 环境变量 | 默认值 | 说明 |
+|---------|--------|------|
+| `RAG_EVENT_MAX_JSON_BYTES` | `65536` | 单条 runtime JSONL 事件的目标最大字节数，超出后保留关键字段并记录 `_event_truncated` |
+| `RAG_EVENT_MAX_STRING_CHARS` | `4096` | 事件中单个字符串字段的最大字符数 |
+| `RAG_EVENT_MAX_LIST_ITEMS` | `100` | 事件中单个数组字段最多保留的元素数 |
+| `RAG_EVENT_MAX_DICT_ITEMS` | `200` | 事件中单个对象字段最多保留的键值对数量 |
 
 ### 17.2 SiliconFlow API 端点
 

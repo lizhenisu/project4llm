@@ -12,6 +12,14 @@ from rag_core.guards import mentions_other_tenant
 from rag_core.milvus_store import build_filter_expr, connect, ensure_collection, hybrid_search
 from rag_core.versioning import load_current_versions
 from rag_core.rerankers import build_reranker
+from rag_core.retrieval_scope import (
+    annotate_retrieval_source,
+    context_chunks_per_source,
+    group_selected_doc_ids,
+    per_source_candidate_limit,
+    round_robin_hit_groups,
+    should_fan_out_source_retrieval,
+)
 from rag_core.rewrite import rewrite_query
 from rag_core.source_guides import load_source_guides_for_rewrite
 from rag_core.types import SearchHit, TraceInfo
@@ -52,7 +60,7 @@ def retrieve_and_rerank(
     current_versions = None if include_all_sources else (
         {}
         if doc_version is not None
-        else load_current_versions(config.object_store_dir, tenant_id=tenant_id)
+        else load_current_versions(config.object_store_dir, tenant_id=tenant_id, config=config)
     )
     emit_stage(
         stage_callback,
@@ -161,14 +169,41 @@ def retrieve_and_rerank(
         "正在 Milvus 中执行 hybrid dense + sparse 检索。",
     )
     search_start = perf_counter()
-    candidates = hybrid_search(
-        client,
-        collection_name=config.collection_name,
-        query_vector=query_vector,
-        query_text=rewrite.rewritten_query,
-        filter_expr=filter_expr,
-        limit=candidate_limit,
-    )
+    selected_source_groups = group_selected_doc_ids(doc_ids or [])
+    if should_fan_out_source_retrieval(selected_source_groups):
+        per_source_limit = per_source_candidate_limit(candidate_limit, len(selected_source_groups))
+        candidate_groups = [
+            annotate_retrieval_source(
+                hybrid_search(
+                    client,
+                    collection_name=config.collection_name,
+                    query_vector=query_vector,
+                    query_text=rewrite.rewritten_query,
+                    filter_expr=build_filter_expr(
+                        tenant_id=tenant_id,
+                        allowed_acl_groups=acl_groups,
+                        doc_version=doc_version,
+                        current_doc_versions=current_versions,
+                        embedding_model=embedding_model.model_name,
+                        doc_ids=group_doc_ids,
+                        source_types=source_types,
+                    ),
+                    limit=per_source_limit,
+                ),
+                source_id,
+            )
+            for source_id, group_doc_ids in selected_source_groups
+        ]
+        candidates = round_robin_hit_groups(candidate_groups)
+    else:
+        candidates = hybrid_search(
+            client,
+            collection_name=config.collection_name,
+            query_vector=query_vector,
+            query_text=rewrite.rewritten_query,
+            filter_expr=filter_expr,
+            limit=candidate_limit,
+        )
     search_ms = elapsed_ms(search_start)
     emit_stage(
         stage_callback,
@@ -178,6 +213,8 @@ def retrieve_and_rerank(
         f"已召回 {len(candidates)} 个候选片段。",
         latency_ms=search_ms,
         candidate_count=len(candidates),
+        source_group_count=len(selected_source_groups),
+        source_fanout=should_fan_out_source_retrieval(selected_source_groups),
     )
     emit_stage(
         stage_callback,
@@ -214,7 +251,11 @@ def retrieve_and_rerank(
         reranked,
         max_selected=context_limit,
         max_chars=config.max_context_chars,
-        max_chunks_per_doc=config.max_chunks_per_doc,
+        max_chunks_per_doc=context_chunks_per_source(
+            config.max_chunks_per_doc,
+            context_limit,
+            selected_source_groups,
+        ),
         min_rerank_score=config.min_rerank_score,
         text_unit_counter=getattr(embedding_model, "count_tokens", None),
     )
@@ -244,7 +285,11 @@ def retrieve_and_rerank(
         source_types=source_types or [],
         doc_ids=doc_ids or [],
         filter_expr=filter_expr,
-        retrieval_mode="hybrid_dense_sparse_rerank",
+        retrieval_mode=(
+            "hybrid_dense_sparse_source_fanout_rerank"
+            if should_fan_out_source_retrieval(selected_source_groups)
+            else "hybrid_dense_sparse_rerank"
+        ),
         candidate_count=len(candidates),
         reranked_count=len(reranked),
         context_count=len(hits),

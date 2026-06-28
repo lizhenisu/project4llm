@@ -24,6 +24,51 @@ services:
     volumes:
       - ./volumes/minio:/minio_data
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: rag-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-production_rag}
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag} -d ${POSTGRES_DB:-production_rag}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgbouncer:
+    build:
+      context: ./ops/pgbouncer
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_password}
+      PGBOUNCER_MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-200}
+      PGBOUNCER_DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
+      PGBOUNCER_RESERVE_POOL_SIZE: ${PGBOUNCER_RESERVE_POOL_SIZE:-5}
+      PGBOUNCER_MAX_DB_CONNECTIONS: ${PGBOUNCER_MAX_DB_CONNECTIONS:-60}
+      PGBOUNCER_SERVER_IDLE_TIMEOUT_SECONDS: ${PGBOUNCER_SERVER_IDLE_TIMEOUT_SECONDS:-600}
+      PGBOUNCER_QUERY_WAIT_TIMEOUT_SECONDS: ${PGBOUNCER_QUERY_WAIT_TIMEOUT_SECONDS:-30}
+    ports:
+      - "6432:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U ${POSTGRES_USER:-rag} -d ${POSTGRES_DB:-production_rag}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
   milvus:
     image: milvusdb/milvus:v2.6.13
     container_name: rag-milvus
@@ -40,21 +85,68 @@ services:
       - etcd
       - minio
 
-  rag-api:
+  rag-worker:
     build:
       context: ../..
       dockerfile: projects/09-production-rag/Dockerfile
-    container_name: rag-api
+    command: ["./scripts/start_worker.sh"]
     env_file:
       - ./.env
     environment:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
       RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
+      RAG_OBJECT_STORE_BACKEND: ${RAG_OBJECT_STORE_BACKEND:-s3}
+      RAG_S3_ENDPOINT_URL: ${RAG_S3_ENDPOINT_URL:-http://minio:9000}
+      RAG_S3_ACCESS_KEY_ID: ${RAG_S3_ACCESS_KEY_ID:-minioadmin}
+      RAG_S3_SECRET_ACCESS_KEY: ${RAG_S3_SECRET_ACCESS_KEY:-minioadmin}
+      RAG_S3_BUCKET: ${RAG_S3_BUCKET:-production-rag}
+      RAG_S3_PREFIX: ${RAG_S3_PREFIX:-app}
       RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "1024"
       RAG_RUNTIME_DIR: /app/projects/09-production-rag/runtime
+      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@pgbouncer:6432/${POSTGRES_DB:-production_rag}
+      NEW_API_URL: ${NEW_API_URL:-}
+      NEW_API_KEY: ${NEW_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gemini-3-flash-preview}
+      SILICONFLOW_URL: ${SILICONFLOW_URL:-https://api.siliconflow.cn}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
+      RAG_EMBEDDING_BACKEND: ${RAG_EMBEDDING_BACKEND:-siliconflow}
+      RAG_RERANK_BACKEND: ${RAG_RERANK_BACKEND:-siliconflow}
+    volumes:
+      - ./runtime:/app/projects/09-production-rag/runtime
+      - ./volumes/db:/app/projects/09-production-rag/runtime/db
+      - ./object_store:/app/projects/09-production-rag/object_store
+    depends_on:
+      milvus:
+        condition: service_started
+      pgbouncer:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rag-api:
+    build:
+      context: ../..
+      dockerfile: projects/09-production-rag/Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      MILVUS_URI: http://milvus:19530
+      RAG_COLLECTION: rag_chunks_v1
+      RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
+      RAG_OBJECT_STORE_BACKEND: ${RAG_OBJECT_STORE_BACKEND:-s3}
+      RAG_S3_ENDPOINT_URL: ${RAG_S3_ENDPOINT_URL:-http://minio:9000}
+      RAG_S3_ACCESS_KEY_ID: ${RAG_S3_ACCESS_KEY_ID:-minioadmin}
+      RAG_S3_SECRET_ACCESS_KEY: ${RAG_S3_SECRET_ACCESS_KEY:-minioadmin}
+      RAG_S3_BUCKET: ${RAG_S3_BUCKET:-production-rag}
+      RAG_S3_PREFIX: ${RAG_S3_PREFIX:-app}
+      RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}
+      EMBEDDING_DIM: "1024"
+      IMAGE_EMBEDDING_DIM: "1024"
+      RAG_RUNTIME_DIR: /app/projects/09-production-rag/runtime
+      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@pgbouncer:6432/${POSTGRES_DB:-production_rag}
+      RAG_INGEST_EXECUTION_MODE: ${RAG_INGEST_EXECUTION_MODE:-external}
       RAG_QUERY_REWRITE_BACKEND: ${RAG_QUERY_REWRITE_BACKEND:-llm}
       RAG_QUERY_REWRITE_HISTORY_TURNS: "6"
       RAG_QUERY_REWRITE_MAX_TOKENS: "256"
@@ -66,14 +158,19 @@ services:
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
       RAG_EMBEDDING_BACKEND: ${RAG_EMBEDDING_BACKEND:-siliconflow}
       RAG_RERANK_BACKEND: ${RAG_RERANK_BACKEND:-siliconflow}
-    ports:
-      - "8008:8008"
+    expose:
+      - "8008"
     volumes:
       - ./runtime:/app/projects/09-production-rag/runtime
       - ./volumes/db:/app/projects/09-production-rag/runtime/db
       - ./object_store:/app/projects/09-production-rag/object_store
     depends_on:
-      - milvus
+      milvus:
+        condition: service_started
+      pgbouncer:
+        condition: service_healthy
+      rag-worker:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8008/health"]
       interval: 20s
@@ -116,6 +213,43 @@ services:
       retries: 5
       start_period: 10s
 
+  prometheus:
+    image: prom/prometheus:v3.11.3
+    container_name: rag-prometheus
+    profiles: ["observability"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${RAG_PROMETHEUS_RETENTION:-15d}
+      - --web.enable-lifecycle
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      rag-api:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:13.0.3
+    container_name: rag-grafana
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
   rag-ingest:
     build:
       context: ../..
@@ -129,13 +263,27 @@ services:
       MILVUS_URI: http://milvus:19530
       RAG_COLLECTION: rag_chunks_v1
       RAG_OBJECT_STORE_DIR: /app/projects/09-production-rag/object_store
+      RAG_OBJECT_STORE_BACKEND: ${RAG_OBJECT_STORE_BACKEND:-s3}
+      RAG_S3_ENDPOINT_URL: ${RAG_S3_ENDPOINT_URL:-http://minio:9000}
+      RAG_S3_ACCESS_KEY_ID: ${RAG_S3_ACCESS_KEY_ID:-minioadmin}
+      RAG_S3_SECRET_ACCESS_KEY: ${RAG_S3_SECRET_ACCESS_KEY:-minioadmin}
+      RAG_S3_BUCKET: ${RAG_S3_BUCKET:-production-rag}
+      RAG_S3_PREFIX: ${RAG_S3_PREFIX:-app}
       RAG_TEXT_INPUT: ${RAG_TEXT_INPUT:-}
       RAG_IMAGE_INPUT: ${RAG_IMAGE_INPUT:-}
       RAG_IMAGE_EMBEDDING_BACKEND: ${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}
       EMBEDDING_DIM: "1024"
       IMAGE_EMBEDDING_DIM: "1024"
+      RAG_METADATA_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_password}@pgbouncer:6432/${POSTGRES_DB:-production_rag}
     volumes:
       - ./object_store:/app/projects/09-production-rag/object_store
       - ./ingest:/data:ro
     depends_on:
-      - milvus
+      milvus:
+        condition: service_started
+      pgbouncer:
+        condition: service_healthy
+
+volumes:
+  grafana-data:
+  prometheus-data:

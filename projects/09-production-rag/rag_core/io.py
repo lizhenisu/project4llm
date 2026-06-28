@@ -629,6 +629,23 @@ class PdfImageCaptioner:
             model=os.environ.get("RAG_PDF_IMAGE_CAPTION_MODEL", "Qwen/Qwen3-VL-8B-Instruct"),
         )
 
+    @classmethod
+    def from_query_env(cls) -> "PdfImageCaptioner | None":
+        backend = os.environ.get("RAG_QUERY_IMAGE_CAPTION_BACKEND", "siliconflow").lower()
+        if backend in {"", "none", "off", "disabled"}:
+            return None
+        api_key = os.environ.get("SILICONFLOW_API_KEY")
+        if not api_key:
+            return None
+        return cls(
+            base_url=os.environ.get("SILICONFLOW_URL", "https://api.siliconflow.cn"),
+            api_key=api_key,
+            model=os.environ.get(
+                "RAG_QUERY_IMAGE_CAPTION_MODEL",
+                os.environ.get("RAG_PDF_IMAGE_CAPTION_MODEL", "Qwen/Qwen3-VL-8B-Instruct"),
+            ),
+        )
+
     def caption_pdf_image(self, *, document, image, label: str, language_hint: str = "en") -> str:
         xref = image[0]
         try:
@@ -650,6 +667,25 @@ class PdfImageCaptioner:
                 f"图片来源: {label}"
             )
         )
+        return self.caption_data_url(
+            image_data_url=image_data_url_from_parts(extension=extension, image_bytes=image_bytes),
+            prompt=prompt,
+        )
+
+    def caption_image_path(self, image_path: Path, *, query: str = "", language_hint: str = "zh") -> str:
+        try:
+            image_bytes = image_path.read_bytes()
+        except Exception:
+            return ""
+        if not image_bytes:
+            return ""
+        extension = image_path.suffix.lower().lstrip(".") or "png"
+        return self.caption_data_url(
+            image_data_url=image_data_url_from_parts(extension=extension, image_bytes=image_bytes),
+            prompt=query_image_caption_prompt(query=query, language_hint=language_hint),
+        )
+
+    def caption_data_url(self, *, image_data_url: str, prompt: str) -> str:
         try:
             response = post_json(
                 siliconflow_url(self.base_url, "/chat/completions"),
@@ -667,7 +703,7 @@ class PdfImageCaptioner:
                                 {
                                     "type": "image_url",
                                     "image_url": {
-                                        "url": image_data_url_from_parts(extension=extension, image_bytes=image_bytes),
+                                        "url": image_data_url,
                                     },
                                 },
                             ],
@@ -686,6 +722,22 @@ class PdfImageCaptioner:
         if isinstance(content, list):
             content = " ".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in content)
         return _compact_whitespace(str(content))
+
+
+def query_image_caption_prompt(*, query: str = "", language_hint: str = "zh") -> str:
+    if language_hint == "en":
+        return (
+            "Describe the user-uploaded image concisely for a RAG answer context. "
+            "Focus on visible objects, text, chart structure, numbers, and relationships. "
+            "Do not answer the question directly; only describe visual information in the image. "
+            f"User text question: {query or 'none'}"
+        )
+    return (
+        "请为 RAG 回答上下文简洁描述用户上传的图片。"
+        "重点说明图片中可见的对象、文字、图表结构、数字和关系。"
+        "不要直接回答问题，只描述图片本身可见的信息。"
+        f"用户文字问题: {query or '无'}"
+    )
 
 
 def save_pdf_image_asset(*, document, image, pdf_path: Path, page_no: int, image_index: int) -> dict[str, str]:

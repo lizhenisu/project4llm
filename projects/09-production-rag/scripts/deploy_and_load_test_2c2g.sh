@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_DIR="$(cd "$PROJECT_DIR/../.." && pwd)"
 
-API_BASE_URL="${RAG_LOAD_BASE_URL:-http://127.0.0.1:8008}"
+API_BASE_URL="${RAG_LOAD_BASE_URL:-http://127.0.0.1:8080/api}"
 MOCK_INTERNAL_BASE_URL="${RAG_LOAD_MOCK_INTERNAL_BASE_URL:-http://rag-mock-external-api:18080}"
 MOCK_LLM_LATENCY_MS="${MOCK_LLM_LATENCY_MS:-10000}"
 MOCK_LLM_MODE="${MOCK_LLM_MODE:-echo}"

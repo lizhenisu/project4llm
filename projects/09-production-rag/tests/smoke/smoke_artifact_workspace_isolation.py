@@ -4,10 +4,16 @@ import os
 import sqlite3
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from rag_core.artifacts import MindMapArtifact, load_metadata_artifact, save_metadata_artifact
+from rag_core.artifacts import (
+    list_metadata_artifacts,
+    load_metadata_artifact,
+    MindMapArtifact,
+    save_metadata_artifact,
+)
 from rag_core.config import load_config
 from rag_core.text_utils import now_ms
 from serve import create_app
@@ -60,6 +66,14 @@ def run_smoke() -> None:
     body = registered.json()
     headers = {"Authorization": f"Bearer {body['token']}"}
     tenant_id = body["user"]["tenant_id"]
+    second_registered = api.post(
+        "/auth/register",
+        json={"username": "artifact_other_user", "password": "strong-password"},
+    )
+    assert second_registered.status_code == 200, second_registered.text
+    second_body = second_registered.json()
+    second_headers = {"Authorization": f"Bearer {second_body['token']}"}
+    second_tenant_id = second_body["user"]["tenant_id"]
 
     config = load_config()
     artifact_a = make_artifact(tenant_id=tenant_id, workspace_id="workspace-a", artifact_id="table-a")
@@ -68,6 +82,51 @@ def run_smoke() -> None:
     save_metadata_artifact(config, artifact_a)
     save_metadata_artifact(config, artifact_b)
     save_metadata_artifact(config, legacy_artifact)
+
+    conflicting_artifact = make_artifact(
+        tenant_id=second_tenant_id,
+        workspace_id="workspace-a",
+        artifact_id="table-a",
+    )
+    with patch("serve.pending_artifact", return_value=conflicting_artifact):
+        collision_response = api.post(
+            "/artifacts/table",
+            headers=second_headers,
+            json={
+                "title": "collision",
+                "tenant_id": second_tenant_id,
+                "workspace_id": "workspace-a",
+                "source_doc_ids": [],
+            },
+        )
+    assert collision_response.status_code == 409, collision_response.text
+    assert "Artifact ID is unavailable" in collision_response.text
+    assert tenant_id not in collision_response.text
+
+    cross_tenant_get = api.get(
+        f"/artifacts/table-a?tenant_id={tenant_id}&workspace_id=workspace-a",
+        headers=second_headers,
+    )
+    assert cross_tenant_get.status_code == 404, cross_tenant_get.text
+    cross_tenant_rename = api.patch(
+        f"/artifacts/table-a?tenant_id={tenant_id}&workspace_id=workspace-a",
+        headers=second_headers,
+        json={"title": "cross tenant overwrite"},
+    )
+    assert cross_tenant_rename.status_code == 404, cross_tenant_rename.text
+    cross_tenant_delete = api.delete(
+        f"/artifacts/table-a?tenant_id={tenant_id}&workspace_id=workspace-a",
+        headers=second_headers,
+    )
+    assert cross_tenant_delete.status_code == 200, cross_tenant_delete.text
+    assert cross_tenant_delete.json()["status"] == "not_found"
+    assert load_metadata_artifact(
+        config,
+        tenant_id=tenant_id,
+        workspace_id="workspace-a",
+        artifact_id="table-a",
+    ) is not None
+    assert list_metadata_artifacts(config, tenant_id=second_tenant_id) == []
 
     listed_a = api.get(f"/artifacts?tenant_id={tenant_id}&workspace_id=workspace-a", headers=headers)
     assert listed_a.status_code == 200, listed_a.text

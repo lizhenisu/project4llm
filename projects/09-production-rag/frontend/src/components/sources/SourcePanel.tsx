@@ -3,17 +3,25 @@ import { useRef, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import type { SourceContent, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
+import { ProtectedImage } from "../ui/ProtectedImage";
+
+const INITIAL_VISIBLE_SOURCE_COUNT = 80;
+const SOURCE_VISIBLE_INCREMENT = 80;
+const PROCESSING_STALE_WARNING_MS = 30 * 60 * 1000;
 
 type Props = {
   sources: SourceItem[];
   onSourcesChange: (sources: SourceItem[]) => void;
   onUpload: (file: File) => void;
   onDeleteSource: (source: SourceItem) => void;
+  onRetrySource?: (source: SourceItem) => void;
   onRenameSource?: (source: SourceItem, newTitle: string) => void;
   onOpenSource: (source: SourceItem) => void;
   activeContent: SourceContent | null;
   contentLoading: boolean;
   contentError: string;
+  assetToken?: string;
+  assetApiBaseUrl?: string;
   onCloseContent: () => void;
 };
 
@@ -22,11 +30,14 @@ export function SourcePanel({
   onSourcesChange,
   onUpload,
   onDeleteSource,
+  onRetrySource,
   onRenameSource,
   onOpenSource,
   activeContent,
   contentLoading,
   contentError,
+  assetToken,
+  assetApiBaseUrl,
   onCloseContent,
 }: Props) {
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -36,6 +47,7 @@ export function SourcePanel({
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [sourceToDelete, setSourceToDelete] = useState<SourceItem | null>(null);
+  const [visibleSourceCount, setVisibleSourceCount] = useState(INITIAL_VISIBLE_SOURCE_COUNT);
 
   
   useEffect(() => {
@@ -46,8 +58,17 @@ export function SourcePanel({
     return () => document.removeEventListener("click", handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    setVisibleSourceCount((current) => {
+      const minimum = Math.min(INITIAL_VISIBLE_SOURCE_COUNT, sources.length || INITIAL_VISIBLE_SOURCE_COUNT);
+      return Math.min(Math.max(current, minimum), Math.max(sources.length, INITIAL_VISIBLE_SOURCE_COUNT));
+    });
+  }, [sources.length]);
+
   const readySources = sources.filter((source) => source.status === "ready");
   const allSelected = readySources.length > 0 && readySources.every((source) => source.selected);
+  const visibleSources = sources.slice(0, visibleSourceCount);
+  const hiddenSourceCount = Math.max(0, sources.length - visibleSources.length);
 
   function toggleAll() {
     onSourcesChange(
@@ -93,12 +114,14 @@ export function SourcePanel({
             <span>全选</span>
             <input type="checkbox" checked={allSelected} onChange={toggleAll} />
           </label>
-          {sources.map((source) => {
-            const activeTask = source.status === "uploading" || source.status === "processing";
+          {visibleSources.map((source) => {
+            const activeTask = source.status === "uploading" || source.status === "queued" || source.status === "processing";
+            const progressDetail = sourceProgressDetail(source);
+            const staleTask = source.status === "processing" && sourceStatusAgeMs(source) >= PROCESSING_STALE_WARNING_MS;
             const sourceKey = sourceInstanceKey(source);
             const isEditing = editingSourceId === sourceKey;
             return (
-            <div className={`source-row status-${source.status}${activeTask ? " is-active-task" : ""}${isEditing ? " is-editing" : ""}`} key={sourceKey}>
+            <div className={`source-row status-${source.status}${activeTask ? " is-active-task" : ""}${staleTask ? " is-stale-task" : ""}${isEditing ? " is-editing" : ""}`} key={sourceKey}>
               <FileText className="file-type-icon" size={20} />
               
               <div className={`source-title${isEditing ? " is-editing" : ""}`}>
@@ -127,7 +150,23 @@ export function SourcePanel({
                 )}
                 <small>
                   {source.source_type} · {source.chunk_count} chunks
+                  {source.status !== "ready" ? ` · ${sourceStatusLabel(source.status)}` : ""}
                 </small>
+                {progressDetail ? (
+                  <small className={`source-progress${staleTask ? " is-stale" : ""}`}>{progressDetail}</small>
+                ) : null}
+                {source.status === "processing" && normalizedProgress(source) > 0 ? (
+                  <div
+                    className="source-progress-track"
+                    role="progressbar"
+                    aria-label={`${source.title} 处理进度`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={normalizedProgress(source)}
+                  >
+                    <span style={{ width: `${normalizedProgress(source)}%` }} />
+                  </div>
+                ) : null}
                 {source.error ? <small className="error-text">{source.error}</small> : null}
               </div>
 
@@ -156,6 +195,18 @@ export function SourcePanel({
                   <>
                   <div className="dropdown-backdrop" onMouseDown={() => setMenuOpenId(null)} />
                   <div className="dropdown-menu" style={{ top: menuPosition.top, right: menuPosition.right }} onMouseDown={(e) => e.stopPropagation()}>
+                    {source.status === "failed" && source.retryable && onRetrySource ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuOpenId(null);
+                          onRetrySource(source);
+                        }}
+                      >
+                        重新处理
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={(e) => {
@@ -193,6 +244,17 @@ export function SourcePanel({
             </div>
           );
           })}
+          {hiddenSourceCount > 0 ? (
+            <button
+              className="source-list-more"
+              type="button"
+              onClick={() =>
+                setVisibleSourceCount((current) => Math.min(sources.length, current + SOURCE_VISIBLE_INCREMENT))
+              }
+            >
+              显示更多来源（{hiddenSourceCount}）
+            </button>
+          ) : null}
         </div>
       )}
 
@@ -236,6 +298,8 @@ export function SourcePanel({
           content={activeContent}
           loading={contentLoading}
           error={contentError}
+          assetToken={assetToken}
+          assetApiBaseUrl={assetApiBaseUrl}
           onClose={onCloseContent}
         />
       ) : null}
@@ -247,15 +311,77 @@ function sourceInstanceKey(source: SourceItem) {
   return `${source.doc_id}::${source.doc_version}`;
 }
 
+function sourceStatusLabel(status: SourceItem["status"]) {
+  if (status === "queued") return "排队中";
+  if (status === "processing") return "处理中";
+  if (status === "uploading") return "上传中";
+  if (status === "failed") return "失败";
+  return "已就绪";
+}
+
+function sourceProgressDetail(source: SourceItem) {
+  const attemptCount = Math.max(0, source.attempt_count || 0);
+  if (source.status === "queued" && attemptCount > 0 && (source.next_attempt_at || 0) > 0) {
+    return `等待自动重试 · 已尝试 ${attemptCount} 次`;
+  }
+  if (source.status === "failed" && source.dead_lettered) {
+    return `已停止自动重试 · 共尝试 ${attemptCount} 次，可选择重新处理`;
+  }
+  if (source.status === "processing") {
+    const age = sourceStatusAgeMs(source);
+    if (age >= PROCESSING_STALE_WARNING_MS) {
+      const attemptDetail = attemptCount > 0 ? `（第 ${attemptCount} 次尝试）` : "";
+      return `处理时间已超过 30 分钟，疑似停滞，系统将自动尝试恢复${attemptDetail}`;
+    }
+    const stage = ingestionStageLabel(source.ingestion_stage);
+    const progress = normalizedProgress(source);
+    const attemptDetail = attemptCount > 1 ? ` · 第 ${attemptCount} 次尝试` : "";
+    const workDetail = source.progress_detail?.trim() ? ` · ${source.progress_detail.trim()}` : "";
+    if (stage && progress > 0) return `${stage} · ${progress}%${workDetail}${attemptDetail}`;
+    if (attemptCount > 1) return `第 ${attemptCount} 次处理尝试`;
+  }
+  return "";
+}
+
+function normalizedProgress(source: SourceItem) {
+  return Math.max(0, Math.min(100, Math.round(source.progress_percent || 0)));
+}
+
+function ingestionStageLabel(stage?: string) {
+  const labels: Record<string, string> = {
+    parsing: "正在解析文件",
+    parsed: "文件解析完成",
+    preparing: "正在准备文档",
+    chunking: "正在切分文档",
+    text_embedding: "正在生成文本向量",
+    image_embedding: "正在生成图片向量",
+    summarizing: "正在生成来源摘要",
+    indexing: "正在写入向量索引",
+    persisting: "正在保存摄取结果",
+    finalizing: "正在完成收尾",
+  };
+  return stage ? labels[stage] || "正在处理文档" : "";
+}
+
+function sourceStatusAgeMs(source: SourceItem) {
+  const timestamp = source.status === "queued" ? source.created_at : source.updated_at;
+  if (!timestamp || !Number.isFinite(timestamp)) return 0;
+  return Math.max(0, Date.now() - timestamp);
+}
+
 function SourceReader({
   content,
   loading,
   error,
+  assetToken,
+  assetApiBaseUrl,
   onClose,
 }: {
   content: SourceContent;
   loading: boolean;
   error: string;
+  assetToken?: string;
+  assetApiBaseUrl?: string;
   onClose: () => void;
 }) {
   return (
@@ -295,7 +421,14 @@ function SourceReader({
               content.blocks.map((block, index) =>
                 block.type === "image" && block.url ? (
                   <figure className="source-document-image" key={`${index}-${block.url.slice(0, 32)}`}>
-                    <img src={block.url} alt={block.title || block.page || "Document image"} />
+                    <ProtectedImage
+                      src={block.url}
+                      token={assetToken}
+                      apiBaseUrl={assetApiBaseUrl}
+                      alt={block.title || block.page || "Document image"}
+                      loading="lazy"
+                      decoding="async"
+                    />
                     {block.page || block.title ? (
                       <figcaption>{[block.page, block.title].filter(Boolean).join(" · ")}</figcaption>
                     ) : null}

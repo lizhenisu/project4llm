@@ -109,9 +109,34 @@ def main() -> None:
             "archived_documents": 1,
             "delete_tombstones": 1,
             "upload_dirs": 1,
+            "uploaded_objects": 0,
         }
         assert not upload_dir.exists()
         assert all(doc.doc_id != "private-doc" for doc in load_archived_source_documents(object_store_dir, include_deleted=True))
+
+        s3_work_dir = object_store_dir / "uploads" / "team_a" / "s3-work-copy"
+        s3_work_dir.mkdir(parents=True)
+        s3_work_file = s3_work_dir / "source.pdf"
+        s3_work_file.write_bytes(b"synthetic local parser copy")
+        s3_doc = SourceDocument(
+            tenant_id="team_a",
+            doc_id="s3-backed-doc",
+            doc_version=1,
+            source_type="pdf",
+            source_uri="s3://synthetic-bucket/uploads/team_a/s3-work-copy/source.pdf",
+            title="S3 backed doc",
+            text="synthetic S3 content",
+            acl_groups=["ops"],
+            metadata={"source_uri_local_work_path": str(s3_work_file)},
+        )
+        archive_source_documents(object_store_dir, [s3_doc])
+        s3_purged = purge_source_documents(
+            object_store_dir,
+            tenant_id="team_a",
+            doc_ids=["s3-backed-doc"],
+        )
+        assert s3_purged["upload_dirs"] == 1
+        assert not s3_work_dir.exists()
 
         concurrent_docs = [
             SourceDocument(

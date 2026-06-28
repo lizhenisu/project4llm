@@ -92,3 +92,107 @@ The directory contains:
 - `concurrency-*.stdout` and `concurrency-*.stderr`: raw runner logs for each level.
 
 The report directory is runtime output. Do not commit it if it contains source identifiers, filenames, or other user-private data.
+
+## Conversation API load
+
+To isolate PostgreSQL conversation persistence from model and Milvus latency, run
+the create/update/list/read/delete workflow against one or more API instances:
+
+```bash
+source .venv/bin/activate
+python projects/09-production-rag/tests/load/conversation_api_load.py \
+  --base-urls http://127.0.0.1:18181,http://127.0.0.1:18182 \
+  --token synthetic-test-token \
+  --users 1000 \
+  --concurrency 100
+```
+
+Each virtual user owns a synthetic tenant and a unique conversation. Consecutive
+operations rotate across the supplied API origins, validate read-after-write
+consistency, and delete the conversation at the end. The summary reports workflow
+and request throughput plus per-operation p50/p95/p99 latency. Use a synthetic
+token and tenant prefix, and do not commit output from runs against real users.
+
+## Isolated Milvus search capacity
+
+Create a disposable synthetic collection before starting an API process configured
+with the same `MILVUS_URI`, `RAG_COLLECTION`, embedding dimensions, and embedding
+model:
+
+```bash
+source .venv/bin/activate
+MILVUS_URI=http://127.0.0.1:19530 \
+RAG_COLLECTION=rag_milvus_capacity \
+python projects/09-production-rag/tests/load/milvus_seed_load.py seed \
+  --reset \
+  --tenant-id milvus-capacity \
+  --tenant-count 10 \
+  --documents-per-tenant 100 \
+  --chunks-per-document 10
+```
+
+Run authenticated search without final answer generation:
+
+```bash
+source .venv/bin/activate
+python projects/09-production-rag/tests/load/milvus_search_load.py \
+  --base-url http://127.0.0.1:8008 \
+  --token synthetic-capacity-api-token \
+  --tenant-id milvus-capacity \
+  --tenant-count 10 \
+  --acl-group engineering \
+  --include-all-sources \
+  --warmup-requests 50 \
+  --requests 500 \
+  --concurrency 50 \
+  --candidate-limit 30 \
+  --context-limit 5 \
+  --max-failure-rate 0 \
+  --max-p95-ms 10000 \
+  --min-throughput-rps 5 \
+  --min-avg-hit-count 1
+```
+
+For a multi-tenant run, use a dedicated synthetic API token that authorizes the
+`X-RAG-Tenant-ID` header. A login session token is bound to its account tenant;
+the load runner rejects a response when the resolved trace tenant differs from
+the requested tenant.
+
+Drop the synthetic collection after the run:
+
+```bash
+source .venv/bin/activate
+MILVUS_URI=http://127.0.0.1:19530 \
+RAG_COLLECTION=rag_milvus_capacity \
+python projects/09-production-rag/tests/load/milvus_seed_load.py drop
+```
+
+## SSE connection pressure
+
+Point the API's model URLs at the mock service with a deliberate response delay,
+then run the stream client through the Nginx `/api` route:
+
+```bash
+source .venv/bin/activate
+python projects/09-production-rag/tests/load/rag_query_load.py \
+  --base-url http://127.0.0.1:8080/api \
+  --endpoint /query/stream \
+  --token synthetic-sse-api-token \
+  --tenant-id synthetic-sse-tenant \
+  --acl-group engineering \
+  --external-mode mock \
+  --warmup 10 \
+  --requests 200 \
+  --concurrency 200 \
+  --max-failure-rate 0 \
+  --max-p95-ms 15000 \
+  --max-first-event-p95-ms 5000 \
+  --min-throughput-rps 10 \
+  --min-accepted-rate 1
+```
+
+The runner creates the requested number of client workers; `--concurrency 200`
+therefore means up to 200 simultaneous HTTP streams rather than the Python
+default executor's smaller worker count. The summary keeps connection acceptance,
+stream completion, capacity rejection, first-event latency, and total latency
+separate.

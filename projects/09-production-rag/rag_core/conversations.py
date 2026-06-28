@@ -14,6 +14,10 @@ from rag_core.text_utils import now_ms
 CONVERSATIONS_DIR = Path("conversations")
 
 
+class ConversationTenantConflictError(ValueError):
+    """Raised when a tenant attempts to reuse another tenant's conversation ID."""
+
+
 @dataclass(frozen=True)
 class ConversationMessage:
     id: str
@@ -39,6 +43,17 @@ class Conversation:
     updated_at: int
 
 
+@dataclass(frozen=True)
+class ConversationListItem:
+    id: str
+    tenant_id: str
+    title: str
+    message_count: int
+    source_doc_ids: list[str]
+    created_at: int
+    updated_at: int
+
+
 def list_conversations(config: RagConfig, *, tenant_id: str) -> list[Conversation]:
     migrate_legacy_conversations(config, tenant_id=tenant_id)
     with connect_metadata_db(config) as conn:
@@ -52,6 +67,78 @@ def list_conversations(config: RagConfig, *, tenant_id: str) -> list[Conversatio
             (tenant_id,),
         ).fetchall()
     return [load_conversation(config, tenant_id=tenant_id, conversation_id=str(row["id"])) for row in rows if row]
+
+
+def list_conversation_items(config: RagConfig, *, tenant_id: str) -> list[ConversationListItem]:
+    migrate_legacy_conversations(config, tenant_id=tenant_id)
+    with connect_metadata_db(config) as conn:
+        rows = conn.execute(
+            """
+            SELECT c.id, c.tenant_id, c.title, c.source_doc_ids, c.created_at, c.updated_at,
+                   COUNT(m.id) AS message_count
+            FROM conversations c
+            LEFT JOIN messages m ON m.conversation_id = c.id
+            WHERE c.tenant_id = ?
+            GROUP BY c.id, c.tenant_id, c.title, c.source_doc_ids, c.created_at, c.updated_at
+            ORDER BY c.updated_at DESC
+            """,
+            (tenant_id,),
+        ).fetchall()
+    return [
+        ConversationListItem(
+            id=str(row["id"]),
+            tenant_id=str(row["tenant_id"]),
+            title=str(row["title"] or "未命名对话"),
+            message_count=int(row["message_count"] or 0),
+            source_doc_ids=json.loads(row["source_doc_ids"] or "[]"),
+            created_at=int(row["created_at"] or now_ms()),
+            updated_at=int(row["updated_at"] or now_ms()),
+        )
+        for row in rows
+    ]
+
+
+def load_conversation_metadata(
+    config: RagConfig,
+    *,
+    tenant_id: str,
+    conversation_id: str,
+) -> ConversationListItem | None:
+    with connect_metadata_db(config) as conn:
+        row = conn.execute(
+            """
+            SELECT c.id, c.tenant_id, c.title, c.source_doc_ids, c.created_at, c.updated_at,
+                   COUNT(m.id) AS message_count
+            FROM conversations c
+            LEFT JOIN messages m ON m.conversation_id = c.id
+            WHERE c.tenant_id = ? AND c.id = ?
+            GROUP BY c.id, c.tenant_id, c.title, c.source_doc_ids, c.created_at, c.updated_at
+            """,
+            (tenant_id, conversation_id),
+        ).fetchone()
+    if row is None:
+        legacy = load_legacy_conversation(config, tenant_id=tenant_id, conversation_id=conversation_id)
+        if legacy is None:
+            return None
+        save_conversation_row(config, legacy)
+        return ConversationListItem(
+            id=legacy.id,
+            tenant_id=legacy.tenant_id,
+            title=legacy.title,
+            message_count=len(legacy.messages),
+            source_doc_ids=legacy.source_doc_ids,
+            created_at=legacy.created_at,
+            updated_at=legacy.updated_at,
+        )
+    return ConversationListItem(
+        id=str(row["id"]),
+        tenant_id=str(row["tenant_id"]),
+        title=str(row["title"] or "未命名对话"),
+        message_count=int(row["message_count"] or 0),
+        source_doc_ids=json.loads(row["source_doc_ids"] or "[]"),
+        created_at=int(row["created_at"] or now_ms()),
+        updated_at=int(row["updated_at"] or now_ms()),
+    )
 
 
 def load_conversation(
@@ -124,7 +211,7 @@ def save_conversation(
 ) -> Conversation:
     timestamp = now_ms()
     resolved_id = conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
-    existing = load_conversation(config, tenant_id=tenant_id, conversation_id=resolved_id)
+    existing = load_conversation_metadata(config, tenant_id=tenant_id, conversation_id=resolved_id)
     conversation = Conversation(
         id=resolved_id,
         tenant_id=tenant_id,
@@ -158,15 +245,21 @@ def delete_conversation(
 
 def save_conversation_row(config: RagConfig, conversation: Conversation) -> None:
     with connect_metadata_db(config) as conn:
-        conn.execute(
+        existing = conn.execute(
+            "SELECT tenant_id FROM conversations WHERE id = ?",
+            (conversation.id,),
+        ).fetchone()
+        if existing is not None and str(existing["tenant_id"]) != conversation.tenant_id:
+            raise ConversationTenantConflictError("Conversation ID belongs to another tenant")
+        cursor = conn.execute(
             """
             INSERT INTO conversations(id, tenant_id, title, source_doc_ids, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                tenant_id = excluded.tenant_id,
                 title = excluded.title,
                 source_doc_ids = excluded.source_doc_ids,
                 updated_at = excluded.updated_at
+            WHERE conversations.tenant_id = excluded.tenant_id
             """,
             (
                 conversation.id,
@@ -177,6 +270,8 @@ def save_conversation_row(config: RagConfig, conversation: Conversation) -> None
                 conversation.updated_at,
             ),
         )
+        if cursor.rowcount == 0:
+            raise ConversationTenantConflictError("Conversation ID belongs to another tenant")
         conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation.id,))
         for index, message in enumerate(conversation.messages):
             conn.execute(

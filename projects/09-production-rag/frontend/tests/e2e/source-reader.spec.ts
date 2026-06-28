@@ -47,6 +47,9 @@ async function mockWorkspaceShell(page: Page) {
 
 async function mockSourceAssetRoute(page: Page) {
   await page.route("**/api/source-assets/**", async (route) => {
+    const request = route.request();
+    expect(new URL(request.url()).searchParams.has("token")).toBe(false);
+    expect(request.headers().authorization).toBe("Bearer test-session");
     await route.fulfill({
       contentType: "image/png",
       body: Buffer.from(ONE_PIXEL_PNG_BASE64, "base64"),
@@ -1074,7 +1077,7 @@ test("opens parsed source content from a document-level source row", async ({ pa
   await expect(reader.getByText("Attention Is All You Need")).toBeVisible();
   const sourceImage = reader.getByRole("img", { name: "Image 1" });
   await expect(sourceImage).toBeVisible();
-  await expect(sourceImage).toHaveAttribute("src", /\/api\/source-assets\/uploads\/team_a\/regression\/paper\.assets\/page-1-image-1\.png/);
+  await expect(sourceImage).toHaveAttribute("src", /^blob:/);
   await expect.poll(async () => sourceImage.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
   await expect(reader.getByText("第 1 页")).toHaveCount(0);
 });
@@ -1218,7 +1221,7 @@ test("sends an attached chat image as a multimodal query", async ({ page }) => {
 
   const citationImage = page.getByRole("img", { name: "Figure 1" });
   await expect(citationImage).toBeVisible();
-  await expect(citationImage).toHaveAttribute("src", /\/api\/source-assets\/uploads\/team_a\/regression\/paper\.assets\/page-1-image-1\.png/);
+  await expect(citationImage).toHaveAttribute("src", /^blob:/);
   await expect.poll(async () => citationImage.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
   await page.getByRole("button", { name: "查看Figure 1" }).click();
   const citationImageDialog = page.getByRole("dialog", { name: "Figure 1" });
@@ -1564,6 +1567,9 @@ test("shows marquee feedback for active source and studio tasks", async ({ page 
             status: "processing",
             current: false,
             child_doc_ids: [],
+            ingestion_stage: "text_embedding",
+            progress_percent: 62,
+            progress_detail: "36/80 个文本片段",
           },
         ],
       },
@@ -1596,6 +1602,11 @@ test("shows marquee feedback for active source and studio tasks", async ({ page 
   const artifactRow = page.locator(".artifact-row.is-active-task");
   await expect(sourceRow).toBeVisible();
   await expect(artifactRow).toBeVisible();
+  await expect(sourceRow.getByText("正在生成文本向量 · 62% · 36/80 个文本片段")).toBeVisible();
+  await expect(sourceRow.getByRole("progressbar", { name: "正在解析.pdf 处理进度" })).toHaveAttribute(
+    "aria-valuenow",
+    "62",
+  );
   await expect
     .poll(async () => sourceRow.evaluate((node) => getComputedStyle(node, "::after").animationName))
     .toBe("task-marquee");
@@ -2818,7 +2829,19 @@ test("persists assistant feedback rating after browser refresh", async ({ page }
             score: 0.9,
             rerank_score: 0.8,
             acl_groups: ["engineering"],
-            metadata: { page_no: 1 },
+            metadata: {
+              page_no: 1,
+              display_blocks: [
+                {
+                  type: "image",
+                  title: "历史引用图片",
+                  url: (
+                    "/source-assets/uploads/team_a/regression/history.png" +
+                    "?tenant_id=team_a&token=legacy-history-token"
+                  ),
+                },
+              ],
+            },
             text_preview: "证据片段",
           },
         ],
@@ -2840,6 +2863,7 @@ test("persists assistant feedback rating after browser refresh", async ({ page }
   await page.route("**/feedback", async (route) => {
     await route.fulfill({ json: { status: "accepted", request_id: "feedback-request" } });
   });
+  await mockSourceAssetRoute(page);
   await page.route("**/conversations**", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() === "GET" && url.pathname.endsWith("/conversations")) {
@@ -2870,6 +2894,8 @@ test("persists assistant feedback rating after browser refresh", async ({ page }
   });
 
   await page.goto("/");
+  const historicalImage = page.getByRole("img", { name: "历史引用图片" });
+  await expect(historicalImage).toHaveAttribute("src", /^blob:/);
   await page.getByRole("button").filter({ has: page.locator("svg.lucide-thumbs-up") }).click();
   await expect
     .poll(() => storedConversation.messages[1].feedback_rating)

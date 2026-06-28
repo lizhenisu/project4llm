@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
+from tests.load.milvus_search_load import (
+    SearchSample,
+    build_summary,
+    tenant_for_index,
+    tenant_resolution_error,
+)
+
+
+def main() -> None:
+    args = SimpleNamespace(
+        base_url="http://127.0.0.1:8008",
+        concurrency=2,
+        tenant_count=3,
+        max_failure_rate=0.0,
+        max_p95_ms=250.0,
+        min_throughput_rps=8.0,
+        min_avg_hit_count=4.0,
+    )
+    samples = [
+        SearchSample(
+            index=0,
+            tenant_id="tenant-load-0000",
+            resolved_tenant_id="tenant-load-0000",
+            ok=True,
+            latency_ms=100.0,
+            status_code=200,
+            hit_count=5,
+            candidate_count=20,
+            reranked_count=20,
+            stage_latency_ms={"milvus_search": 40.0, "rerank": 20.0},
+        ),
+        SearchSample(
+            index=1,
+            tenant_id="tenant-load-0001",
+            resolved_tenant_id="tenant-load-0001",
+            ok=True,
+            latency_ms=200.0,
+            status_code=200,
+            hit_count=4,
+            candidate_count=18,
+            reranked_count=18,
+            stage_latency_ms={"milvus_search": 80.0, "rerank": 30.0},
+        ),
+    ]
+    warmup = [
+        SearchSample(
+            index=-1,
+            tenant_id="tenant-load-0000",
+            ok=True,
+            latency_ms=400.0,
+            status_code=200,
+        )
+    ]
+    summary = build_summary(args, samples, wall_ms=220.0, warmup_samples=warmup)
+
+    assert tenant_for_index("tenant-load", 3, 4) == "tenant-load-0001"
+    assert tenant_resolution_error("tenant-a", "tenant-b") == (
+        "tenant_resolution_mismatch: requested=tenant-a resolved=tenant-b"
+    )
+    assert tenant_resolution_error("tenant-a", "tenant-a") == ""
+    assert summary["success"] == 2
+    assert summary["failed"] == 0
+    assert summary["throughput_rps"] == 9.09
+    assert summary["warmup"] == {"requests": 1, "success": 1, "failed": 0}
+    assert summary["latency_ms"]["p95"] == 195.0
+    assert summary["stage_latency_ms"]["milvus_search"]["p95"] == 78.0
+    assert summary["status_counts"] == {"200": 2}
+    assert summary["tenants"]["tenant-load-0000"]["latency_ms"]["p95"] == 100.0
+    assert summary["tenants"]["tenant-load-0001"]["hit_count"]["avg"] == 4.0
+    assert summary["capacity_gate"]["passed"] is True
+    assert summary["capacity_gate"]["checks"]["max_p95_ms"]["actual"] == 195.0
+
+    args.max_p95_ms = 150.0
+    failed_gate = build_summary(args, samples, wall_ms=220.0)
+    assert failed_gate["capacity_gate"]["passed"] is False
+    print("smoke_milvus_search_load=ok")
+
+
+if __name__ == "__main__":
+    main()

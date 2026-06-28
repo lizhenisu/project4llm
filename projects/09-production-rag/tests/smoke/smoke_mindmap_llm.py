@@ -167,7 +167,16 @@ def make_config(object_store_dir: Path) -> RagConfig:
         reset_collection=False,
         runtime_dir=object_store_dir / "runtime",
         object_store_dir=object_store_dir,
+        object_store_backend="local",
+        s3_endpoint_url=None,
+        s3_access_key_id=None,
+        s3_secret_access_key=None,
+        s3_bucket="production-rag",
+        s3_prefix="",
+        metadata_database_url=None,
         pii_policy="warn",
+        max_upload_bytes=100 * 1024 * 1024,
+        max_query_image_bytes=2 * 1024 * 1024,
         max_context_chars=6000,
         max_chunks_per_doc=2,
         min_rerank_score=None,
@@ -185,6 +194,7 @@ def make_config(object_store_dir: Path) -> RagConfig:
         image_search_ef=128,
         sparse_drop_ratio_build=0.2,
         sparse_drop_ratio_search=0.0,
+        source_list_cache_ttl_seconds=0.0,
     )
 
 

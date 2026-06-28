@@ -132,10 +132,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--endpoint", default="/query/stream")
     parser.add_argument(
         "--token",
-        default=os.environ.get("RAG_LOAD_TEST_TOKEN", "production-rag-fixed-test-login-token"),
-        help="Bearer token for the deployed API. Defaults to RAG_LOAD_TEST_TOKEN or production-rag-fixed-test-login-token.",
+        default=(
+            os.environ.get("RAG_LOAD_TEST_TOKEN")
+            or os.environ.get("RAG_FIXED_TEST_LOGIN_TOKEN")
+            or "production-rag-fixed-test-login-token"
+        ),
+        help=(
+            "Bearer token for the deployed API. Defaults to RAG_LOAD_TEST_TOKEN, "
+            "then RAG_FIXED_TEST_LOGIN_TOKEN, then production-rag-fixed-test-login-token."
+        ),
     )
-    parser.add_argument("--tenant-id", default=os.environ.get("RAG_LOAD_TENANT_ID", "team_a"))
+    parser.add_argument("--tenant-id", default=os.environ.get("RAG_LOAD_TENANT_ID", "tenant-fixed-test"))
     parser.add_argument("--acl-group", action="append", default=[])
     parser.add_argument(
         "--source-type",

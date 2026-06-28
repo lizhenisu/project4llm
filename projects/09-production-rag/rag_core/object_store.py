@@ -6,7 +6,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable
 
-from rag_core.io import read_jsonl, write_jsonl
+from rag_core.jsonl_store import (
+    delete_object_by_uri,
+    object_exists,
+    object_store_backend,
+    parse_s3_uri,
+    read_object_jsonl,
+    s3_bucket,
+    s3_key,
+    write_object_jsonl,
+)
 from rag_core.text_utils import now_ms
 from rag_core.types import SourceDocument
 
@@ -22,23 +31,21 @@ def archive_source_documents(
     *,
     replace: bool = False,
 ) -> int:
-    path = object_store_dir / SOURCE_DOCUMENTS_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
     rows = [asdict(doc) for doc in docs]
     if not rows:
         return 0
 
     with OBJECT_STORE_INDEX_LOCK:
-        if replace or not path.exists():
+        if replace or not object_exists(object_store_dir, SOURCE_DOCUMENTS_PATH):
             existing: list[dict] = []
         else:
-            existing = read_jsonl(path)
+            existing = read_object_jsonl(object_store_dir, SOURCE_DOCUMENTS_PATH)
 
         merged = {
             document_key(row): row
             for row in [*existing, *rows]
         }
-        write_jsonl(path, merged.values())
+        write_object_jsonl(object_store_dir, SOURCE_DOCUMENTS_PATH, merged.values())
         remove_delete_tombstones_for_rows(object_store_dir, rows)
     return len(rows)
 
@@ -48,10 +55,9 @@ def load_archived_source_documents(
     *,
     include_deleted: bool = False,
 ) -> list[SourceDocument]:
-    path = object_store_dir / SOURCE_DOCUMENTS_PATH
-    if not path.exists():
+    if not object_exists(object_store_dir, SOURCE_DOCUMENTS_PATH):
         return []
-    rows = read_jsonl(path)
+    rows = read_object_jsonl(object_store_dir, SOURCE_DOCUMENTS_PATH)
     if not include_deleted:
         tombstones = load_delete_tombstones(object_store_dir)
         rows = [row for row in rows if not is_deleted(row, tombstones)]
@@ -67,11 +73,15 @@ def purge_source_documents(
 ) -> dict[str, int]:
     target_doc_ids = {str(doc_id) for doc_id in doc_ids}
     if not target_doc_ids:
-        return {"archived_documents": 0, "delete_tombstones": 0, "upload_dirs": 0}
+        return {
+            "archived_documents": 0,
+            "delete_tombstones": 0,
+            "upload_dirs": 0,
+            "uploaded_objects": 0,
+        }
 
     with OBJECT_STORE_INDEX_LOCK:
-        source_path = object_store_dir / SOURCE_DOCUMENTS_PATH
-        source_rows = read_jsonl(source_path) if source_path.exists() else []
+        source_rows = read_object_jsonl(object_store_dir, SOURCE_DOCUMENTS_PATH)
         kept_rows: list[dict] = []
         removed_rows: list[dict] = []
         for row in source_rows:
@@ -80,12 +90,11 @@ def purge_source_documents(
             else:
                 kept_rows.append(row)
         if removed_rows:
-            write_jsonl(source_path, kept_rows)
+            write_object_jsonl(object_store_dir, SOURCE_DOCUMENTS_PATH, kept_rows)
 
-        tombstone_path = object_store_dir / DELETE_TOMBSTONES_PATH
         tombstone_removed = 0
-        if tombstone_path.exists():
-            tombstones = read_jsonl(tombstone_path)
+        if object_exists(object_store_dir, DELETE_TOMBSTONES_PATH):
+            tombstones = read_object_jsonl(object_store_dir, DELETE_TOMBSTONES_PATH)
             kept_tombstones = [
                 row
                 for row in tombstones
@@ -93,10 +102,14 @@ def purge_source_documents(
             ]
             tombstone_removed = len(tombstones) - len(kept_tombstones)
             if tombstone_removed:
-                write_jsonl(tombstone_path, kept_tombstones)
+                write_object_jsonl(object_store_dir, DELETE_TOMBSTONES_PATH, kept_tombstones)
 
     upload_dirs = purge_upload_dirs_for_rows(
         object_store_dir,
+        tenant_id=tenant_id,
+        rows=removed_rows,
+    )
+    uploaded_objects = purge_uploaded_objects_for_rows(
         tenant_id=tenant_id,
         rows=removed_rows,
     )
@@ -104,6 +117,7 @@ def purge_source_documents(
         "archived_documents": len(removed_rows),
         "delete_tombstones": tombstone_removed,
         "upload_dirs": upload_dirs,
+        "uploaded_objects": uploaded_objects,
     }
 
 
@@ -115,10 +129,8 @@ def archive_delete_tombstone(
     doc_version: int | None = None,
     reason: str = "delete_document",
 ) -> int:
-    path = object_store_dir / DELETE_TOMBSTONES_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
     with OBJECT_STORE_INDEX_LOCK:
-        rows = read_jsonl(path) if path.exists() else []
+        rows = read_object_jsonl(object_store_dir, DELETE_TOMBSTONES_PATH)
         tombstone = {
             "tenant_id": tenant_id,
             "doc_id": doc_id,
@@ -130,23 +142,21 @@ def archive_delete_tombstone(
             tombstone_key(row): row
             for row in [*rows, tombstone]
         }
-        write_jsonl(path, merged.values())
+        write_object_jsonl(object_store_dir, DELETE_TOMBSTONES_PATH, merged.values())
     return 1
 
 
 def load_delete_tombstones(object_store_dir: Path) -> list[dict]:
-    path = object_store_dir / DELETE_TOMBSTONES_PATH
-    if not path.exists():
+    if not object_exists(object_store_dir, DELETE_TOMBSTONES_PATH):
         return []
-    return read_jsonl(path)
+    return read_object_jsonl(object_store_dir, DELETE_TOMBSTONES_PATH)
 
 
 def remove_delete_tombstones_for_rows(object_store_dir: Path, rows: list[dict]) -> int:
-    path = object_store_dir / DELETE_TOMBSTONES_PATH
-    if not path.exists() or not rows:
+    if not object_exists(object_store_dir, DELETE_TOMBSTONES_PATH) or not rows:
         return 0
     with OBJECT_STORE_INDEX_LOCK:
-        tombstones = read_jsonl(path)
+        tombstones = read_object_jsonl(object_store_dir, DELETE_TOMBSTONES_PATH)
         remaining = [
             tombstone
             for tombstone in tombstones
@@ -154,7 +164,7 @@ def remove_delete_tombstones_for_rows(object_store_dir: Path, rows: list[dict]) 
         ]
         removed = len(tombstones) - len(remaining)
         if removed:
-            write_jsonl(path, remaining)
+            write_object_jsonl(object_store_dir, DELETE_TOMBSTONES_PATH, remaining)
         return removed
 
 
@@ -234,6 +244,7 @@ def purge_upload_dirs_for_rows(
 def upload_dirs_for_row(object_store_dir: Path, *, tenant_id: str, row: dict) -> set[Path]:
     candidates = [
         str(row.get("source_uri") or ""),
+        str((row.get("metadata") or {}).get("source_uri_local_work_path") or ""),
         str((row.get("metadata") or {}).get("linked_source_uri") or ""),
         str((row.get("metadata") or {}).get("image_uri") or ""),
     ]
@@ -247,6 +258,42 @@ def upload_dirs_for_row(object_store_dir: Path, *, tenant_id: str, row: dict) ->
             path=Path(candidate),
         )
     }
+
+
+def purge_uploaded_objects_for_rows(*, tenant_id: str, rows: list[dict]) -> int:
+    if object_store_backend() != "s3":
+        return 0
+    expected_prefix = s3_key(Path("uploads") / tenant_id).rstrip("/") + "/"
+    uris = {
+        uri
+        for row in rows
+        for uri in source_object_uris(row)
+        if uri.startswith("s3://")
+    }
+    removed = 0
+    for uri in uris:
+        try:
+            bucket, key = parse_s3_uri(uri)
+        except ValueError:
+            continue
+        if bucket != s3_bucket() or not key.startswith(expected_prefix):
+            continue
+        removed += int(delete_object_by_uri(uri))
+    return removed
+
+
+def source_object_uris(row: dict) -> set[str]:
+    metadata = row.get("metadata") or {}
+    candidates = {
+        str(row.get("source_uri") or ""),
+        str(metadata.get("linked_source_uri") or ""),
+        str(metadata.get("image_uri") or ""),
+    }
+    for block in metadata.get("display_blocks") or []:
+        if isinstance(block, dict):
+            candidates.add(str(block.get("path") or ""))
+            candidates.add(str(block.get("image_uri") or ""))
+    return {candidate for candidate in candidates if candidate}
 
 
 def upload_dirs_for_path(object_store_dir: Path, *, tenant_id: str, path: Path) -> set[Path]:

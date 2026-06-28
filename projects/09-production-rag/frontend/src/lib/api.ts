@@ -75,6 +75,12 @@ async function request<T>(path: string, options: RequestOptions): Promise<T> {
 }
 
 async function readErrorDetail(response: Response): Promise<string> {
+  if (response.status === 503) {
+    return "当前服务繁忙，请稍后重试。";
+  }
+  if (response.status === 413) {
+    return "文件过大，请压缩文件或拆分后再上传。";
+  }
   const contentType = response.headers.get("content-type") ?? "";
   const defaultMessage = response.statusText || `HTTP ${response.status}`;
   if (contentType.includes("application/json")) {
@@ -90,6 +96,16 @@ async function readErrorDetail(response: Response): Promise<string> {
   }
   const text = await response.text();
   return text || defaultMessage;
+}
+
+function normalizeStreamError(detail: string): string {
+  if (
+    detail.includes("Query service is busy") ||
+    detail.includes("Model API concurrency limit reached")
+  ) {
+    return "当前服务繁忙，请稍后重试。";
+  }
+  return detail;
 }
 
 export function health(settings: Settings) {
@@ -154,6 +170,16 @@ export function renameSource(
       settings,
       json: { title },
     },
+  );
+}
+
+export function retrySource(
+  settings: Settings,
+  docId: string,
+): Promise<{ status: string; source: SourceItem }> {
+  return request<{ status: string; source: SourceItem }>(
+    `/sources/${encodeURIComponent(docId)}/retry?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    { method: "POST", settings },
   );
 }
 
@@ -244,7 +270,7 @@ export async function queryRagStream(
       }
       params.onEvent(event);
       if (event.type === "error") {
-        throw new ApiError(event.detail, response.status);
+        throw new ApiError(normalizeStreamError(event.detail), response.status);
       }
     }
     if (done) break;
@@ -257,7 +283,7 @@ export async function queryRagStream(
       }
       params.onEvent(event);
       if (event.type === "error") {
-        throw new ApiError(event.detail, response.status);
+        throw new ApiError(normalizeStreamError(event.detail), response.status);
       }
     }
   }
@@ -409,11 +435,23 @@ function normalizeMetadataAssets(settings: Settings, metadata: Record<string, un
 }
 
 function normalizeAssetUrl(settings: Settings, url: string | undefined): string | undefined {
-  if (!url?.startsWith("/source-assets/")) {
+  if (!url) {
+    return url;
+  }
+  const parsedUrl = new URL(url, window.location.origin);
+  if (
+    !parsedUrl.pathname.startsWith("/source-assets/")
+    && !parsedUrl.pathname.startsWith("/api/source-assets/")
+  ) {
     return url;
   }
   const apiBaseUrl = settings.apiBaseUrl.replace(/\/+$/, "");
-  return `${apiBaseUrl}${url}`;
+  const normalizedUrl = url.startsWith("/source-assets/")
+    ? new URL(`${apiBaseUrl}${url}`, window.location.origin)
+    : parsedUrl;
+  normalizedUrl.searchParams.set("tenant_id", settings.tenantId);
+  normalizedUrl.searchParams.delete("token");
+  return normalizedUrl.toString();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

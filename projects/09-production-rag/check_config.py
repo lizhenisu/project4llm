@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from rag_core.config import load_config
+from rag_core.ingestion_jobs import ingestion_execution_mode
 from rag_core.readiness import readiness_report, redacted_config
 
 
 def main() -> None:
     config = load_config()
+    ingestion_execution_mode()
     print("RAG config:")
     for key, value in redacted_config(config).items():
         print(f"- {key}: {value}")

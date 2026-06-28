@@ -680,7 +680,8 @@ object_store/
 ├── canonical/
 │   ├── source_documents.jsonl              # 所有版本的文档归档
 │   ├── deleted_documents.jsonl             # 删除墓碑记录
-│   └── source_guides.jsonl                # LLM 生成的文档摘要
+│   ├── source_guides.jsonl                  # LLM 生成的文档摘要
+│   └── source_section_summaries.jsonl       # 章节级提取摘要
 ├── current_versions.json                   # {tenant: {doc_id: version}}
 └── artifacts/
     └── <tenant>/
@@ -732,6 +733,12 @@ load_current_versions(object_store_dir, tenant_id)
 - 查询改写阶段提供“资料摘要”
 - 对 PDF 页、图片等子文档查询提供父文档语义背景
 - 重建对象存储时恢复摘要缓存，避免重复 LLM 调用
+
+### 12.5 章节级提取摘要
+
+`canonical/source_section_summaries.jsonl` 按租户、来源文档、版本和章节序号保存确定性提取摘要。
+比较、综合、信息抽取和报告任务会把这些摘要作为独立证据加入上下文预算；普通文档总结仍优先使用更紧凑的源指南。
+该层不增加模型调用，支持本地与 S3/MinIO 后端，并在删除来源时同步清理。
 
 ---
 
@@ -957,7 +964,7 @@ release_gate.py
 | `NEW_API_URL` | — | OpenAI 兼容端点 |
 | `NEW_API_KEY` | — | OpenAI 兼容 Key |
 | `SILICONFLOW_URL` | `https://api.siliconflow.cn` | SiliconFlow 嵌入/重排/视觉描述端点 |
-| `SILICONFLOW_API_KEY` | — | SiliconFlow 嵌入、重排、PDF 图片描述 Key |
+| `SILICONFLOW_API_KEY` | — | SiliconFlow 嵌入、重排、PDF/用户提问图片描述 Key |
 
 #### 嵌入配置
 
@@ -1017,6 +1024,8 @@ release_gate.py
 | `RAG_PDF_IMAGE_CAPTION_BACKEND` | `siliconflow` | 图片描述后端 |
 | `RAG_PDF_IMAGE_CAPTION_MODEL` | `Qwen/Qwen3-VL-8B-Instruct` | 视觉描述模型 |
 | `RAG_PDF_CAPTION_MAX_IMAGES` | `24` | 每 PDF 最多描述图片数 |
+| `RAG_QUERY_IMAGE_CAPTION_BACKEND` | `siliconflow` | 用户提问图片描述后端 |
+| `RAG_QUERY_IMAGE_CAPTION_MODEL` | `Qwen/Qwen3-VL-8B-Instruct` | 用户提问图片描述模型 |
 | `RAG_PII_POLICY` | `warn` | PII 策略 (warn/redact/fail) |
 
 ### 17.2 SiliconFlow API 端点

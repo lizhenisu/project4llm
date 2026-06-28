@@ -27,6 +27,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { MindMapArtifact, MindMapNode, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
+import { buildMindMapLayout } from "./mindMapLayout";
 
 type Props = {
   artifacts: MindMapArtifact[];
@@ -639,76 +640,31 @@ type MindMapFlowNodeData = {
 };
 
 function buildMindMapFlow(root: MindMapNode, expandedNodeIds: Set<string>): { nodes: Node<MindMapFlowNodeData>[]; edges: Edge[] } {
-  const nodes: Node<MindMapFlowNodeData>[] = [
-    {
-      id: root.id,
-      type: "default",
-      position: { x: 0, y: 0 },
-      sourcePosition: Position.Right,
-      data: { label: root.label, canExpand: false, expanded: false },
-      className: "mindmap-flow-node root",
-      draggable: true,
+  const layoutNodes = buildMindMapLayout(root, expandedNodeIds);
+  const nodes: Node<MindMapFlowNodeData>[] = layoutNodes.map((node) => ({
+    id: node.id,
+    type: "default",
+    position: { x: node.x, y: node.y },
+    sourcePosition: node.kind === "leaf" ? undefined : Position.Right,
+    targetPosition: node.kind === "root" ? undefined : Position.Left,
+    data: {
+      label: node.label,
+      canExpand: node.canExpand,
+      expanded: node.expanded,
     },
-  ];
+    className: [
+      "mindmap-flow-node",
+      node.kind,
+      node.kind === "root" ? "" : `tone-${node.toneIndex}`,
+    ].filter(Boolean).join(" "),
+    draggable: true,
+  }));
   const edges: Edge[] = [];
-  const branches = root.children || [];
-  const rowGap = 82;
-  const childGap = 58;
-
-  let nextAvailableY = 0;
-
-  branches.forEach((branch, index) => {
-    const expanded = expandedNodeIds.has(branch.id);
-    const children = branch.children || [];
-    const numChildren = children.length;
-
-    let branchNeededHeight = rowGap;
-    if (expanded && numChildren > 0) {
-      branchNeededHeight = Math.max(rowGap, numChildren * childGap);
+  layoutNodes.forEach((node) => {
+    if (node.parentId) {
+      edges.push(makeMindMapEdge(node.parentId, node.id, `edge-${node.parentId}-${node.id}`));
     }
-
-    const branchY = nextAvailableY + branchNeededHeight / 2;
-
-    nodes.push({
-      id: branch.id,
-      type: "default",
-      position: { x: 330, y: branchY },
-      sourcePosition: Position.Right,
-      targetPosition: Position.Left,
-      data: {
-        label: `${branch.label}${branch.children?.length ? ` ${expanded ? "⌄" : "›"}` : ""}`,
-        canExpand: Boolean(branch.children?.length),
-        expanded,
-      },
-      className: `mindmap-flow-node branch tone-${index % 6}`,
-      draggable: true,
-    });
-    edges.push(makeMindMapEdge(root.id, branch.id, `edge-${root.id}-${branch.id}`));
-
-    if (expanded && numChildren > 0) {
-      const childStartY = branchY - ((numChildren - 1) * childGap) / 2;
-      children.forEach((child, childIndex) => {
-        nodes.push({
-          id: child.id,
-          type: "default",
-          position: { x: 690, y: childStartY + childIndex * childGap },
-          targetPosition: Position.Left,
-          data: {
-            label: child.label,
-            canExpand: false,
-            expanded: false,
-          },
-          className: `mindmap-flow-node leaf tone-${childIndex % 6}`,
-          draggable: true,
-        });
-        edges.push(makeMindMapEdge(branch.id, child.id, `edge-${branch.id}-${child.id}`));
-      });
-    }
-
-    nextAvailableY += branchNeededHeight;
   });
-
-  nodes[0].position.y = branches.length > 0 ? nextAvailableY / 2 : 0;
 
   return { nodes, edges };
 }

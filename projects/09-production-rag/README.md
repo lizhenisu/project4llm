@@ -26,8 +26,8 @@ cp .env.example .env
 # 编辑 .env，填入 LLM API Key 等配置
 # 见下方"LLM 配置"节了解必需变量。
 
-# 2. 启动基础设施（Milvus 向量数据库等）
-docker compose up -d milvus
+# 2. 启动基础设施（Milvus + PostgreSQL/PgBouncer）
+docker compose up -d milvus pgbouncer
 
 # 3. 初始化 Schema
 python schema.py --reset
@@ -62,15 +62,29 @@ cp .env.example .env
 docker compose up -d
 
 # 3. 验证部署
-curl http://localhost:8008/health
+curl http://localhost:8080/api/health
 # 应返回 {"status":"ok"}
+
+# API 只负责持久化上传任务，rag-worker 独立执行解析和索引。
+# 按处理吞吐需要可横向扩展 worker；数据库租约会协调任务归属。
+docker compose up -d --scale rag-worker=3
+
+# API 同样可以横向扩展；rag-web 会通过 Docker DNS 动态发现并轮询副本。
+docker compose up -d --scale rag-api=3 --scale rag-worker=3
+
+# 多 API 副本必须共享同一个 RAG_METADATA_DATABASE_URL。
+# Compose 中 API/worker/ingest 均通过 PgBouncer transaction pooling
+# 连接 PostgreSQL；宿主机热重载 API 使用 127.0.0.1:6432。
+# RAG_QUERY_SHARED_ADMISSION=1（默认）会用数据库租约统一约束
+# 全局、租户和用户/API-token 的流式查询容量。
+# 上传接口也会先预留共享的全局/租户 backlog 槽，再原子转换为摄取任务。
 
 # 4. 一键配置 HTTPS（自动获取 Let's Encrypt 证书）
 sudo bash scripts/setup_caddy.sh your-domain.com
 
 # 访问 https://your-domain.com
 # 前端: http://localhost:8080
-# API:  http://localhost:8008
+# API:  http://localhost:8080/api
 # Milvus: localhost:19530
 
 # 5. （可选）批量摄入
@@ -90,6 +104,7 @@ docker compose --profile ingest up rag-ingest
 ```
 09-production-rag/
 ├── serve.py                  # FastAPI 应用入口
+├── ingestion_worker.py       # 持久任务队列的独立 worker 入口
 ├── schema.py                 # Milvus Collection 初始化
 ├── answer.py                 # 文本 RAG 问答入口
 ├── answer_multimodal.py      # 多模态 RAG 问答入口
@@ -98,6 +113,7 @@ docker compose --profile ingest up rag-ingest
 ├── ingest_*.py               # 文档摄入脚本（files/pdf/markdown/text/tables/images）
 ├── eval_retrieval.py         # 检索评估
 ├── eval_answer.py            # 答案评估
+├── eval_markdown_qa.py       # 真实 Markdown 问答集 API + LLM judge 评估
 ├── release_gate.py           # 发布门禁
 ├── benchmark_latency.py      # 延时基准测试
 ├── Makefile                  # 常用命令快捷入口

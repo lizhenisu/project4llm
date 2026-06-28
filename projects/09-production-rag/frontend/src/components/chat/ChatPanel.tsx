@@ -1,11 +1,20 @@
 import { ArrowDown, ArrowRight, Bot, Check, ChevronRight, Circle, Copy, ImagePlus, Loader2, MoreVertical, ThumbsDown, ThumbsUp, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import type { ChatMessage, Citation, RagProgressStage, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
+import { ProtectedImage } from "../ui/ProtectedImage";
+
+const markdownRemarkPlugins = [remarkMath];
+const markdownRehypePlugins = [rehypeKatex];
+const INITIAL_VISIBLE_MESSAGE_COUNT = 80;
+const MESSAGE_VISIBLE_INCREMENT = 80;
+const CHAT_IMAGE_MAX_DIMENSION = 1600;
+const CHAT_IMAGE_INLINE_LIMIT_BYTES = 512 * 1024;
+const CHAT_IMAGE_JPEG_QUALITY = 0.86;
 
 type Props = {
   messages: ChatMessage[];
@@ -14,6 +23,8 @@ type Props = {
   busy: boolean;
   conversationTitle: string;
   typingMessageId: string | null;
+  assetToken?: string;
+  assetApiBaseUrl?: string;
   onTypingComplete: () => void;
   onAsk: (query: string, imageDataUrl?: string | null) => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
@@ -27,6 +38,8 @@ export function ChatPanel({
   busy,
   conversationTitle,
   typingMessageId,
+  assetToken,
+  assetApiBaseUrl,
   onTypingComplete,
   onAsk,
   onFeedback,
@@ -34,11 +47,14 @@ export function ChatPanel({
 }: Props) {
   const [draft, setDraft] = useState("");
   const [attachedImage, setAttachedImage] = useState<string | null>(null);
+  const [imageProcessing, setImageProcessing] = useState(false);
+  const [imageAttachError, setImageAttachError] = useState("");
   const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [inputHeight, setInputHeight] = useState(46);
   const [showJumpLatest, setShowJumpLatest] = useState(false);
   const [jumpLatestClosing, setJumpLatestClosing] = useState(false);
+  const [visibleMessageCount, setVisibleMessageCount] = useState(INITIAL_VISIBLE_MESSAGE_COUNT);
   const wasNearBottomRef = useRef(true);
   const programmaticScrollRef = useRef(false);
   const jumpLatestTimerRef = useRef<number | null>(null);
@@ -46,7 +62,17 @@ export function ChatPanel({
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const canSend = (draft.trim().length > 0 || Boolean(attachedImage)) && !busy;
+  const onTypingCompleteRef = useLatestRef(onTypingComplete);
+  const onFeedbackRef = useLatestRef(onFeedback);
+  const canSend = (draft.trim().length > 0 || Boolean(attachedImage)) && !busy && !imageProcessing;
+
+  const handleTypingComplete = useMemo(() => () => onTypingCompleteRef.current(), [onTypingCompleteRef]);
+  const handleFeedback = useMemo(
+    () => (message: ChatMessage, rating: 1 | -1) => onFeedbackRef.current(message, rating),
+    [onFeedbackRef],
+  );
+  const visibleMessages = messages.slice(-visibleMessageCount);
+  const hiddenMessageCount = Math.max(0, messages.length - visibleMessages.length);
 
   useEffect(() => {
     function handleClickOutside() {
@@ -72,6 +98,13 @@ export function ChatPanel({
     }
     updateJumpLatestState();
   }, [messages, typingMessageId]);
+
+  useEffect(() => {
+    setVisibleMessageCount((current) => {
+      const minimum = Math.min(INITIAL_VISIBLE_MESSAGE_COUNT, messages.length || INITIAL_VISIBLE_MESSAGE_COUNT);
+      return Math.min(Math.max(current, minimum), Math.max(messages.length, INITIAL_VISIBLE_MESSAGE_COUNT));
+    });
+  }, [messages.length]);
 
   function isNearBottom() {
     const scrollEl = scrollRef.current;
@@ -122,13 +155,21 @@ export function ChatPanel({
     onAsk(draft.trim() || "请根据这张图片检索相关资料并回答。", attachedImage);
     setDraft("");
     setAttachedImage(null);
+    setImageAttachError("");
   }
 
-  function attachImage(file: File | undefined) {
+  async function attachImage(file: File | undefined) {
     if (!file || !file.type.startsWith("image/")) return;
-    const reader = new FileReader();
-    reader.onload = () => setAttachedImage(typeof reader.result === "string" ? reader.result : null);
-    reader.readAsDataURL(file);
+    setImageAttachError("");
+    setImageProcessing(true);
+    try {
+      setAttachedImage(await prepareChatImageAttachment(file));
+    } catch {
+      setAttachedImage(null);
+      setImageAttachError("图片处理失败，请换一张图片。");
+    } finally {
+      setImageProcessing(false);
+    }
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
@@ -203,7 +244,18 @@ export function ChatPanel({
           )
         ) : (
           <div className="message-list">
-            {messages.map((message) =>
+            {hiddenMessageCount > 0 ? (
+              <button
+                className="message-list-more"
+                type="button"
+                onClick={() =>
+                  setVisibleMessageCount((current) => Math.min(messages.length, current + MESSAGE_VISIBLE_INCREMENT))
+                }
+              >
+                显示更早消息（{hiddenMessageCount}）
+              </button>
+            ) : null}
+            {visibleMessages.map((message) =>
               message.role === "user" ? (
                 <UserMessage key={message.id} message={message} onPreviewImage={setPreviewImage} />
               ) : (
@@ -211,9 +263,11 @@ export function ChatPanel({
                   key={message.id}
                   message={message}
                   typing={message.id === typingMessageId && message.status === "done"}
-                  onTypingComplete={onTypingComplete}
-                  onFeedback={onFeedback}
+                  onTypingComplete={handleTypingComplete}
+                  onFeedback={handleFeedback}
                   onPreviewImage={setPreviewImage}
+                  assetToken={assetToken}
+                  assetApiBaseUrl={assetApiBaseUrl}
                 />
               ),
             )}
@@ -251,7 +305,7 @@ export function ChatPanel({
               aria-label="预览待发送图片"
               onClick={() => setPreviewImage({ url: attachedImage, title: "待发送图片" })}
             >
-              <img src={attachedImage} alt="待发送图片" />
+              <img src={attachedImage} alt="待发送图片" decoding="async" />
             </button>
             <button className="attachment-remove-button" type="button" aria-label="移除图片" onClick={() => setAttachedImage(null)}>
               <X size={14} />
@@ -274,18 +328,20 @@ export function ChatPanel({
           }}
         />
         <span>{selectedSources.length} 个来源</span>
+        {imageProcessing ? <small className="chat-input-hint">正在处理图片...</small> : null}
+        {imageAttachError ? <small className="chat-input-error">{imageAttachError}</small> : null}
         <input
           ref={imageInputRef}
           type="file"
           accept="image/*"
           hidden
           onChange={(event) => {
-            attachImage(event.target.files?.[0]);
+            void attachImage(event.target.files?.[0]);
             event.currentTarget.value = "";
           }}
         />
         <div className="chat-input-actions">
-          <button type="button" aria-label="上传图片提问" disabled={!authenticated || busy} onClick={() => imageInputRef.current?.click()}>
+          <button type="button" aria-label="上传图片提问" disabled={!authenticated || busy || imageProcessing} onClick={() => imageInputRef.current?.click()}>
             <ImagePlus size={20} />
           </button>
           <button type="button" aria-label="发送消息" disabled={!canSend} onClick={submit}>
@@ -293,12 +349,72 @@ export function ChatPanel({
           </button>
         </div>
       </div>
-      {previewImage ? <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} /> : null}
+      {previewImage ? (
+        <ImagePreview
+          image={previewImage}
+          assetToken={assetToken}
+          assetApiBaseUrl={assetApiBaseUrl}
+          onClose={() => setPreviewImage(null)}
+        />
+      ) : null}
     </section>
   );
 }
 
-function UserMessage({
+function useLatestRef<T>(value: T) {
+  const ref = useRef(value);
+  useEffect(() => {
+    ref.current = value;
+  }, [value]);
+  return ref;
+}
+
+async function prepareChatImageAttachment(file: File) {
+  const original = await readFileAsDataUrl(file);
+  const image = await loadImageElement(original);
+  const longestSide = Math.max(image.naturalWidth, image.naturalHeight);
+  if (longestSide <= CHAT_IMAGE_MAX_DIMENSION && file.size <= CHAT_IMAGE_INLINE_LIMIT_BYTES) {
+    return original;
+  }
+  const scale = Math.min(1, CHAT_IMAGE_MAX_DIMENSION / longestSide);
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas is unavailable.");
+  }
+  context.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL("image/jpeg", CHAT_IMAGE_JPEG_QUALITY);
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+      } else {
+        reject(new Error("Unable to read image."));
+      }
+    };
+    reader.onerror = () => reject(reader.error || new Error("Unable to read image."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageElement(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Unable to decode image."));
+    image.src = src;
+  });
+}
+
+const UserMessage = memo(function UserMessage({
   message,
   onPreviewImage,
 }: {
@@ -314,13 +430,13 @@ function UserMessage({
           aria-label="查看发送的图片"
           onClick={() => onPreviewImage({ url: message.imageDataUrl!, title: "发送的图片" })}
         >
-          <img src={message.imageDataUrl} alt="发送的图片" />
+          <img src={message.imageDataUrl} alt="发送的图片" loading="lazy" decoding="async" />
         </button>
       ) : null}
       <div>{message.content}</div>
     </div>
   );
-}
+});
 
 function Overview({ sources, onAsk }: { sources: SourceItem[]; onAsk: (query: string) => void }) {
   const title = sources.length === 1 ? sources[0].title.replace(/\.[^.]+$/, "") : "选中来源知识库";
@@ -346,22 +462,28 @@ function Overview({ sources, onAsk }: { sources: SourceItem[]; onAsk: (query: st
   );
 }
 
-function AssistantMessage({
+const AssistantMessage = memo(function AssistantMessage({
   message,
   typing,
   onTypingComplete,
   onFeedback,
   onPreviewImage,
+  assetToken,
+  assetApiBaseUrl,
 }: {
   message: ChatMessage;
   typing: boolean;
   onTypingComplete: () => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
   onPreviewImage: (image: { url: string; title: string }) => void;
+  assetToken?: string;
+  assetApiBaseUrl?: string;
 }) {
   const [copied, setCopied] = useState(false);
   const [ragOpen, setRagOpen] = useState(false);
   const feedbackRating = message.feedbackRating ?? null;
+  const interrupted = message.status === "sending"
+    && message.content === "连接已中断，刷新页面后将自动恢复回答。";
   
   const { text, done } = useTypewriter(message.content, typing);
 
@@ -370,6 +492,7 @@ function AssistantMessage({
     "assistant-message",
     message.status === "failed" ? "failed" : "",
     message.status === "sending" ? "sending" : "",
+    interrupted ? "interrupted" : "",
     typing && !done ? "typing" : "",
   ]
     .filter(Boolean)
@@ -399,13 +522,20 @@ function AssistantMessage({
           <RagProgressTimeline stages={message.ragProgress} />
         </div>
       ) : null}
-      {message.status === "sending" && message.ragProgress?.length ? (
+      {message.status === "sending" && message.ragProgress?.length && !interrupted ? (
         <RagProgressTimeline stages={message.ragProgress} />
       ) : (
-        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{text}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={markdownRemarkPlugins} rehypePlugins={markdownRehypePlugins}>{text}</ReactMarkdown>
       )}
       {typing && !done ? <span className="type-caret" aria-hidden="true" /> : null}
-      {showControls && message.citations?.length ? <Citations message={message} onPreviewImage={onPreviewImage} /> : null}
+      {showControls && message.citations?.length ? (
+        <Citations
+          message={message}
+          onPreviewImage={onPreviewImage}
+          assetToken={assetToken}
+          assetApiBaseUrl={assetApiBaseUrl}
+        />
+      ) : null}
       {showControls ? (
         <div className="message-actions">
           <button type="button" onClick={() => {
@@ -437,9 +567,9 @@ function AssistantMessage({
       ) : null}
     </article>
   );
-}
+});
 
-function RagProgressTimeline({ stages }: { stages: RagProgressStage[] }) {
+const RagProgressTimeline = memo(function RagProgressTimeline({ stages }: { stages: RagProgressStage[] }) {
   const activeStage =
     stages.find((stage) => stage.status === "active") ??
     stages.find((stage) => stage.status === "pending") ??
@@ -451,8 +581,10 @@ function RagProgressTimeline({ stages }: { stages: RagProgressStage[] }) {
         <strong>{activeStage?.label || "准备回答"}</strong>
       </div>
       <div className="rag-progress-track">
-        {stages.map((stage) => (
-          <div className={`rag-progress-step ${stage.status}`} key={stage.stage}>
+        {stages.map((stage) => {
+          const meta = formatStageMeta(stage);
+          return (
+            <div className={`rag-progress-step ${stage.status}`} key={stage.stage}>
             <span className="rag-progress-node" aria-hidden="true">
               {stage.status === "done" ? (
                 <Check size={14} />
@@ -465,16 +597,17 @@ function RagProgressTimeline({ stages }: { stages: RagProgressStage[] }) {
             <span className="rag-progress-copy">
               <span className="rag-progress-title">
                 {stage.label}
-                {formatStageMeta(stage) ? <em>{formatStageMeta(stage)}</em> : null}
+                {meta ? <em>{meta}</em> : null}
               </span>
               <span className="rag-progress-detail">{stage.detail}</span>
             </span>
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
-}
+});
 
 function formatStageMeta(stage: RagProgressStage) {
   const parts: string[] = [];
@@ -541,9 +674,13 @@ function useTypewriter(content: string, enabled: boolean) {
 function Citations({
   message,
   onPreviewImage,
+  assetToken,
+  assetApiBaseUrl,
 }: {
   message: ChatMessage;
   onPreviewImage: (image: { url: string; title: string }) => void;
+  assetToken?: string;
+  assetApiBaseUrl?: string;
 }) {
   return (
     <div className="citations">
@@ -565,7 +702,14 @@ function Citations({
                       aria-label={`查看${image.title || "引用图片"}`}
                       onClick={() => onPreviewImage({ url: image.url, title: image.title || "引用图片" })}
                     >
-                      <img src={image.url} alt={image.title || "引用图片"} />
+                      <ProtectedImage
+                        src={image.url}
+                        token={assetToken}
+                        apiBaseUrl={assetApiBaseUrl}
+                        alt={image.title || "引用图片"}
+                        loading="lazy"
+                        decoding="async"
+                      />
                     </button>
                     {image.title ? <figcaption>{image.title}</figcaption> : null}
                   </figure>
@@ -579,7 +723,17 @@ function Citations({
   );
 }
 
-function ImagePreview({ image, onClose }: { image: { url: string; title: string }; onClose: () => void }) {
+function ImagePreview({
+  image,
+  assetToken,
+  assetApiBaseUrl,
+  onClose,
+}: {
+  image: { url: string; title: string };
+  assetToken?: string;
+  assetApiBaseUrl?: string;
+  onClose: () => void;
+}) {
   return (
     <div className="modal-backdrop image-preview-backdrop" role="presentation" onMouseDown={onClose}>
       <div
@@ -592,7 +746,13 @@ function ImagePreview({ image, onClose }: { image: { url: string; title: string 
         <button className="close-button" type="button" aria-label="关闭图片预览" onClick={onClose}>
           <X size={18} />
         </button>
-        <img src={image.url} alt={image.title} />
+        <ProtectedImage
+          src={image.url}
+          token={assetToken}
+          apiBaseUrl={assetApiBaseUrl}
+          alt={image.title}
+          decoding="async"
+        />
       </div>
     </div>
   );

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rag_core.config import RagConfig
-from rag_core.io import read_jsonl, write_jsonl
+from rag_core.jsonl_store import object_exists, read_object_jsonl, write_object_jsonl
+from rag_core.model_api_retry import call_model_api_with_retries
 from rag_core.prompts import SOURCE_GUIDE_SYSTEM_PROMPT
 from rag_core.prompts import build_source_guide_prompt as prompt_source_guide
 from rag_core.text_utils import now_ms
@@ -17,6 +18,8 @@ from rag_core.types import SourceDocument
 SOURCE_GUIDES_PATH = Path("canonical/source_guides.jsonl")
 DEFAULT_SOURCE_GUIDE_CHUNK_CHARS = 230_000
 DEFAULT_SOURCE_GUIDE_LLM_WORKERS = 3
+DEFAULT_SOURCE_GUIDE_FAST_PATH_CHARS = 2_000
+SOURCE_GUIDE_FAST_PATH_TYPES = {"txt", "md", "html", "csv", "tsv", "table"}
 SOURCE_GUIDES_LOCK = threading.Lock()
 
 
@@ -37,7 +40,8 @@ def get_or_create_source_guide(
     )
     if cached:
         return cached
-    result = generate_source_guide(config=config, title=doc_title, docs=docs)
+    fast_path_result = build_fast_path_source_guide(title=doc_title, docs=docs)
+    result = fast_path_result or generate_source_guide(config=config, title=doc_title, docs=docs)
     save_source_guide(
         config.object_store_dir,
         tenant_id=tenant_id,
@@ -45,7 +49,7 @@ def get_or_create_source_guide(
         doc_version=doc_version,
         title=result.title,
         guide=result.guide,
-        model=config.llm_model,
+        model="deterministic-fast-path" if fast_path_result else config.llm_model,
     )
     return result
 
@@ -87,23 +91,41 @@ def generate_source_guide(*, config: RagConfig, title: str, docs: list[SourceDoc
     return SourceGuideResult(title=normalize_guide_text(title_text), guide=normalize_guide_text(guide_text))
 
 
+def build_fast_path_source_guide(*, title: str, docs: list[SourceDocument]) -> SourceGuideResult | None:
+    limit = source_guide_fast_path_chars()
+    if limit <= 0 or not docs:
+        return None
+    if any(doc.source_type.lower() not in SOURCE_GUIDE_FAST_PATH_TYPES for doc in docs):
+        return None
+    context = build_source_guide_context(docs)
+    if not context or len(context) > limit:
+        return None
+    return SourceGuideResult(
+        title=normalize_guide_text(title) or "未命名来源",
+        guide=normalize_guide_text(context),
+    )
+
+
 def generate_source_guide_text(*, config: RagConfig, title: str, source_text: str) -> str:
     from openai import OpenAI
 
     client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
-    response = client.chat.completions.create(
-        model=config.llm_model,
-        messages=[
-            {
-                "role": "system",
-                "content": SOURCE_GUIDE_SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": build_source_guide_prompt(title=title, source_text=source_text),
-            },
-        ],
-        temperature=0.2,
+    response = call_model_api_with_retries(
+        "source_guide_generation",
+        lambda: client.chat.completions.create(
+            model=config.llm_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": SOURCE_GUIDE_SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": build_source_guide_prompt(title=title, source_text=source_text),
+                },
+            ],
+            temperature=0.2,
+        ),
     )
     guide = (response.choices[0].message.content or "").strip()
     if not guide:
@@ -187,6 +209,17 @@ def source_guide_llm_workers() -> int:
     return env_int("RAG_SOURCE_GUIDE_LLM_WORKERS", DEFAULT_SOURCE_GUIDE_LLM_WORKERS)
 
 
+def source_guide_fast_path_chars() -> int:
+    value = os.environ.get(
+        "RAG_SOURCE_GUIDE_FAST_PATH_CHARS",
+        str(DEFAULT_SOURCE_GUIDE_FAST_PATH_CHARS),
+    )
+    try:
+        return max(0, int(value))
+    except ValueError:
+        return DEFAULT_SOURCE_GUIDE_FAST_PATH_CHARS
+
+
 def env_int(name: str, default: int) -> int:
     value = os.environ.get(name, str(default))
     try:
@@ -207,10 +240,9 @@ def load_source_guide_full(
     source_doc_id: str,
     doc_version: int,
 ) -> SourceGuideResult | None:
-    path = object_store_dir / SOURCE_GUIDES_PATH
-    if not path.exists():
+    if not object_exists(object_store_dir, SOURCE_GUIDES_PATH):
         return None
-    for row in read_jsonl(path):
+    for row in read_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH):
         if (
             str(row.get("tenant_id")) == tenant_id
             and str(row.get("source_doc_id")) == source_doc_id
@@ -229,10 +261,9 @@ def load_source_guide(
     source_doc_id: str,
     doc_version: int,
 ) -> str | None:
-    path = object_store_dir / SOURCE_GUIDES_PATH
-    if not path.exists():
+    if not object_exists(object_store_dir, SOURCE_GUIDES_PATH):
         return None
-    for row in read_jsonl(path):
+    for row in read_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH):
         if (
             str(row.get("tenant_id")) == tenant_id
             and str(row.get("source_doc_id")) == source_doc_id
@@ -255,11 +286,10 @@ def load_source_guides_for_rewrite(
     current_doc_versions: dict[str, int] | None = None,
     limit: int = 20,
 ) -> list[str]:
-    path = object_store_dir / SOURCE_GUIDES_PATH
-    if not path.exists():
+    if not object_exists(object_store_dir, SOURCE_GUIDES_PATH):
         return []
     allowed_doc_ids = set(doc_ids or [])
-    rows = read_jsonl(path)
+    rows = read_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH)
     matched = source_guide_rows_for_rewrite(
         rows,
         tenant_id=tenant_id,
@@ -353,10 +383,8 @@ def save_source_guide(
     guide: str,
     model: str,
 ) -> None:
-    path = object_store_dir / SOURCE_GUIDES_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
     with SOURCE_GUIDES_LOCK:
-        rows = read_jsonl(path) if path.exists() else []
+        rows = read_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH)
         row = {
             "tenant_id": tenant_id,
             "source_doc_id": source_doc_id,
@@ -370,7 +398,7 @@ def save_source_guide(
             source_guide_key(item): item
             for item in [*rows, row]
         }
-        write_jsonl(path, merged.values())
+        write_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH, merged.values())
 
 
 def delete_source_guides(
@@ -380,11 +408,10 @@ def delete_source_guides(
     source_doc_ids: set[str],
     doc_version: int | None = None,
 ) -> int:
-    path = object_store_dir / SOURCE_GUIDES_PATH
-    if not path.exists() or not source_doc_ids:
+    if not object_exists(object_store_dir, SOURCE_GUIDES_PATH) or not source_doc_ids:
         return 0
     with SOURCE_GUIDES_LOCK:
-        rows = read_jsonl(path)
+        rows = read_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH)
         remaining = [
             row
             for row in rows
@@ -397,7 +424,7 @@ def delete_source_guides(
         ]
         removed = len(rows) - len(remaining)
         if removed:
-            write_jsonl(path, remaining)
+            write_object_jsonl(object_store_dir, SOURCE_GUIDES_PATH, remaining)
         return removed
 
 
