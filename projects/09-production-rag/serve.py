@@ -1570,14 +1570,12 @@ def create_app():
     def source_asset(
         asset_path: str,
         tenant_id: str = "team_a",
-        token: str | None = None,
         authorization: str | None = Header(default=None),
     ) -> Response:
         config = load_config()
         auth_context = resolve_asset_auth_context(
             config=config,
             authorization=authorization,
-            token=token,
             tenant_id=tenant_id,
         )
         if asset_path.startswith("__s3__/"):
@@ -2538,15 +2536,12 @@ def resolve_asset_auth_context(
     *,
     config,
     authorization: str | None,
-    token: str | None,
     tenant_id: str,
 ):
     from fastapi import HTTPException
 
-    query_authorization = f"Bearer {token}" if token else None
-    resolved_authorization = authorization or query_authorization
     try:
-        user = authenticate_token(config, token=bearer_token(resolved_authorization))
+        user = authenticate_token(config, token=bearer_token(authorization))
         if user is not None:
             return build_auth_context(
                 config=config,
@@ -2559,7 +2554,7 @@ def resolve_asset_auth_context(
             )
         if not config.api_token:
             raise ValueError("请先登录")
-        validate_bearer_token(config=config, authorization=resolved_authorization)
+        validate_bearer_token(config=config, authorization=authorization)
         return build_auth_context(
             config=config,
             header_tenant_id=tenant_id,

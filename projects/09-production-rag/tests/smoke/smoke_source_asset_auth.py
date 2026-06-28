@@ -53,25 +53,34 @@ def main() -> None:
 
             with patch("serve.authenticate_token", side_effect=fake_authenticate_token):
                 api = TestClient(serve.create_app())
+                auth_headers = {"Authorization": "Bearer session-token"}
                 missing_token = api.get("/source-assets/uploads/tenant-asset-smoke/upload-1/image.png")
                 assert missing_token.status_code == 401, missing_token.text
+                query_token = api.get(
+                    "/source-assets/uploads/tenant-asset-smoke/upload-1/image.png"
+                    "?tenant_id=tenant-asset-smoke&token=session-token"
+                )
+                assert query_token.status_code == 401, query_token.text
 
                 wrong_tenant = api.get(
                     "/source-assets/uploads/other-tenant/upload-1/image.png"
-                    "?tenant_id=other-tenant&token=session-token"
+                    "?tenant_id=other-tenant",
+                    headers=auth_headers,
                 )
                 assert wrong_tenant.status_code == 404, wrong_tenant.text
 
                 ok = api.get(
                     "/source-assets/uploads/tenant-asset-smoke/upload-1/image.png"
-                    "?tenant_id=tenant-asset-smoke&token=session-token"
+                    "?tenant_id=tenant-asset-smoke",
+                    headers=auth_headers,
                 )
                 assert ok.status_code == 200, ok.text
                 assert ok.headers["content-type"].startswith("image/png")
 
                 legacy_path = api.get(
                     "/source-assets/legacy/tenant-asset-smoke/image.png"
-                    "?tenant_id=tenant-asset-smoke&token=session-token"
+                    "?tenant_id=tenant-asset-smoke",
+                    headers=auth_headers,
                 )
                 assert legacy_path.status_code == 404, legacy_path.text
                 traversal_path = serve.resolve_local_source_asset(
@@ -84,7 +93,8 @@ def main() -> None:
                 assert traversal_path is None
                 symlink_escape = api.get(
                     "/source-assets/uploads/tenant-asset-smoke/upload-1/"
-                    "other-tenant-link.png?tenant_id=tenant-asset-smoke&token=session-token"
+                    "other-tenant-link.png?tenant_id=tenant-asset-smoke",
+                    headers=auth_headers,
                 )
                 assert symlink_escape.status_code == 404, symlink_escape.text
 
@@ -96,11 +106,11 @@ def main() -> None:
                     "s3://asset-smoke-bucket/app/uploads/other-tenant/upload-1/image.png",
                 ]
                 with patch("serve.read_object_bytes_by_uri", return_value=tiny_png()) as read_s3:
-                    valid_s3 = api.get(s3_asset_url(valid_s3_uri))
+                    valid_s3 = api.get(s3_asset_url(valid_s3_uri), headers=auth_headers)
                     assert valid_s3.status_code == 200, valid_s3.text
                     assert valid_s3.headers["content-type"].startswith("image/png")
                     for invalid_uri in invalid_s3_uris:
-                        invalid_s3 = api.get(s3_asset_url(invalid_uri))
+                        invalid_s3 = api.get(s3_asset_url(invalid_uri), headers=auth_headers)
                         assert invalid_s3.status_code == 404, (invalid_uri, invalid_s3.text)
                     read_s3.assert_called_once_with(valid_s3_uri)
         finally:
@@ -121,7 +131,7 @@ def tiny_png() -> bytes:
 def s3_asset_url(uri: str) -> str:
     return (
         f"/source-assets/__s3__/{quote(uri, safe='')}"
-        "?tenant_id=tenant-asset-smoke&token=session-token"
+        "?tenant_id=tenant-asset-smoke"
     )
 
 

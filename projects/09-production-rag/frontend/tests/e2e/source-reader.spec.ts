@@ -2828,7 +2828,19 @@ test("persists assistant feedback rating after browser refresh", async ({ page }
             score: 0.9,
             rerank_score: 0.8,
             acl_groups: ["engineering"],
-            metadata: { page_no: 1 },
+            metadata: {
+              page_no: 1,
+              display_blocks: [
+                {
+                  type: "image",
+                  title: "历史引用图片",
+                  url: (
+                    "/source-assets/uploads/team_a/regression/history.png" +
+                    "?tenant_id=team_a&token=legacy-history-token"
+                  ),
+                },
+              ],
+            },
             text_preview: "证据片段",
           },
         ],
@@ -2850,6 +2862,7 @@ test("persists assistant feedback rating after browser refresh", async ({ page }
   await page.route("**/feedback", async (route) => {
     await route.fulfill({ json: { status: "accepted", request_id: "feedback-request" } });
   });
+  await mockSourceAssetRoute(page);
   await page.route("**/conversations**", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() === "GET" && url.pathname.endsWith("/conversations")) {
@@ -2880,6 +2893,8 @@ test("persists assistant feedback rating after browser refresh", async ({ page }
   });
 
   await page.goto("/");
+  const historicalImage = page.getByRole("img", { name: "历史引用图片" });
+  await expect(historicalImage).toHaveAttribute("src", /^blob:/);
   await page.getByRole("button").filter({ has: page.locator("svg.lucide-thumbs-up") }).click();
   await expect
     .poll(() => storedConversation.messages[1].feedback_rating)
