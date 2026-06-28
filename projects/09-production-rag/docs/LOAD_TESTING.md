@@ -112,3 +112,57 @@ operations rotate across the supplied API origins, validate read-after-write
 consistency, and delete the conversation at the end. The summary reports workflow
 and request throughput plus per-operation p50/p95/p99 latency. Use a synthetic
 token and tenant prefix, and do not commit output from runs against real users.
+
+## Isolated Milvus search capacity
+
+Create a disposable synthetic collection before starting an API process configured
+with the same `MILVUS_URI`, `RAG_COLLECTION`, embedding dimensions, and embedding
+model:
+
+```bash
+source .venv/bin/activate
+MILVUS_URI=http://127.0.0.1:19530 \
+RAG_COLLECTION=rag_milvus_capacity \
+python projects/09-production-rag/tests/load/milvus_seed_load.py seed \
+  --reset \
+  --tenant-id milvus-capacity \
+  --tenant-count 10 \
+  --documents-per-tenant 100 \
+  --chunks-per-document 10
+```
+
+Run authenticated search without final answer generation:
+
+```bash
+source .venv/bin/activate
+python projects/09-production-rag/tests/load/milvus_search_load.py \
+  --base-url http://127.0.0.1:8008 \
+  --token synthetic-capacity-api-token \
+  --tenant-id milvus-capacity \
+  --tenant-count 10 \
+  --acl-group engineering \
+  --include-all-sources \
+  --warmup-requests 50 \
+  --requests 500 \
+  --concurrency 50 \
+  --candidate-limit 30 \
+  --context-limit 5 \
+  --max-failure-rate 0 \
+  --max-p95-ms 10000 \
+  --min-throughput-rps 5 \
+  --min-avg-hit-count 1
+```
+
+For a multi-tenant run, use a dedicated synthetic API token that authorizes the
+`X-RAG-Tenant-ID` header. A login session token is bound to its account tenant;
+the load runner rejects a response when the resolved trace tenant differs from
+the requested tenant.
+
+Drop the synthetic collection after the run:
+
+```bash
+source .venv/bin/activate
+MILVUS_URI=http://127.0.0.1:19530 \
+RAG_COLLECTION=rag_milvus_capacity \
+python projects/09-production-rag/tests/load/milvus_seed_load.py drop
+```

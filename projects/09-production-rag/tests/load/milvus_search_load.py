@@ -22,6 +22,7 @@ class SearchSample:
     ok: bool
     latency_ms: float
     status_code: int
+    resolved_tenant_id: str = ""
     hit_count: int = 0
     candidate_count: int = 0
     reranked_count: int = 0
@@ -31,15 +32,26 @@ class SearchSample:
 
 def main() -> None:
     args = parse_args()
+    warmup_samples = run_load(
+        args,
+        total=max(0, args.warmup_requests),
+        index_offset=-max(0, args.warmup_requests),
+    )
     started = time.perf_counter()
     samples = run_load(args)
-    summary = build_summary(args, samples, wall_ms=elapsed_ms(started))
+    summary = build_summary(
+        args,
+        samples,
+        wall_ms=elapsed_ms(started),
+        warmup_samples=warmup_samples,
+    )
     text = json.dumps(summary, ensure_ascii=False, indent=2)
     print(text)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text + "\n", encoding="utf-8")
-    if summary["failed"]:
+    strict_failure = args.max_failure_rate is None and bool(summary["failed"])
+    if strict_failure or not summary["capacity_gate"]["passed"]:
         raise SystemExit(1)
 
 
@@ -52,28 +64,48 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tenant-id", default="tenant-fixed-test")
     parser.add_argument(
         "--tenant-count",
-        type=int,
+        type=positive_int,
         default=1,
         help="Cycle requests across tenant-id or tenant-id-NNNN when greater than one.",
     )
     parser.add_argument("--acl-group", action="append", default=[])
     parser.add_argument("--query", default="总结资料中的核心技术方案")
-    parser.add_argument("--requests", type=int, default=20)
-    parser.add_argument("--concurrency", type=int, default=5)
-    parser.add_argument("--candidate-limit", type=int, default=20)
-    parser.add_argument("--context-limit", type=int, default=5)
+    parser.add_argument("--requests", type=positive_int, default=20)
+    parser.add_argument("--concurrency", type=positive_int, default=5)
+    parser.add_argument(
+        "--warmup-requests",
+        type=non_negative_int,
+        default=0,
+        help="Issue this many untimed requests before the measured run.",
+    )
+    parser.add_argument("--candidate-limit", type=positive_int, default=20)
+    parser.add_argument("--context-limit", type=positive_int, default=5)
     parser.add_argument("--doc-id", action="append", default=[])
     parser.add_argument("--source-type", action="append", default=[])
     parser.add_argument("--include-all-sources", action="store_true")
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--max-failure-rate", type=non_negative_float)
+    parser.add_argument("--max-p95-ms", type=non_negative_float)
+    parser.add_argument("--min-throughput-rps", type=non_negative_float)
+    parser.add_argument("--min-avg-hit-count", type=non_negative_float)
     parser.add_argument("--output", type=Path)
     return parser.parse_args()
 
 
-def run_load(args: argparse.Namespace) -> list[SearchSample]:
-    total = max(1, args.requests)
+def run_load(
+    args: argparse.Namespace,
+    *,
+    total: int | None = None,
+    index_offset: int = 0,
+) -> list[SearchSample]:
+    total = max(0, args.requests if total is None else total)
+    if total == 0:
+        return []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as executor:
-        futures = [executor.submit(send_search, args, index) for index in range(total)]
+        futures = [
+            executor.submit(send_search, args, index + index_offset)
+            for index in range(total)
+        ]
         samples = [future.result() for future in concurrent.futures.as_completed(futures)]
     return sorted(samples, key=lambda sample: sample.index)
 
@@ -110,9 +142,22 @@ def send_search(args: argparse.Namespace, index: int) -> SearchSample:
         with urlopen(request, timeout=args.timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
             trace = body.get("trace") or {}
+            resolved_tenant_id = str(trace.get("tenant_id") or "")
+            tenant_error = tenant_resolution_error(tenant_id, resolved_tenant_id)
+            if tenant_error:
+                return SearchSample(
+                    index=index,
+                    tenant_id=tenant_id,
+                    resolved_tenant_id=resolved_tenant_id,
+                    ok=False,
+                    latency_ms=elapsed_ms(started),
+                    status_code=int(getattr(response, "status", 200)),
+                    error=tenant_error,
+                )
             return SearchSample(
                 index=index,
                 tenant_id=tenant_id,
+                resolved_tenant_id=resolved_tenant_id,
                 ok=True,
                 latency_ms=elapsed_ms(started),
                 status_code=int(getattr(response, "status", 200)),
@@ -147,21 +192,38 @@ def failed_sample(
     )
 
 
+def tenant_resolution_error(requested: str, resolved: str) -> str:
+    if not resolved or resolved == requested:
+        return ""
+    return f"tenant_resolution_mismatch: requested={requested} resolved={resolved}"
+
+
 def build_summary(
     args: argparse.Namespace,
     samples: list[SearchSample],
     *,
     wall_ms: float,
+    warmup_samples: list[SearchSample] | None = None,
 ) -> dict[str, Any]:
     successful = [sample for sample in samples if sample.ok]
     failed = [sample for sample in samples if not sample.ok]
+    warmup_samples = warmup_samples or []
     stages: dict[str, list[float]] = {}
     for sample in successful:
         for stage, latency in (sample.stage_latency_ms or {}).items():
             stages.setdefault(stage, []).append(latency)
-    return {
+    tenant_summaries = {
+        tenant_id: summarize_tenant(tenant_samples)
+        for tenant_id, tenant_samples in sorted(group_by_tenant(samples).items())
+    }
+    summary = {
         "target": args.base_url,
         "endpoint": "/search",
+        "warmup": {
+            "requests": len(warmup_samples),
+            "success": sum(1 for sample in warmup_samples if sample.ok),
+            "failed": sum(1 for sample in warmup_samples if not sample.ok),
+        },
         "requests": len(samples),
         "concurrency": args.concurrency,
         "tenant_count": args.tenant_count,
@@ -169,7 +231,7 @@ def build_summary(
         "failed": len(failed),
         "failure_rate": round(len(failed) / max(1, len(samples)), 4),
         "wall_ms": round(wall_ms, 2),
-        "throughput_rps": round(len(samples) / max(0.001, wall_ms / 1000.0), 2),
+        "throughput_rps": round(len(successful) / max(0.001, wall_ms / 1000.0), 2),
         "latency_ms": summarize([sample.latency_ms for sample in successful]),
         "hit_count": summarize([float(sample.hit_count) for sample in successful]),
         "candidate_count": summarize([float(sample.candidate_count) for sample in successful]),
@@ -179,7 +241,76 @@ def build_summary(
             for stage, values in sorted(stages.items())
         },
         "status_counts": dict(sorted(Counter(str(sample.status_code) for sample in samples).items())),
+        "tenants": tenant_summaries,
         "failed_samples": [asdict(sample) for sample in failed[:20]],
+    }
+    summary["capacity_gate"] = build_capacity_gate(args, summary)
+    return summary
+
+
+def group_by_tenant(samples: list[SearchSample]) -> dict[str, list[SearchSample]]:
+    grouped: dict[str, list[SearchSample]] = {}
+    for sample in samples:
+        grouped.setdefault(sample.tenant_id, []).append(sample)
+    return grouped
+
+
+def summarize_tenant(samples: list[SearchSample]) -> dict[str, Any]:
+    successful = [sample for sample in samples if sample.ok]
+    failed = [sample for sample in samples if not sample.ok]
+    return {
+        "requests": len(samples),
+        "success": len(successful),
+        "failed": len(failed),
+        "failure_rate": round(len(failed) / max(1, len(samples)), 4),
+        "latency_ms": summarize([sample.latency_ms for sample in successful]),
+        "hit_count": summarize([float(sample.hit_count) for sample in successful]),
+    }
+
+
+def build_capacity_gate(
+    args: argparse.Namespace,
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    checks: dict[str, dict[str, Any]] = {}
+    thresholds = (
+        (
+            "max_failure_rate",
+            getattr(args, "max_failure_rate", None),
+            summary["failure_rate"],
+            lambda value, limit: value <= limit,
+        ),
+        (
+            "max_p95_ms",
+            getattr(args, "max_p95_ms", None),
+            summary["latency_ms"].get("p95"),
+            lambda value, limit: value <= limit,
+        ),
+        (
+            "min_throughput_rps",
+            getattr(args, "min_throughput_rps", None),
+            summary["throughput_rps"],
+            lambda value, limit: value >= limit,
+        ),
+        (
+            "min_avg_hit_count",
+            getattr(args, "min_avg_hit_count", None),
+            summary["hit_count"].get("avg"),
+            lambda value, limit: value >= limit,
+        ),
+    )
+    for name, limit, actual, predicate in thresholds:
+        if limit is None:
+            continue
+        checks[name] = {
+            "actual": actual,
+            "threshold": limit,
+            "passed": actual is not None and predicate(actual, limit),
+        }
+    return {
+        "enabled": bool(checks),
+        "passed": all(check["passed"] for check in checks.values()),
+        "checks": checks,
     }
 
 
@@ -221,6 +352,27 @@ def safe_error_body(exc: HTTPError) -> str:
 
 def elapsed_ms(started: float) -> float:
     return round((time.perf_counter() - started) * 1000, 2)
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer")
+    return parsed
+
+
+def non_negative_float(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be non-negative")
+    return parsed
 
 
 if __name__ == "__main__":
