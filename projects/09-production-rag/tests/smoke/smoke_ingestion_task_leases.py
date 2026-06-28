@@ -90,6 +90,7 @@ def test_atomic_claim_and_owner_guard(config) -> None:
         lease_owner=wrong_owner,
         ingestion_stage="indexing",
         progress_percent=82,
+        progress_detail="0/12 个向量",
     ) is False
     assert update_source_task_progress(
         config=config,
@@ -98,6 +99,7 @@ def test_atomic_claim_and_owner_guard(config) -> None:
         lease_owner=owner,
         ingestion_stage="indexing",
         progress_percent=82,
+        progress_detail="0/12 个向量",
     ) is True
     progress_source = next(
         item
@@ -106,6 +108,7 @@ def test_atomic_claim_and_owner_guard(config) -> None:
     )
     assert progress_source.ingestion_stage == "indexing"
     assert progress_source.progress_percent == 82
+    assert progress_source.progress_detail == "0/12 个向量"
     assert renew_source_task_lease(
         config=config,
         tenant_id=TENANT_ID,
@@ -351,7 +354,7 @@ def test_two_runners_execute_once_and_renew(config) -> None:
     def fake_ingest_uploaded_path(**kwargs):
         with lock:
             executions.append(kwargs["tenant_id"])
-        kwargs["progress_callback"]("text_embedding", 50)
+        kwargs["progress_callback"]("text_embedding", 50, "2/4 个文本片段")
         started.set()
         release.wait(timeout=5)
 
@@ -393,6 +396,7 @@ def test_two_runners_execute_once_and_renew(config) -> None:
         progress_row = task_row(config, source.doc_id)
         assert progress_row["ingestion_stage"] == "text_embedding"
         assert int(progress_row["progress_percent"]) == 50
+        assert progress_row["progress_detail"] == "2/4 个文本片段"
         first_expiry = int(task_row(config, source.doc_id)["lease_expires_at"])
         time.sleep(0.5)
         renewed_expiry = int(task_row(config, source.doc_id)["lease_expires_at"])
@@ -471,7 +475,8 @@ def task_row(config, task_id: str, *, required: bool = True):
         row = conn.execute(
             """
             SELECT status, error, lease_owner, lease_expires_at, attempt_count,
-                   next_attempt_at, dead_lettered_at, ingestion_stage, progress_percent, updated_at
+                   next_attempt_at, dead_lettered_at, ingestion_stage, progress_percent,
+                   progress_detail, updated_at
             FROM source_tasks
             WHERE tenant_id = ? AND id = ?
             """,

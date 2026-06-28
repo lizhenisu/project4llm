@@ -50,7 +50,7 @@ def main() -> None:
             text="synthetic ingestion progress must survive worker process boundaries",
             acl_groups=["engineering"],
         )
-        observations: list[tuple[str, int]] = []
+        observations: list[tuple[str, int, str]] = []
         indexed_entities: list[dict] = []
 
         with (
@@ -69,21 +69,23 @@ def main() -> None:
             summary = ingest_source_documents(
                 config=config,
                 docs=[doc],
-                progress_callback=lambda stage, percent: observations.append((stage, percent)),
+                progress_callback=lambda stage, percent, detail: observations.append(
+                    (stage, percent, detail)
+                ),
             )
 
     assert summary.document_count == 1
     assert summary.chunk_count == 1
     assert len(indexed_entities) == 1
     assert observations == [
-        ("preparing", 32),
-        ("chunking", 40),
-        ("text_embedding", 50),
-        ("text_embedding", 62),
-        ("summarizing", 72),
-        ("indexing", 82),
-        ("persisting", 92),
-        ("finalizing", 99),
+        ("preparing", 32, ""),
+        ("chunking", 40, "0/1 个文档"),
+        ("text_embedding", 50, "0/1 个文本片段"),
+        ("text_embedding", 62, "1/1 个文本片段"),
+        ("summarizing", 72, "1 个文档"),
+        ("indexing", 82, "0/1 个向量"),
+        ("persisting", 92, "1/1 个向量"),
+        ("finalizing", 99, ""),
     ]
     assert all(left[1] <= right[1] for left, right in zip(observations, observations[1:], strict=False))
     print("smoke_ingestion_progress=ok")

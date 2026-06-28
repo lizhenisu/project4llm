@@ -66,6 +66,7 @@ def test_retry_failed_task_is_tenant_scoped_and_atomic() -> None:
     assert listed_failed["retryable"] is True
     assert listed_failed["ingestion_stage"] == "failed"
     assert listed_failed["progress_percent"] == 0
+    assert listed_failed["progress_detail"] == ""
 
     with patch("serve.submit_upload_ingestion_job", return_value=True) as submit_job:
         response = api.post(
@@ -78,6 +79,7 @@ def test_retry_failed_task_is_tenant_scoped_and_atomic() -> None:
     assert response.json()["source"]["retryable"] is False
     assert response.json()["source"]["ingestion_stage"] == "queued"
     assert response.json()["source"]["progress_percent"] == 0
+    assert response.json()["source"]["progress_detail"] == ""
     submit_job.assert_called_once()
     assert submit_job.call_args.kwargs["tenant_id"] == tenant_a
     assert submit_job.call_args.kwargs["doc_version"] is None

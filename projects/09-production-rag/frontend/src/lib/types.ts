@@ -22,6 +22,7 @@ export type SourceItem = {
   dead_lettered?: boolean;
   ingestion_stage?: string;
   progress_percent?: number;
+  progress_detail?: string;
 };
 
 export type SourceContent = {

@@ -170,7 +170,7 @@ class IngestionJobRunner:
         try:
             config = load_config()
 
-            def report_progress(stage: str, progress_percent: int) -> None:
+            def report_progress(stage: str, progress_percent: int, progress_detail: str) -> None:
                 updated = update_source_task_progress(
                     config=config,
                     tenant_id=tenant_id,
@@ -178,6 +178,7 @@ class IngestionJobRunner:
                     lease_owner=lease_owner,
                     ingestion_stage=stage,
                     progress_percent=progress_percent,
+                    progress_detail=progress_detail,
                 )
                 if not updated:
                     lease_valid.clear()

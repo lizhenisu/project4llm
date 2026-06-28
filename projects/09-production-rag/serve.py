@@ -837,6 +837,7 @@ class SourceResponse(BaseModel):
     dead_lettered: bool = False
     ingestion_stage: str = ""
     progress_percent: int = 0
+    progress_detail: str = ""
 
 
 class SourceListResponse(BaseModel):
@@ -2789,6 +2790,7 @@ def source_to_response(source) -> SourceResponse:
         dead_lettered=getattr(source, "dead_lettered", False),
         ingestion_stage=getattr(source, "ingestion_stage", ""),
         progress_percent=max(0, min(100, int(getattr(source, "progress_percent", 0)))),
+        progress_detail=str(getattr(source, "progress_detail", "") or ""),
     )
 
 

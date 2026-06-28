@@ -336,7 +336,8 @@ function sourceProgressDetail(source: SourceItem) {
     const stage = ingestionStageLabel(source.ingestion_stage);
     const progress = normalizedProgress(source);
     const attemptDetail = attemptCount > 1 ? ` · 第 ${attemptCount} 次尝试` : "";
-    if (stage && progress > 0) return `${stage} · ${progress}%${attemptDetail}`;
+    const workDetail = source.progress_detail?.trim() ? ` · ${source.progress_detail.trim()}` : "";
+    if (stage && progress > 0) return `${stage} · ${progress}%${workDetail}${attemptDetail}`;
     if (attemptCount > 1) return `第 ${attemptCount} 次处理尝试`;
   }
   return "";
