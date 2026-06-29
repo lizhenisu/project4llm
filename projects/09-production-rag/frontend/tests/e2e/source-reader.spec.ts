@@ -1570,6 +1570,7 @@ test("shows marquee feedback for active source and studio tasks", async ({ page 
             ingestion_stage: "text_embedding",
             progress_percent: 62,
             progress_detail: "36/80 个文本片段",
+            eta_seconds: 75,
           },
         ],
       },
@@ -1602,7 +1603,7 @@ test("shows marquee feedback for active source and studio tasks", async ({ page 
   const artifactRow = page.locator(".artifact-row.is-active-task");
   await expect(sourceRow).toBeVisible();
   await expect(artifactRow).toBeVisible();
-  await expect(sourceRow.getByText("正在生成文本向量 · 62% · 36/80 个文本片段")).toBeVisible();
+  await expect(sourceRow.getByText("正在生成文本向量 · 62% · 36/80 个文本片段 · 预计剩余约 1 分钟")).toBeVisible();
   await expect(sourceRow.getByRole("progressbar", { name: "正在解析.pdf 处理进度" })).toHaveAttribute(
     "aria-valuenow",
     "62",

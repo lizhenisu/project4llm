@@ -431,8 +431,10 @@ CREATE TABLE IF NOT EXISTS source_tasks (
     status TEXT NOT NULL,
     error TEXT NOT NULL DEFAULT '',
     ingestion_stage TEXT NOT NULL DEFAULT 'queued',
+    stage_started_at INTEGER NOT NULL DEFAULT 0,
     progress_percent INTEGER NOT NULL DEFAULT 0,
     progress_detail TEXT NOT NULL DEFAULT '',
+    eta_seconds INTEGER,
     lease_owner TEXT NOT NULL DEFAULT '',
     lease_expires_at INTEGER NOT NULL DEFAULT 0,
     attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -443,6 +445,15 @@ CREATE TABLE IF NOT EXISTS source_tasks (
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_source_tasks_tenant_updated ON source_tasks(tenant_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ingestion_stage_stats (
+    source_type TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    total_duration_ms INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(source_type, stage)
+);
 
 CREATE TABLE IF NOT EXISTS query_admission_slots (
     scope_type TEXT NOT NULL,
@@ -547,8 +558,10 @@ def ensure_sqlite_columns(conn: sqlite3.Connection) -> None:
     ensure_sqlite_column(conn, table="source_tasks", column="next_attempt_at", definition="INTEGER NOT NULL DEFAULT 0")
     ensure_sqlite_column(conn, table="source_tasks", column="dead_lettered_at", definition="INTEGER NOT NULL DEFAULT 0")
     ensure_sqlite_column(conn, table="source_tasks", column="ingestion_stage", definition="TEXT NOT NULL DEFAULT 'queued'")
+    ensure_sqlite_column(conn, table="source_tasks", column="stage_started_at", definition="INTEGER NOT NULL DEFAULT 0")
     ensure_sqlite_column(conn, table="source_tasks", column="progress_percent", definition="INTEGER NOT NULL DEFAULT 0")
     ensure_sqlite_column(conn, table="source_tasks", column="progress_detail", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_sqlite_column(conn, table="source_tasks", column="eta_seconds", definition="INTEGER")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
@@ -583,8 +596,10 @@ def ensure_postgres_columns(conn: PostgresConnection) -> None:
     ensure_postgres_column(conn, table="source_tasks", column="next_attempt_at", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="dead_lettered_at", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="ingestion_stage", definition="TEXT NOT NULL DEFAULT 'queued'")
+    ensure_postgres_column(conn, table="source_tasks", column="stage_started_at", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="progress_percent", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="progress_detail", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_postgres_column(conn, table="source_tasks", column="eta_seconds", definition="BIGINT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"

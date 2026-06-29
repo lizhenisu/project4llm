@@ -15,11 +15,14 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import serve  # noqa: E402
+from rag_core.config import load_config  # noqa: E402
+from rag_core.database import connect_metadata_db  # noqa: E402
 from rag_core.model_api_retry import call_model_api_with_retries  # noqa: E402
 
 
 def main() -> None:
     with isolated_runtime():
+        seed_ingestion_stage_stats()
         api = TestClient(serve.create_app())
         assert call_model_api_with_retries("metrics_smoke", lambda: "ok") == "ok"
         serve.record_query_image_size(64 * 1024, accepted=True)
@@ -64,6 +67,11 @@ def main() -> None:
     assert 'rag_ingestion_task_recovery{state="retry_waiting"}' in text
     assert 'rag_ingestion_task_recovery{state="dead_lettered"}' in text
     assert 'rag_ingestion_task_recovery{state="retries_recorded"}' in text
+    assert 'rag_ingestion_stage_samples{source_type="txt",stage="text_embedding"} 2' in text
+    assert (
+        'rag_ingestion_stage_duration_seconds_average{source_type="txt",stage="text_embedding"} 4.000'
+        in text
+    )
     assert 'rag_ingestion_upload_reservations{scope="global"}' in text
     assert 'rag_ingestion_upload_reservations{scope="tenant"}' in text
     assert 'rag_ingestion_upload_reservations{scope="expired"}' in text
@@ -71,6 +79,19 @@ def main() -> None:
     validate_health_histogram(text)
     validate_query_image_histogram(text)
     print("smoke_prometheus_metrics=ok")
+
+
+def seed_ingestion_stage_stats() -> None:
+    config = load_config()
+    with connect_metadata_db(config) as conn:
+        conn.execute(
+            """
+            INSERT INTO ingestion_stage_stats(
+                source_type, stage, sample_count, total_duration_ms, updated_at
+            )
+            VALUES ('txt', 'text_embedding', 2, 8000, 1)
+            """
+        )
 
 
 def validate_metric_lines(text: str) -> None:

@@ -52,6 +52,7 @@ def main() -> None:
         test_atomic_claim_and_owner_guard(config)
         test_requested_version_survives_persistence(config)
         test_retry_backoff_and_dead_letter(config)
+        test_progress_eta_uses_historical_stage_stats(config)
         test_embedded_runner_retries_until_success(config)
         test_expired_lease_can_be_reclaimed(config)
         test_two_runners_execute_once_and_renew(config)
@@ -109,6 +110,7 @@ def test_atomic_claim_and_owner_guard(config) -> None:
     assert progress_source.ingestion_stage == "indexing"
     assert progress_source.progress_percent == 82
     assert progress_source.progress_detail == "0/12 个向量"
+    assert progress_source.eta_seconds is None
     assert renew_source_task_lease(
         config=config,
         tenant_id=TENANT_ID,
@@ -136,6 +138,64 @@ def test_atomic_claim_and_owner_guard(config) -> None:
         tenant_id=TENANT_ID,
         task_id=source.doc_id,
         lease_owner=owner,
+    ) is True
+
+
+def test_progress_eta_uses_historical_stage_stats(config) -> None:
+    source = save_task(config, "eta", source_type="txt")
+    claim = claim_source_task_for_processing(
+        config=config,
+        tenant_id=TENANT_ID,
+        source=source,
+        lease_owner="eta-owner",
+        lease_ms=60_000,
+    )
+    assert claim is not None
+    with connect_metadata_db(config) as conn:
+        for stage, duration_ms in {
+            "text_embedding": 20_000,
+            "summarizing": 12_000,
+            "indexing": 8_000,
+            "persisting": 6_000,
+            "finalizing": 2_000,
+        }.items():
+            conn.execute(
+                """
+                INSERT INTO ingestion_stage_stats(
+                    source_type, stage, sample_count, total_duration_ms, updated_at
+                )
+                VALUES ('txt', ?, 2, ?, ?)
+                ON CONFLICT(source_type, stage) DO UPDATE SET
+                    sample_count = excluded.sample_count,
+                    total_duration_ms = excluded.total_duration_ms,
+                    updated_at = excluded.updated_at
+                """,
+                (stage, duration_ms * 2, now_ms()),
+            )
+
+    assert update_source_task_progress(
+        config=config,
+        tenant_id=TENANT_ID,
+        task_id=source.doc_id,
+        lease_owner="eta-owner",
+        ingestion_stage="text_embedding",
+        progress_percent=50,
+        progress_detail="0/10 个文本片段",
+    ) is True
+    eta_row = task_row(config, source.doc_id)
+    assert eta_row["eta_seconds"] is not None
+    assert 40 <= int(eta_row["eta_seconds"]) <= 55
+    eta_source = next(
+        item
+        for item in list_source_tasks(config=config, tenant_id=TENANT_ID)
+        if item.doc_id == source.doc_id
+    )
+    assert eta_source.eta_seconds == int(eta_row["eta_seconds"])
+    assert delete_source_task(
+        config=config,
+        tenant_id=TENANT_ID,
+        task_id=source.doc_id,
+        lease_owner="eta-owner",
     ) is True
 
 
@@ -444,13 +504,13 @@ def test_restarted_worker_recovers_expired_process_lease(config) -> None:
     assert observed_attempts == [2]
 
 
-def save_task(config, label: str) -> SourceSummary:
+def save_task(config, label: str, *, source_type: str | None = None) -> SourceSummary:
     timestamp = now_ms()
     task_id = f"{TENANT_ID}-{label}-{uuid.uuid4().hex[:8]}"
     source = SourceSummary(
         doc_id=task_id,
         title=f"{label}.txt",
-        source_type="txt",
+        source_type=source_type or f"smoke-{label}",
         source_uri=str(config.object_store_dir / f"{label}.txt"),
         doc_version=1,
         chunk_count=0,
@@ -476,7 +536,7 @@ def task_row(config, task_id: str, *, required: bool = True):
             """
             SELECT status, error, lease_owner, lease_expires_at, attempt_count,
                    next_attempt_at, dead_lettered_at, ingestion_stage, progress_percent,
-                   progress_detail, updated_at
+                   progress_detail, eta_seconds, stage_started_at, updated_at
             FROM source_tasks
             WHERE tenant_id = ? AND id = ?
             """,

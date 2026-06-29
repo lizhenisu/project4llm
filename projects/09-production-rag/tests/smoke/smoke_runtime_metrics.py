@@ -17,6 +17,7 @@ from answer import AnswerResult
 from rag_core.auth import AuthContext
 from rag_core.answering import AnswerGeneration
 from rag_core.config import load_config
+from rag_core.database import connect_metadata_db
 from rag_core.model_api_retry import model_api_slot
 from rag_core.sources import SourceSummary, save_source_task_for_tenant
 from rag_core.text_utils import now_ms
@@ -53,6 +54,7 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
             child_doc_ids=[],
         ),
     )
+    seed_ingestion_stage_stats(config)
 
     api = TestClient(serve.create_app())
     with model_api_slot("runtime-metrics-smoke"):
@@ -120,6 +122,10 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
         "dead_lettered": 0,
         "retries_recorded": 0,
     }
+    assert body["ingestion"]["stage_stats"]["txt"]["text_embedding"] == {
+        "sample_count": 2,
+        "average_seconds": 4.0,
+    }
     assert body["ingestion"]["upload_admission"] == {
         "reservation_ms": 900000,
         "global_reservations": 0,
@@ -131,6 +137,23 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["ingestion"]["backlog_limit"] >= 1
     assert body["ingestion"]["tenant_backlog_limit"] >= 1
     assert body["ingestion"]["max_upload_bytes"] >= 1
+
+
+def seed_ingestion_stage_stats(config) -> None:
+    with connect_metadata_db(config) as conn:
+        conn.execute(
+            """
+            INSERT INTO ingestion_stage_stats(
+                source_type, stage, sample_count, total_duration_ms, updated_at
+            )
+            VALUES ('txt', 'text_embedding', 2, 8000, ?)
+            ON CONFLICT(source_type, stage) DO UPDATE SET
+                sample_count = excluded.sample_count,
+                total_duration_ms = excluded.total_duration_ms,
+                updated_at = excluded.updated_at
+            """,
+            (now_ms(),),
+        )
 
 
 def test_runtime_metrics_records_http_route_counts() -> None:

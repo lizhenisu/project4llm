@@ -23,6 +23,7 @@ export type SourceItem = {
   ingestion_stage?: string;
   progress_percent?: number;
   progress_detail?: string;
+  eta_seconds?: number | null;
 };
 
 export type SourceContent = {

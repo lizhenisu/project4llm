@@ -73,6 +73,7 @@ from rag_core.sources import (
     fail_source_task,
     get_source,
     get_source_content,
+    ingestion_stage_stats_snapshot,
     list_sources,
     rename_source,
     resolve_metadata_display_block_urls,
@@ -489,6 +490,7 @@ def prometheus_metrics_text(config) -> str:
     ingestion = count_source_tasks_by_status(config=config, tenant_id=None)
     ingestion_leases = source_task_lease_metrics_snapshot(config=config, tenant_id=None)
     ingestion_recovery = source_task_recovery_metrics_snapshot(config=config, tenant_id=None)
+    ingestion_stage_stats = ingestion_stage_stats_snapshot(config=config)
     upload_admission = upload_admission_metrics_snapshot(config=config)
     shared_query_admission = query_admission_metrics_snapshot(config=config)
     lines = [
@@ -711,6 +713,36 @@ def prometheus_metrics_text(config) -> str:
             f'rag_ingestion_task_recovery{{state="retry_waiting"}} {ingestion_recovery["retry_waiting"]}',
             f'rag_ingestion_task_recovery{{state="dead_lettered"}} {ingestion_recovery["dead_lettered"]}',
             f'rag_ingestion_task_recovery{{state="retries_recorded"}} {ingestion_recovery["retries_recorded"]}',
+            "# HELP rag_ingestion_stage_samples Historical ingestion stage samples used for ETA estimates.",
+            "# TYPE rag_ingestion_stage_samples gauge",
+        ]
+    )
+    for source_type, stages in ingestion_stage_stats.items():
+        source_type_label = prometheus_label(source_type)
+        for stage, stats in stages.items():
+            stage_label = prometheus_label(stage)
+            lines.append(
+                "rag_ingestion_stage_samples"
+                f'{{source_type="{source_type_label}",stage="{stage_label}"}} '
+                f'{int(stats["sample_count"])}'
+            )
+    lines.extend(
+        [
+            "# HELP rag_ingestion_stage_duration_seconds_average Average historical ingestion stage duration used for ETA estimates.",
+            "# TYPE rag_ingestion_stage_duration_seconds_average gauge",
+        ]
+    )
+    for source_type, stages in ingestion_stage_stats.items():
+        source_type_label = prometheus_label(source_type)
+        for stage, stats in stages.items():
+            stage_label = prometheus_label(stage)
+            lines.append(
+                "rag_ingestion_stage_duration_seconds_average"
+                f'{{source_type="{source_type_label}",stage="{stage_label}"}} '
+                f'{float(stats["average_seconds"]):.3f}'
+            )
+    lines.extend(
+        [
             "# HELP rag_ingestion_upload_reservations Current shared upload admission reservations.",
             "# TYPE rag_ingestion_upload_reservations gauge",
             (
@@ -838,6 +870,7 @@ class SourceResponse(BaseModel):
     ingestion_stage: str = ""
     progress_percent: int = 0
     progress_detail: str = ""
+    eta_seconds: int | None = None
 
 
 class SourceListResponse(BaseModel):
@@ -1192,6 +1225,7 @@ def create_app():
                 "source_tasks_by_status": count_source_tasks_by_status(config=config, tenant_id=tenant_id),
                 "task_leases": source_task_lease_metrics_snapshot(config=config, tenant_id=tenant_id),
                 "task_recovery": source_task_recovery_metrics_snapshot(config=config, tenant_id=tenant_id),
+                "stage_stats": ingestion_stage_stats_snapshot(config=config),
                 "upload_admission": {
                     "reservation_ms": ingest_upload_reservation_ms(),
                     **upload_admission_metrics_snapshot(config=config),
@@ -2791,6 +2825,7 @@ def source_to_response(source) -> SourceResponse:
         ingestion_stage=getattr(source, "ingestion_stage", ""),
         progress_percent=max(0, min(100, int(getattr(source, "progress_percent", 0)))),
         progress_detail=str(getattr(source, "progress_detail", "") or ""),
+        eta_seconds=getattr(source, "eta_seconds", None),
     )
 
 

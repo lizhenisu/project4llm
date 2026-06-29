@@ -460,6 +460,53 @@
       ],
       "title": "Query Image Payload Size p95",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "avg by (source_type, stage) (rag_ingestion_stage_duration_seconds_average)",
+          "legendFormat": "{{source_type}} {{stage}} avg",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (source_type, stage) (rag_ingestion_stage_samples)",
+          "legendFormat": "{{source_type}} {{stage}} samples",
+          "refId": "B"
+        }
+      ],
+      "title": "Ingestion ETA Stage History",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
