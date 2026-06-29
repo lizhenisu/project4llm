@@ -12,6 +12,11 @@ const busyPageCount = envInt("FRONTEND_BUSY_PAGES", 4);
 const busyConcurrency = envInt("FRONTEND_BUSY_CONCURRENCY", 2);
 const failedUploadPageCount = envInt("FRONTEND_FAILED_UPLOAD_PAGES", 4);
 const failedUploadConcurrency = envInt("FRONTEND_FAILED_UPLOAD_CONCURRENCY", 2);
+const stageBurstPageCount = envInt("FRONTEND_STAGE_BURST_PAGES", 4);
+const stageBurstConcurrency = envInt("FRONTEND_STAGE_BURST_CONCURRENCY", 2);
+const stageBurstEvents = envInt("FRONTEND_STAGE_BURST_EVENTS", 80);
+const imageChatPageCount = envInt("FRONTEND_IMAGE_CHAT_PAGES", 4);
+const imageChatConcurrency = envInt("FRONTEND_IMAGE_CHAT_CONCURRENCY", 2);
 const token = process.env.FRONTEND_LOAD_TOKEN || "production-rag-fixed-test-login-token";
 const startupMaxDomNodes = envInt("FRONTEND_STARTUP_MAX_DOM_NODES", 500);
 const startupMaxImageNodes = envInt("FRONTEND_STARTUP_MAX_IMAGE_NODES", 10);
@@ -23,6 +28,10 @@ const interactionOutputPath =
 const busyOutputPath = process.env.FRONTEND_BUSY_OUTPUT || "test-results/frontend-busy-summary.json";
 const failedUploadOutputPath =
   process.env.FRONTEND_FAILED_UPLOAD_OUTPUT || "test-results/frontend-failed-upload-summary.json";
+const stageBurstOutputPath =
+  process.env.FRONTEND_STAGE_BURST_OUTPUT || "test-results/frontend-stage-burst-summary.json";
+const imageChatOutputPath =
+  process.env.FRONTEND_IMAGE_CHAT_OUTPUT || "test-results/frontend-image-chat-summary.json";
 const testTimeoutMs = envInt("FRONTEND_LOAD_TEST_TIMEOUT_MS", 30_000);
 
 test.skip(!enabled, "Set RUN_FRONTEND_LOAD_E2E=1 to run the browser-level frontend load smoke.");
@@ -43,6 +52,7 @@ test.describe("browser-level frontend load smoke", () => {
       failure_rate: round(failures.length / Math.max(1, samples.length), 4),
       load_ms: summarize(samples.map((sample) => sample.load_ms)),
       metrics: summarizePageMetrics(samples.map((sample) => sample.metrics)),
+      api_requests: summarizeApiRequestCounts(samples.map((sample) => sample.api_requests)),
       console_errors: samples.reduce((total, sample) => total + sample.console_errors.length, 0),
       page_errors: samples.reduce((total, sample) => total + sample.page_errors.length, 0),
       http_failures: samples.reduce((total, sample) => total + sample.http_failures.length, 0),
@@ -61,6 +71,8 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.isolated_conversation_requests, JSON.stringify(payload, null, 2)).toBe(pageCount);
+    expect(payload.api_requests["GET /sources"]?.max || 0, JSON.stringify(payload, null, 2)).toBeGreaterThan(0);
+    expect(payload.api_requests["GET /conversations"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
   });
 
   test("uploads a file and renders streamed answers with mocked backend", async ({ browser, baseURL }) => {
@@ -79,6 +91,7 @@ test.describe("browser-level frontend load smoke", () => {
       upload_ready_ms: summarize(samples.map((sample) => sample.upload_ready_ms)),
       query_ms: summarize(samples.map((sample) => sample.query_ms)),
       metrics: summarizePageMetrics(samples.map((sample) => sample.metrics)),
+      api_requests: summarizeApiRequestCounts(samples.map((sample) => sample.api_requests)),
       console_errors: samples.reduce((total, sample) => total + sample.console_errors.length, 0),
       page_errors: samples.reduce((total, sample) => total + sample.page_errors.length, 0),
       http_failures: samples.reduce((total, sample) => total + sample.http_failures.length, 0),
@@ -92,6 +105,8 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.api_requests["POST /sources/upload"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
+    expect(payload.api_requests["POST /query/stream"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
   });
 
   test("shows a friendly busy message when streamed answers are rejected", async ({ browser, baseURL }) => {
@@ -110,6 +125,7 @@ test.describe("browser-level frontend load smoke", () => {
       upload_ready_ms: summarize(samples.map((sample) => sample.upload_ready_ms)),
       query_ms: summarize(samples.map((sample) => sample.query_ms)),
       metrics: summarizePageMetrics(samples.map((sample) => sample.metrics)),
+      api_requests: summarizeApiRequestCounts(samples.map((sample) => sample.api_requests)),
       expected_busy_responses: samples.reduce((total, sample) => total + sample.expected_busy_responses, 0),
       expected_busy_console_errors: samples.reduce((total, sample) => total + sample.expected_busy_console_errors, 0),
       console_errors: samples.reduce((total, sample) => total + sample.console_errors.length, 0),
@@ -127,6 +143,7 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.api_requests["POST /query/stream"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
   });
 
   test("keeps failed ingestion sources visible after upload polling", async ({ browser, baseURL }) => {
@@ -144,6 +161,7 @@ test.describe("browser-level frontend load smoke", () => {
       total_ms: summarize(samples.map((sample) => sample.total_ms)),
       upload_ready_ms: summarize(samples.map((sample) => sample.upload_ready_ms)),
       metrics: summarizePageMetrics(samples.map((sample) => sample.metrics)),
+      api_requests: summarizeApiRequestCounts(samples.map((sample) => sample.api_requests)),
       expected_failed_sources: samples.reduce((total, sample) => total + sample.expected_failed_sources, 0),
       console_errors: samples.reduce((total, sample) => total + sample.console_errors.length, 0),
       page_errors: samples.reduce((total, sample) => total + sample.page_errors.length, 0),
@@ -159,6 +177,85 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.api_requests["POST /sources/upload"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
+  });
+
+  test("renders high-frequency streamed stages across pages", async ({ browser, baseURL }) => {
+    const started = performance.now();
+    const samples = await runStageBurstPages(browser, baseURL || "http://127.0.0.1:5173");
+    const wallMs = roundMs(performance.now() - started);
+    const failures = samples.filter((sample) => !sample.ok);
+    const payload = {
+      pages: stageBurstPageCount,
+      concurrency: stageBurstConcurrency,
+      stage_events_per_page: stageBurstEvents,
+      total_stage_events: samples.reduce((total, sample) => total + sample.stream_stage_events, 0),
+      wall_ms: wallMs,
+      success: samples.length - failures.length,
+      failed: failures.length,
+      failure_rate: round(failures.length / Math.max(1, samples.length), 4),
+      total_ms: summarize(samples.map((sample) => sample.total_ms)),
+      upload_ready_ms: summarize(samples.map((sample) => sample.upload_ready_ms)),
+      query_ms: summarize(samples.map((sample) => sample.query_ms)),
+      stream_stage_events: summarize(samples.map((sample) => sample.stream_stage_events)),
+      metrics: summarizePageMetrics(samples.map((sample) => sample.metrics)),
+      api_requests: summarizeApiRequestCounts(samples.map((sample) => sample.api_requests)),
+      console_errors: samples.reduce((total, sample) => total + sample.console_errors.length, 0),
+      page_errors: samples.reduce((total, sample) => total + sample.page_errors.length, 0),
+      http_failures: samples.reduce((total, sample) => total + sample.http_failures.length, 0),
+      failed_samples: failures.slice(0, 10),
+      samples: samples.slice(0, 20),
+    };
+    mkdirSync(dirname(stageBurstOutputPath), { recursive: true });
+    writeFileSync(stageBurstOutputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+
+    expect(payload.failed, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.total_stage_events, JSON.stringify(payload, null, 2)).toBe(stageBurstPageCount * stageBurstEvents);
+    expect(payload.stream_stage_events.min, JSON.stringify(payload, null, 2)).toBe(stageBurstEvents);
+    expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.api_requests["POST /query/stream"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
+  });
+
+  test("compresses image chat attachments across pages", async ({ browser, baseURL }) => {
+    const started = performance.now();
+    const samples = await runImageChatPages(browser, baseURL || "http://127.0.0.1:5173");
+    const wallMs = roundMs(performance.now() - started);
+    const failures = samples.filter((sample) => !sample.ok);
+    const payload = {
+      pages: imageChatPageCount,
+      concurrency: imageChatConcurrency,
+      wall_ms: wallMs,
+      success: samples.length - failures.length,
+      failed: failures.length,
+      failure_rate: round(failures.length / Math.max(1, samples.length), 4),
+      total_ms: summarize(samples.map((sample) => sample.total_ms)),
+      query_ms: summarize(samples.map((sample) => sample.query_ms)),
+      image_data_url_bytes: summarize(samples.map((sample) => sample.image_data_url_bytes)),
+      metrics: summarizePageMetrics(samples.map((sample) => sample.metrics)),
+      api_requests: summarizeApiRequestCounts(samples.map((sample) => sample.api_requests)),
+      compressed_previews: samples.reduce((total, sample) => total + (sample.compressed_preview ? 1 : 0), 0),
+      compressed_stream_payloads: samples.reduce((total, sample) => total + (sample.compressed_stream_payload ? 1 : 0), 0),
+      compressed_saved_messages: samples.reduce((total, sample) => total + (sample.compressed_saved_message ? 1 : 0), 0),
+      console_errors: samples.reduce((total, sample) => total + sample.console_errors.length, 0),
+      page_errors: samples.reduce((total, sample) => total + sample.page_errors.length, 0),
+      http_failures: samples.reduce((total, sample) => total + sample.http_failures.length, 0),
+      failed_samples: failures.slice(0, 10),
+      samples: samples.slice(0, 20),
+    };
+    mkdirSync(dirname(imageChatOutputPath), { recursive: true });
+    writeFileSync(imageChatOutputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+
+    expect(payload.failed, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.compressed_previews, JSON.stringify(payload, null, 2)).toBe(imageChatPageCount);
+    expect(payload.compressed_stream_payloads, JSON.stringify(payload, null, 2)).toBe(imageChatPageCount);
+    expect(payload.compressed_saved_messages, JSON.stringify(payload, null, 2)).toBe(imageChatPageCount);
+    expect(payload.image_data_url_bytes.max, JSON.stringify(payload, null, 2)).toBeLessThan(1_000_000);
+    expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.api_requests["POST /query/stream"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
   });
 
   test("shows stable status text and recovery guidance for ingestion", async ({ page, baseURL }) => {
@@ -1166,6 +1263,7 @@ async function openWorkspacePage(browser: Browser, baseURL: string, index: numbe
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   const httpFailures: string[] = [];
+  const apiRequests: Record<string, number> = {};
   let isolatedConversationRequests = 0;
   await page.route("**/api/conversations**", async (route) => {
     const request = route.request();
@@ -1188,6 +1286,9 @@ async function openWorkspacePage(browser: Browser, baseURL: string, index: numbe
   });
   page.on("pageerror", (error) => {
     pageErrors.push(error.message);
+  });
+  page.on("request", (request) => {
+    recordApiRequest(apiRequests, request.method(), request.url());
   });
   page.on("response", (response) => {
     if (response.status() >= 500) {
@@ -1221,6 +1322,7 @@ async function openWorkspacePage(browser: Browser, baseURL: string, index: numbe
         && baselineWithinLimits,
       load_ms: loadMs,
       metrics,
+      api_requests: apiRequests,
       isolated_conversation_requests: isolatedConversationRequests,
       baseline_within_limits: baselineWithinLimits,
       console_errors: consoleErrors,
@@ -1236,6 +1338,7 @@ async function openWorkspacePage(browser: Browser, baseURL: string, index: numbe
       ok: false,
       load_ms: loadMs,
       metrics,
+      api_requests: apiRequests,
       isolated_conversation_requests: isolatedConversationRequests,
       baseline_within_limits: false,
       console_errors: consoleErrors,
@@ -1288,6 +1391,133 @@ async function runFailedUploadPages(browser: Browser, baseURL: string) {
   return results.sort((left, right) => left.index - right.index);
 }
 
+async function runStageBurstPages(browser: Browser, baseURL: string) {
+  const results: InteractionSample[] = [];
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(stageBurstConcurrency, stageBurstPageCount) }, async () => {
+    while (nextIndex < stageBurstPageCount) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results.push(await interactWithWorkspace(browser, baseURL, index, "stage-burst"));
+    }
+  });
+  await Promise.all(workers);
+  return results.sort((left, right) => left.index - right.index);
+}
+
+async function runImageChatPages(browser: Browser, baseURL: string) {
+  const results: ImageChatSample[] = [];
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(imageChatConcurrency, imageChatPageCount) }, async () => {
+    while (nextIndex < imageChatPageCount) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results.push(await imageChatWithWorkspace(browser, baseURL, index));
+    }
+  });
+  await Promise.all(workers);
+  return results.sort((left, right) => left.index - right.index);
+}
+
+async function imageChatWithWorkspace(browser: Browser, baseURL: string, index: number): Promise<ImageChatSample> {
+  const page = await browser.newPage();
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  const httpFailures: string[] = [];
+  const apiRequests: Record<string, number> = {};
+  const started = performance.now();
+  let queryMs = 0;
+  let streamedImageDataUrl = "";
+  let savedImageDataUrl = "";
+  try {
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        consoleErrors.push(message.text());
+      }
+    });
+    page.on("pageerror", (error) => {
+      pageErrors.push(error.message);
+    });
+    page.on("request", (request) => {
+      recordApiRequest(apiRequests, request.method(), request.url());
+    });
+    page.on("response", (response) => {
+      if (response.status() >= 500) {
+        httpFailures.push(`${response.status()} ${response.url()}`);
+      }
+    });
+    await mockImageChatApi(page, index, {
+      onStreamImage: (value) => {
+        streamedImageDataUrl = value;
+      },
+      onSavedImage: (value) => {
+        savedImageDataUrl = value;
+      },
+    });
+
+    await page.goto(`${baseURL.replace(/\/$/, "")}/#token=browser-load-image-token-${index}`, {
+      waitUntil: "domcontentloaded",
+    });
+    const fileChooserPromise = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "上传图片提问" }).click();
+    const fileChooser = await fileChooserPromise;
+    await fileChooser.setFiles({
+      name: `large-chat-image-${index}.svg`,
+      mimeType: "image/svg+xml",
+      buffer: Buffer.from(largeChatImageSvg(index), "utf-8"),
+    });
+    const preview = page.locator(".attachment-preview-button img");
+    await expect(preview).toHaveAttribute("src", /^data:image\/jpeg/);
+    const queryStarted = performance.now();
+    await page.locator("#chat-input-textarea").fill(`根据第 ${index} 张图回答`);
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.getByText(`Compressed image accepted ${index}.`)).toBeVisible({ timeout: 12_000 });
+    queryMs = roundMs(performance.now() - queryStarted);
+    const metrics = await collectPageMetrics(page);
+    await closePage(page);
+    return {
+      index,
+      ok:
+        consoleErrors.length === 0 &&
+        pageErrors.length === 0 &&
+        httpFailures.length === 0 &&
+        streamedImageDataUrl.startsWith("data:image/jpeg") &&
+        savedImageDataUrl.startsWith("data:image/jpeg") &&
+        streamedImageDataUrl.length < 1_000_000,
+      total_ms: roundMs(performance.now() - started),
+      query_ms: queryMs,
+      image_data_url_bytes: streamedImageDataUrl.length,
+      compressed_preview: true,
+      compressed_stream_payload: streamedImageDataUrl.startsWith("data:image/jpeg"),
+      compressed_saved_message: savedImageDataUrl.startsWith("data:image/jpeg"),
+      metrics,
+      api_requests: apiRequests,
+      console_errors: consoleErrors,
+      page_errors: pageErrors,
+      http_failures: httpFailures,
+    };
+  } catch (error) {
+    const metrics = await collectPageMetrics(page).catch(() => null);
+    await closePage(page);
+    return {
+      index,
+      ok: false,
+      total_ms: roundMs(performance.now() - started),
+      query_ms: queryMs,
+      image_data_url_bytes: streamedImageDataUrl.length,
+      compressed_preview: false,
+      compressed_stream_payload: streamedImageDataUrl.startsWith("data:image/jpeg"),
+      compressed_saved_message: savedImageDataUrl.startsWith("data:image/jpeg"),
+      metrics,
+      api_requests: apiRequests,
+      console_errors: consoleErrors,
+      page_errors: pageErrors,
+      http_failures: httpFailures,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function interactWithWorkspace(
   browser: Browser,
   baseURL: string,
@@ -1298,9 +1528,11 @@ async function interactWithWorkspace(
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   const httpFailures: string[] = [];
+  const apiRequests: Record<string, number> = {};
   let expectedBusyResponses = 0;
   let expectedBusyConsoleErrors = 0;
   let expectedFailedSources = 0;
+  let streamStageEvents = 0;
   page.on("console", (message) => {
     if (message.type() === "error") {
       if (scenario === "busy" && message.text().includes("503") && message.text().includes("Service Unavailable")) {
@@ -1312,6 +1544,9 @@ async function interactWithWorkspace(
   });
   page.on("pageerror", (error) => {
     pageErrors.push(error.message);
+  });
+  page.on("request", (request) => {
+    recordApiRequest(apiRequests, request.method(), request.url());
   });
   page.on("response", (response) => {
     if (response.status() >= 500) {
@@ -1367,9 +1602,11 @@ async function interactWithWorkspace(
         upload_ready_ms: uploadReadyMs,
         query_ms: queryMs,
         metrics,
+        api_requests: apiRequests,
         expected_busy_responses: expectedBusyResponses,
         expected_busy_console_errors: expectedBusyConsoleErrors,
         expected_failed_sources: expectedFailedSources,
+        stream_stage_events: streamStageEvents,
         console_errors: consoleErrors,
         page_errors: pageErrors,
         http_failures: httpFailures,
@@ -1385,6 +1622,9 @@ async function interactWithWorkspace(
       await expect(page.getByText(`Mock streamed answer ${index}`)).toBeVisible({ timeout: 12_000 });
     }
     queryMs = roundMs(performance.now() - queryStarted);
+    if (scenario === "stage-burst") {
+      streamStageEvents = stageBurstEvents;
+    }
 
     const metrics = await collectPageMetrics(page);
     await closePage(page);
@@ -1399,9 +1639,11 @@ async function interactWithWorkspace(
       upload_ready_ms: uploadReadyMs,
       query_ms: queryMs,
       metrics,
+      api_requests: apiRequests,
       expected_busy_responses: expectedBusyResponses,
       expected_busy_console_errors: expectedBusyConsoleErrors,
       expected_failed_sources: expectedFailedSources,
+      stream_stage_events: streamStageEvents,
       console_errors: consoleErrors,
       page_errors: pageErrors,
       http_failures: httpFailures,
@@ -1416,9 +1658,11 @@ async function interactWithWorkspace(
       upload_ready_ms: uploadReadyMs,
       query_ms: queryMs,
       metrics,
+      api_requests: apiRequests,
       expected_busy_responses: expectedBusyResponses,
       expected_busy_console_errors: expectedBusyConsoleErrors,
       expected_failed_sources: expectedFailedSources,
+      stream_stage_events: streamStageEvents,
       console_errors: consoleErrors,
       page_errors: pageErrors,
       http_failures: httpFailures,
@@ -1608,15 +1852,20 @@ async function mockWorkspaceApi(page: Page, index: number, scenario: Interaction
       });
       return;
     }
-    const body = [
-      JSON.stringify({
+    const stageEventCount = scenario === "stage-burst" ? stageBurstEvents : 1;
+    const stageEvents = Array.from(
+      { length: stageEventCount },
+      (_, stageIndex) => JSON.stringify({
         type: "stage",
-        stage: "receive",
-        label: "接收问题",
-        detail: "已收到问题。",
-        status: "done",
-        latency_ms: 1,
+        stage: scenario === "stage-burst" ? "answer" : "receive",
+        label: scenario === "stage-burst" ? "大模型生成" : "接收问题",
+        detail: scenario === "stage-burst" ? `高频阶段 ${stageIndex}` : "已收到问题。",
+        status: stageIndex === stageEventCount - 1 ? "done" : "active",
+        latency_ms: stageIndex + 1,
       }),
+    );
+    const body = [
+      ...stageEvents,
       JSON.stringify({
         type: "result",
         request_id: `browser-load-request-${index}`,
@@ -1678,6 +1927,101 @@ async function mockStartupApi(page: Page) {
   await page.route("**/api/conversations**", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ conversations: [] }) });
   });
+}
+
+async function mockImageChatApi(
+  page: Page,
+  index: number,
+  callbacks: { onStreamImage: (value: string) => void; onSavedImage: (value: string) => void },
+) {
+  const now = Date.now();
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith("/health")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok" }) });
+      return;
+    }
+    if (path.endsWith("/auth/me")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: `image-chat-user-${index}`,
+          username: `image-chat-user-${index}`,
+          display_name: `Image Chat User ${index}`,
+          role: "user",
+          tenant_id: `browser-load-image-tenant-${index}`,
+          created_at: now,
+          status: "active",
+        }),
+      });
+      return;
+    }
+    if (path.endsWith("/admin/settings")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ registration_enabled: true, latest_announcement: null }),
+      });
+      return;
+    }
+    if (path.endsWith("/announcements")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ announcements: [] }) });
+      return;
+    }
+    if (path.endsWith("/sources")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sources: [] }) });
+      return;
+    }
+    if (path.endsWith("/artifacts")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ artifacts: [] }) });
+      return;
+    }
+    if (path.endsWith("/conversations") && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ conversations: [] }) });
+      return;
+    }
+    if (path.endsWith("/conversations") && request.method() === "POST") {
+      const body = JSON.parse(request.postData() || "{}") as { messages?: Array<{ image_data_url?: string | null }> };
+      callbacks.onSavedImage(body.messages?.find((message) => message.image_data_url)?.image_data_url || "");
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: `image-chat-conversation-${index}`,
+          tenant_id: `browser-load-image-tenant-${index}`,
+          title: `Image chat conversation ${index}`,
+          messages: body.messages || [],
+          source_doc_ids: [],
+          created_at: now,
+          updated_at: Date.now(),
+        }),
+      });
+      return;
+    }
+    if (path.endsWith("/query/stream") && request.method() === "POST") {
+      const body = JSON.parse(request.postData() || "{}") as { image_data_url?: string | null };
+      callbacks.onStreamImage(body.image_data_url || "");
+      await route.fulfill({
+        status: 200,
+        contentType: "application/x-ndjson",
+        body: `${JSON.stringify({
+          type: "result",
+          request_id: `image-chat-request-${index}`,
+          answer: `Compressed image accepted ${index}.`,
+          citations: [],
+          trace: {},
+        })}\n`,
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok" }) });
+  });
+}
+
+function largeChatImageSvg(index: number) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="3200" height="1800"><rect width="3200" height="1800" fill="#ffffff"/><text x="120" y="220" font-size="120" fill="#111827">large chat image ${index}</text></svg>`;
 }
 
 async function chooseUploadFile(page: Page, name: string) {
@@ -1754,10 +2098,16 @@ async function collectPageMetrics(page: Page): Promise<PageMetrics> {
     ).memory;
     const transferBytes = resources.reduce((total, item) => total + (item.transferSize || 0), 0);
     const encodedBodyBytes = resources.reduce((total, item) => total + (item.encodedBodySize || 0), 0);
+    const resourceTypes = resources.reduce<Record<string, number>>((counts, item) => {
+      const type = item.initiatorType || "unknown";
+      counts[type] = (counts[type] || 0) + 1;
+      return counts;
+    }, {});
     return {
       dom_nodes: document.querySelectorAll("*").length,
       img_nodes: document.images.length,
       resource_count: resources.length,
+      resource_types: resourceTypes,
       transfer_kb: Math.round(transferBytes / 1024),
       encoded_body_kb: Math.round(encodedBodyBytes / 1024),
       js_heap_used_mb:
@@ -1784,6 +2134,7 @@ type PageSample = {
   ok: boolean;
   load_ms: number;
   metrics: PageMetrics | null;
+  api_requests: Record<string, number>;
   isolated_conversation_requests: number;
   baseline_within_limits: boolean;
   console_errors: string[];
@@ -1808,6 +2159,7 @@ type InteractionSample = {
   upload_ready_ms: number;
   query_ms: number;
   metrics: PageMetrics | null;
+  api_requests: Record<string, number>;
   expected_busy_responses: number;
   expected_busy_console_errors: number;
   expected_failed_sources: number;
@@ -1817,12 +2169,30 @@ type InteractionSample = {
   error?: string;
 };
 
-type InteractionScenario = "success" | "busy" | "ingest-failed";
+type InteractionScenario = "success" | "busy" | "ingest-failed" | "stage-burst";
+
+type ImageChatSample = {
+  index: number;
+  ok: boolean;
+  total_ms: number;
+  query_ms: number;
+  image_data_url_bytes: number;
+  compressed_preview: boolean;
+  compressed_stream_payload: boolean;
+  compressed_saved_message: boolean;
+  metrics: PageMetrics | null;
+  api_requests: Record<string, number>;
+  console_errors: string[];
+  page_errors: string[];
+  http_failures: string[];
+  error?: string;
+};
 
 type PageMetrics = {
   dom_nodes: number;
   img_nodes: number;
   resource_count: number;
+  resource_types: Record<string, number>;
   transfer_kb: number;
   encoded_body_kb: number;
   js_heap_used_mb: number | null;
@@ -1856,11 +2226,42 @@ function summarizePageMetrics(metrics: Array<PageMetrics | null>) {
     dom_nodes: summarize(metrics.map((item) => item?.dom_nodes ?? 0)),
     img_nodes: summarize(metrics.map((item) => item?.img_nodes ?? 0)),
     resource_count: summarize(metrics.map((item) => item?.resource_count ?? 0)),
+    resource_types: summarizeNestedCounts(metrics.map((item) => item?.resource_types ?? {})),
     transfer_kb: summarize(metrics.map((item) => item?.transfer_kb ?? 0)),
     encoded_body_kb: summarize(metrics.map((item) => item?.encoded_body_kb ?? 0)),
     js_heap_used_mb: summarizeNullable(metrics.map((item) => item?.js_heap_used_mb)),
     js_heap_total_mb: summarizeNullable(metrics.map((item) => item?.js_heap_total_mb)),
   };
+}
+
+function summarizeApiRequestCounts(counts: Array<Record<string, number>>) {
+  return summarizeNestedCounts(counts);
+}
+
+function summarizeNestedCounts(counts: Array<Record<string, number>>) {
+  const keys = [...new Set(counts.flatMap((item) => Object.keys(item)))].sort();
+  return Object.fromEntries(
+    keys.map((key) => [key, summarize(counts.map((item) => item[key] || 0))]),
+  );
+}
+
+function recordApiRequest(counts: Record<string, number>, method: string, url: string) {
+  const normalized = normalizeApiRequestKey(method, url);
+  if (!normalized) return;
+  counts[normalized] = (counts[normalized] || 0) + 1;
+}
+
+function normalizeApiRequestKey(method: string, url: string) {
+  const parsed = new URL(url);
+  const path = parsed.pathname.replace(/^\/api/, "");
+  if (!path || path === parsed.pathname) return "";
+  const normalizedPath = path
+    .replace(/^\/sources\/content\/[^/]+$/, "/sources/content/:doc_id")
+    .replace(/^\/sources\/[^/]+\/retry$/, "/sources/:task_id/retry")
+    .replace(/^\/source-assets\/.+$/, "/source-assets/:asset")
+    .replace(/^\/conversations\/[^/]+$/, "/conversations/:id")
+    .replace(/^\/artifacts\/[^/]+$/, "/artifacts/:id");
+  return `${method.toUpperCase()} ${normalizedPath}`;
 }
 
 function percentile(values: number[], pct: number) {
