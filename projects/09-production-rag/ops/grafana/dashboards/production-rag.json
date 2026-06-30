@@ -382,6 +382,11 @@
           "expr": "increase(rag_metadata_pool_timeouts_total[$__rate_interval])",
           "legendFormat": "metadata pool timeouts",
           "refId": "B"
+        },
+        {
+          "expr": "max by (outcome) (rag_ingestion_operator_audit_events{operation=\"bulk_redrive\"})",
+          "legendFormat": "redrive {{outcome}}",
+          "refId": "C"
         }
       ],
       "title": "Ingestion and Metadata Pressure",

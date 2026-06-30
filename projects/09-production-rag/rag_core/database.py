@@ -446,6 +446,21 @@ CREATE TABLE IF NOT EXISTS source_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_source_tasks_tenant_updated ON source_tasks(tenant_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS ingestion_operation_audit (
+    id TEXT PRIMARY KEY,
+    actor_user_id TEXT NOT NULL DEFAULT '',
+    tenant_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ingestion_operation_audit_created
+ON ingestion_operation_audit(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ingestion_operation_audit_task
+ON ingestion_operation_audit(tenant_id, task_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS ingestion_stage_stats (
     source_type TEXT NOT NULL,
     stage TEXT NOT NULL,

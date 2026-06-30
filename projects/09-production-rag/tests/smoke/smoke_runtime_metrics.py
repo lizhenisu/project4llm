@@ -131,6 +131,20 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
         "dead_lettered": 0,
         "retries_recorded": 0,
     }
+    assert body["ingestion"]["operator_operations"]["audit_retention_days"] >= 1
+    assert body["ingestion"]["operator_operations"]["audit_events"] >= 0
+    assert set(
+        body["ingestion"]["operator_operations"]["bulk_redrive_outcomes"]
+    ) == {
+        "queued",
+        "not_found",
+        "not_retryable",
+        "admission_rejected_global",
+        "admission_rejected_tenant",
+        "admission_unavailable",
+        "reservation_lost",
+        "retry_unavailable",
+    }
     assert body["ingestion"]["stage_stats"]["txt"]["text_embedding"] == {
         "sample_count": 2,
         "average_seconds": 4.0,

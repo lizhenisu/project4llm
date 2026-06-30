@@ -89,6 +89,7 @@ def main() -> None:
     assert any("rag_query_rate_limit_events_total" in expression for expression in expressions)
     assert any("rag_model_api_operation_calls_total" in expression for expression in expressions)
     assert any("rag_ingestion_tasks" in expression for expression in expressions)
+    assert any("rag_ingestion_operator_audit_events" in expression for expression in expressions)
     assert any("rag_ingestion_stage_duration_seconds_average" in expression for expression in expressions)
     assert any("rag_ingestion_stage_samples" in expression for expression in expressions)
     assert (
@@ -96,6 +97,15 @@ def main() -> None:
         in expressions
     )
     assert "max by (status) (rag_ingestion_tasks)" in expressions
+    pressure_panel = next(
+        panel for panel in dashboard["panels"]
+        if panel["title"] == "Ingestion and Metadata Pressure"
+    )
+    assert [target["expr"] for target in pressure_panel["targets"]] == [
+        "max by (status) (rag_ingestion_tasks)",
+        "increase(rag_metadata_pool_timeouts_total[$__rate_interval])",
+        'max by (outcome) (rag_ingestion_operator_audit_events{operation="bulk_redrive"})',
+    ]
     image_size_panel = next(
         panel for panel in dashboard["panels"]
         if panel["title"] == "Query Image Payload Size p95"

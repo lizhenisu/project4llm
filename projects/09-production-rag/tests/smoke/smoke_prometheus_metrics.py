@@ -18,6 +18,7 @@ if str(PROJECT_DIR) not in sys.path:
 import serve  # noqa: E402
 from rag_core.config import load_config  # noqa: E402
 from rag_core.database import connect_metadata_db  # noqa: E402
+from rag_core.ingestion_operations import append_ingestion_operation_audit  # noqa: E402
 from rag_core.model_api_retry import call_model_api_with_retries  # noqa: E402
 from rag_core.query_rate_limits import acquire_query_rate_limit  # noqa: E402
 
@@ -27,6 +28,7 @@ def main() -> None:
         seed_ingestion_stage_stats()
         seed_query_result_cache()
         seed_query_rate_limit()
+        seed_ingestion_operator_audit()
         api = TestClient(serve.create_app())
         assert call_model_api_with_retries("metrics_smoke", lambda: "ok") == "ok"
         serve.record_query_image_size(64 * 1024, accepted=True)
@@ -83,6 +85,12 @@ def main() -> None:
     assert 'rag_ingestion_task_attempts{stat="max"}' in text
     assert 'rag_ingestion_task_recovery{state="retry_waiting"}' in text
     assert 'rag_ingestion_task_recovery{state="dead_lettered"}' in text
+    assert (
+        'rag_ingestion_operator_audit_events{operation="bulk_redrive",outcome="queued"} 1'
+        in text
+    )
+    assert "metrics-private-operator-tenant" not in text
+    assert "metrics-private-operator-task" not in text
     assert 'rag_ingestion_task_recovery{state="retries_recorded"}' in text
     assert 'rag_ingestion_stage_samples{source_type="txt",stage="text_embedding"} 2' in text
     assert (
@@ -174,6 +182,17 @@ def seed_query_rate_limit() -> None:
         user_limit=3,
     )
     serve.record_query_rate_limit_event("accepted")
+
+
+def seed_ingestion_operator_audit() -> None:
+    append_ingestion_operation_audit(
+        config=load_config(),
+        actor_user_id="metrics-private-operator-user",
+        tenant_id="metrics-private-operator-tenant",
+        task_id="metrics-private-operator-task",
+        operation="bulk_redrive",
+        outcome="queued",
+    )
 
 
 def validate_metric_lines(text: str) -> None:

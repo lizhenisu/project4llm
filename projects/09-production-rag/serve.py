@@ -47,6 +47,14 @@ from rag_core.conversations import (
 )
 from rag_core.events import append_event, event_log_limits_snapshot, hit_event_summaries
 from rag_core.ingestion_jobs import submit_upload_ingestion_job
+from rag_core.ingestion_operations import (
+    append_ingestion_operation_audit,
+    count_dead_letter_source_tasks,
+    count_ingestion_operation_audit,
+    ingestion_operation_metrics_snapshot,
+    list_dead_letter_source_tasks,
+    list_ingestion_operation_audit,
+)
 from rag_core.jsonl_store import (
     parse_s3_uri,
     read_object_bytes_by_uri,
@@ -322,6 +330,10 @@ def ingest_upload_reservation_ms() -> int:
     return env_int("RAG_INGEST_UPLOAD_RESERVATION_MS", 15 * 60 * 1000)
 
 
+def ingest_operation_audit_retention_days() -> int:
+    return env_int("RAG_INGEST_OPERATION_AUDIT_RETENTION_DAYS", 90)
+
+
 def max_upload_request_bytes(config) -> int:
     # Multipart adds a small amount of framing around the file bytes.
     return int(config.max_upload_bytes) + 1024 * 1024
@@ -585,6 +597,10 @@ def prometheus_metrics_text(config) -> str:
     ingestion_leases = source_task_lease_metrics_snapshot(config=config, tenant_id=None)
     ingestion_recovery = source_task_recovery_metrics_snapshot(config=config, tenant_id=None)
     ingestion_stage_stats = ingestion_stage_stats_snapshot(config=config)
+    ingestion_operations = ingestion_operation_metrics_snapshot(
+        config=config,
+        retention_days=ingest_operation_audit_retention_days(),
+    )
     upload_admission = upload_admission_metrics_snapshot(config=config)
     shared_query_admission = query_admission_metrics_snapshot(config=config)
     lines = [
@@ -874,6 +890,17 @@ def prometheus_metrics_text(config) -> str:
             f'rag_ingestion_task_recovery{{state="retry_waiting"}} {ingestion_recovery["retry_waiting"]}',
             f'rag_ingestion_task_recovery{{state="dead_lettered"}} {ingestion_recovery["dead_lettered"]}',
             f'rag_ingestion_task_recovery{{state="retries_recorded"}} {ingestion_recovery["retries_recorded"]}',
+            "# HELP rag_ingestion_operator_audit_events Retained ingestion operator audit events.",
+            "# TYPE rag_ingestion_operator_audit_events gauge",
+        ]
+    )
+    for outcome, value in ingestion_operations["bulk_redrive_outcomes"].items():
+        lines.append(
+            "rag_ingestion_operator_audit_events"
+            f'{{operation="bulk_redrive",outcome="{outcome}"}} {int(value)}'
+        )
+    lines.extend(
+        [
             "# HELP rag_ingestion_stage_samples Historical ingestion stage samples used for ETA estimates.",
             "# TYPE rag_ingestion_stage_samples gauge",
         ]
@@ -1058,6 +1085,74 @@ class SourceUploadResponse(BaseModel):
 class RetrySourceResponse(BaseModel):
     status: str
     source: SourceResponse
+
+
+class AdminDeadLetterTaskResponse(BaseModel):
+    tenant_id: str
+    task_id: str
+    title: str
+    source_type: str
+    error: str
+    attempt_count: int
+    dead_lettered_at: int
+    updated_at: int
+
+
+class AdminDeadLetterListResponse(BaseModel):
+    tasks: list[AdminDeadLetterTaskResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class AdminIngestionRedriveItem(BaseModel):
+    tenant_id: str = Field(min_length=1, max_length=200)
+    task_id: str = Field(min_length=1, max_length=500)
+
+
+class AdminIngestionRedriveRequest(BaseModel):
+    tasks: list[AdminIngestionRedriveItem] = Field(min_length=1, max_length=50)
+
+    @field_validator("tasks")
+    @classmethod
+    def unique_tasks(
+        cls,
+        tasks: list[AdminIngestionRedriveItem],
+    ) -> list[AdminIngestionRedriveItem]:
+        keys = [(item.tenant_id, item.task_id) for item in tasks]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Duplicate ingestion tasks are not allowed")
+        return tasks
+
+
+class AdminIngestionRedriveResult(BaseModel):
+    tenant_id: str
+    task_id: str
+    outcome: str
+
+
+class AdminIngestionRedriveResponse(BaseModel):
+    results: list[AdminIngestionRedriveResult]
+    queued: int
+    rejected: int
+
+
+class AdminIngestionAuditResponse(BaseModel):
+    id: str
+    actor_user_id: str
+    tenant_id: str
+    task_id: str
+    operation: str
+    outcome: str
+    detail: str
+    created_at: int
+
+
+class AdminIngestionAuditListResponse(BaseModel):
+    events: list[AdminIngestionAuditResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class SourceContentResponse(BaseModel):
@@ -1403,6 +1498,13 @@ def create_app():
                 "source_tasks_by_status": count_source_tasks_by_status(config=config, tenant_id=tenant_id),
                 "task_leases": source_task_lease_metrics_snapshot(config=config, tenant_id=tenant_id),
                 "task_recovery": source_task_recovery_metrics_snapshot(config=config, tenant_id=tenant_id),
+                "operator_operations": {
+                    "audit_retention_days": ingest_operation_audit_retention_days(),
+                    **ingestion_operation_metrics_snapshot(
+                        config=config,
+                        retention_days=ingest_operation_audit_retention_days(),
+                    ),
+                },
                 "stage_stats": ingestion_stage_stats_snapshot(config=config),
                 "upload_admission": {
                     "reservation_ms": ingest_upload_reservation_ms(),
@@ -1573,6 +1675,88 @@ def create_app():
             limit=len(users),
             offset=0,
             query="",
+        )
+
+    @app.get(
+        "/admin/ingestion/dead-letters",
+        response_model=AdminDeadLetterListResponse,
+    )
+    def admin_ingestion_dead_letters(
+        authorization: str | None = Header(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> AdminDeadLetterListResponse:
+        config = load_config()
+        require_admin(config=config, authorization=authorization)
+        tasks = list_dead_letter_source_tasks(
+            config=config,
+            limit=limit,
+            offset=offset,
+        )
+        return AdminDeadLetterListResponse(
+            tasks=[AdminDeadLetterTaskResponse(**task.__dict__) for task in tasks],
+            total=count_dead_letter_source_tasks(config=config),
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get(
+        "/admin/ingestion/audit",
+        response_model=AdminIngestionAuditListResponse,
+    )
+    def admin_ingestion_audit(
+        authorization: str | None = Header(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> AdminIngestionAuditListResponse:
+        config = load_config()
+        require_admin(config=config, authorization=authorization)
+        events = list_ingestion_operation_audit(
+            config=config,
+            limit=limit,
+            offset=offset,
+            retention_days=ingest_operation_audit_retention_days(),
+        )
+        return AdminIngestionAuditListResponse(
+            events=[AdminIngestionAuditResponse(**event.__dict__) for event in events],
+            total=count_ingestion_operation_audit(
+                config=config,
+                retention_days=ingest_operation_audit_retention_days(),
+            ),
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.post(
+        "/admin/ingestion/dead-letters/redrive",
+        response_model=AdminIngestionRedriveResponse,
+    )
+    def admin_redrive_ingestion_dead_letters(
+        request: AdminIngestionRedriveRequest,
+        authorization: str | None = Header(default=None),
+    ) -> AdminIngestionRedriveResponse:
+        config = load_config()
+        actor = require_admin(config=config, authorization=authorization)
+        results: list[AdminIngestionRedriveResult] = []
+        for item in request.tasks:
+            outcome = redrive_ingestion_task_for_admin(
+                config=config,
+                actor_user_id=actor.id,
+                tenant_id=item.tenant_id,
+                task_id=item.task_id,
+            )
+            results.append(
+                AdminIngestionRedriveResult(
+                    tenant_id=item.tenant_id,
+                    task_id=item.task_id,
+                    outcome=outcome,
+                )
+            )
+        queued = sum(result.outcome == "queued" for result in results)
+        return AdminIngestionRedriveResponse(
+            results=results,
+            queued=queued,
+            rejected=len(results) - queued,
         )
 
     @app.get("/admin/settings", response_model=AdminSettingsResponse)
@@ -3271,6 +3455,123 @@ def admin_settings_response(config) -> AdminSettingsResponse:
     return AdminSettingsResponse(
         registration_enabled=is_registration_enabled(config),
         latest_announcement=AnnouncementResponse(**latest[0]) if latest else None,
+    )
+
+
+def redrive_ingestion_task_for_admin(
+    *,
+    config,
+    actor_user_id: str,
+    tenant_id: str,
+    task_id: str,
+) -> str:
+    try:
+        reservation = acquire_upload_admission_reservation(
+            config=config,
+            tenant_id=tenant_id,
+            global_limit=ingest_backlog_limit(),
+            tenant_limit=ingest_tenant_backlog_limit(),
+            lease_ms=ingest_upload_reservation_ms(),
+        )
+    except UploadAdmissionRejected as exc:
+        outcome = f"admission_rejected_{exc.kind}"
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome=outcome,
+        )
+        return outcome
+    except Exception:
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome="admission_unavailable",
+        )
+        return "admission_unavailable"
+
+    try:
+        queued = retry_failed_source_task(
+            config=config,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            upload_reservation_owner=reservation.owner,
+            audit_actor_user_id=actor_user_id,
+            audit_operation="bulk_redrive",
+            audit_retention_days=ingest_operation_audit_retention_days(),
+            require_dead_lettered=True,
+        )
+    except SourceTaskNotFoundError:
+        release_upload_admission_reservation(config=config, reservation=reservation)
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome="not_found",
+        )
+        return "not_found"
+    except SourceTaskNotRetryableError:
+        release_upload_admission_reservation(config=config, reservation=reservation)
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome="not_retryable",
+        )
+        return "not_retryable"
+    except UploadReservationLostError:
+        release_upload_admission_reservation(config=config, reservation=reservation)
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome="reservation_lost",
+        )
+        return "reservation_lost"
+    except Exception:
+        release_upload_admission_reservation(config=config, reservation=reservation)
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome="retry_unavailable",
+        )
+        return "retry_unavailable"
+
+    submit_upload_ingestion_job(
+        pending_source=queued.source,
+        saved_path=Path(queued.source.source_uri),
+        tenant_id=tenant_id,
+        acl_groups=queued.source.acl_groups,
+        doc_version=queued.requested_doc_version,
+        language="zh",
+    )
+    return "queued"
+
+
+def append_ingestion_redrive_audit(
+    *,
+    config,
+    actor_user_id: str,
+    tenant_id: str,
+    task_id: str,
+    outcome: str,
+) -> None:
+    append_ingestion_operation_audit(
+        config=config,
+        actor_user_id=actor_user_id,
+        tenant_id=tenant_id,
+        task_id=task_id,
+        operation="bulk_redrive",
+        outcome=outcome,
+        retention_days=ingest_operation_audit_retention_days(),
     )
 
 

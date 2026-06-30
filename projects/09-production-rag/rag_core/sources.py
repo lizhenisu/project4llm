@@ -20,6 +20,11 @@ from rag_core.config import RagConfig
 from rag_core.database import connect_metadata_db
 from rag_core.embeddings import build_embedding_model, build_image_embedding_model, zero_image_vector
 from rag_core.io import image_bytes_are_informative, load_file_documents, load_table_documents
+from rag_core.ingestion_operations import (
+    insert_ingestion_operation_audit,
+    new_ingestion_operation_audit,
+    prune_ingestion_operation_audit,
+)
 from rag_core.jsonl_store import (
     delete_object,
     object_store_backend,
@@ -769,6 +774,10 @@ def retry_failed_source_task(
     tenant_id: str,
     task_id: str,
     upload_reservation_owner: str | None = None,
+    audit_actor_user_id: str = "",
+    audit_operation: str = "",
+    audit_retention_days: int = 90,
+    require_dead_lettered: bool = False,
 ) -> QueuedSourceTask:
     timestamp = now_ms()
     with connect_metadata_db(config) as conn:
@@ -777,7 +786,8 @@ def retry_failed_source_task(
         row = conn.execute(
             """
             SELECT tenant_id, doc_id, title, source_type, source_uri, doc_version,
-                   acl_groups, status, error, requested_doc_version, created_at, updated_at
+                   acl_groups, status, error, requested_doc_version, dead_lettered_at,
+                   created_at, updated_at
             FROM source_tasks
             WHERE tenant_id = ? AND id = ?
             """,
@@ -787,6 +797,8 @@ def retry_failed_source_task(
             raise SourceTaskNotFoundError("Source task not found")
         if str(row["status"]) != "failed":
             raise SourceTaskNotRetryableError("Only failed source tasks can be retried")
+        if require_dead_lettered and int(row["dead_lettered_at"] or 0) <= 0:
+            raise SourceTaskNotRetryableError("Only dead-lettered source tasks can be redriven")
         cursor = conn.execute(
             """
             UPDATE source_tasks
@@ -810,6 +822,23 @@ def retry_failed_source_task(
                 raise UploadReservationLostError(
                     "Upload admission reservation expired before task retry"
                 )
+        if audit_operation:
+            prune_ingestion_operation_audit(
+                conn,
+                retention_days=audit_retention_days,
+                timestamp_ms=timestamp,
+            )
+            insert_ingestion_operation_audit(
+                conn,
+                new_ingestion_operation_audit(
+                    actor_user_id=audit_actor_user_id,
+                    tenant_id=tenant_id,
+                    task_id=task_id,
+                    operation=audit_operation,
+                    outcome="queued",
+                    timestamp_ms=timestamp,
+                ),
+            )
     invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     source = SourceSummary(
         doc_id=str(row["doc_id"]),
