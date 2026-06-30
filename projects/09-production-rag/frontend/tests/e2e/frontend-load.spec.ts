@@ -23,6 +23,9 @@ const imageChatPageCount = envInt("FRONTEND_IMAGE_CHAT_PAGES", 4);
 const imageChatConcurrency = envInt("FRONTEND_IMAGE_CHAT_CONCURRENCY", 2);
 const persistencePageCount = envInt("FRONTEND_PERSISTENCE_PAGES", 4);
 const persistenceConcurrency = envInt("FRONTEND_PERSISTENCE_CONCURRENCY", 2);
+const livePersistenceEnabled = process.env.RUN_FRONTEND_LIVE_PERSISTENCE_E2E === "1";
+const livePersistencePageCount = envInt("FRONTEND_LIVE_PERSISTENCE_PAGES", 4);
+const livePersistenceConcurrency = envInt("FRONTEND_LIVE_PERSISTENCE_CONCURRENCY", 2);
 const sourceImagePageCount = envInt("FRONTEND_SOURCE_IMAGE_PAGES", 4);
 const sourceImageConcurrency = envInt("FRONTEND_SOURCE_IMAGE_CONCURRENCY", 2);
 const sourceImageCount = envInt("FRONTEND_SOURCE_IMAGE_COUNT", 12);
@@ -48,6 +51,8 @@ const imageChatOutputPath =
   process.env.FRONTEND_IMAGE_CHAT_OUTPUT || "test-results/frontend-image-chat-summary.json";
 const persistenceOutputPath =
   process.env.FRONTEND_PERSISTENCE_OUTPUT || "test-results/frontend-persistence-summary.json";
+const livePersistenceOutputPath =
+  process.env.FRONTEND_LIVE_PERSISTENCE_OUTPUT || "test-results/frontend-live-persistence-summary.json";
 const sourceImageOutputPath =
   process.env.FRONTEND_SOURCE_IMAGE_OUTPUT || "test-results/frontend-source-images-summary.json";
 const uploadPollOutputPath =
@@ -367,6 +372,52 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.api_requests["POST /conversations"]?.max || 0, JSON.stringify(payload, null, 2)).toBeGreaterThan(0);
     expect(payload.api_requests["GET /conversations/:id"]?.max || 0, JSON.stringify(payload, null, 2)).toBeGreaterThan(0);
   });
+
+  if (livePersistenceEnabled) {
+    test("persists conversations through the live backend across page reloads", async ({ browser, baseURL }) => {
+      const started = performance.now();
+      const samples = await runLivePersistencePages(browser, baseURL || "http://127.0.0.1:5173");
+      const wallMs = roundMs(performance.now() - started);
+      const failures = samples.filter((sample) => !sample.ok);
+      const payload = {
+        pages: livePersistencePageCount,
+        concurrency: livePersistenceConcurrency,
+        wall_ms: wallMs,
+        success: samples.length - failures.length,
+        failed: failures.length,
+        failure_rate: round(failures.length / Math.max(1, samples.length), 4),
+        total_ms: summarize(samples.map((sample) => sample.total_ms)),
+        query_ms: summarize(samples.map((sample) => sample.query_ms)),
+        reload_restore_ms: summarize(samples.map((sample) => sample.reload_restore_ms)),
+        backend_saves: summarize(samples.map((sample) => sample.backend_saves)),
+        backend_list_reads: summarize(samples.map((sample) => sample.backend_list_reads)),
+        backend_detail_reads: summarize(samples.map((sample) => sample.backend_detail_reads)),
+        saved_message_counts: summarize(samples.map((sample) => sample.saved_message_count)),
+        restored_message_counts: summarize(samples.map((sample) => sample.restored_message_count)),
+        cleaned_conversations: samples.filter((sample) => sample.cleanup_ok).length,
+        metrics: summarizePageMetrics(samples.map((sample) => sample.metrics)),
+        api_requests: summarizeApiRequestCounts(samples.map((sample) => sample.api_requests)),
+        console_errors: samples.reduce((total, sample) => total + sample.console_errors.length, 0),
+        page_errors: samples.reduce((total, sample) => total + sample.page_errors.length, 0),
+        http_failures: samples.reduce((total, sample) => total + sample.http_failures.length, 0),
+        failed_samples: failures.slice(0, 10),
+        samples: samples.slice(0, 20),
+      };
+      mkdirSync(dirname(livePersistenceOutputPath), { recursive: true });
+      writeFileSync(livePersistenceOutputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+
+      expect(payload.failed, JSON.stringify(payload, null, 2)).toBe(0);
+      expect(payload.backend_saves.min, JSON.stringify(payload, null, 2)).toBeGreaterThanOrEqual(2);
+      expect(payload.backend_list_reads.min, JSON.stringify(payload, null, 2)).toBeGreaterThanOrEqual(1);
+      expect(payload.backend_detail_reads.min, JSON.stringify(payload, null, 2)).toBeGreaterThanOrEqual(1);
+      expect(payload.saved_message_counts.min, JSON.stringify(payload, null, 2)).toBe(2);
+      expect(payload.restored_message_counts.min, JSON.stringify(payload, null, 2)).toBe(2);
+      expect(payload.cleaned_conversations, JSON.stringify(payload, null, 2)).toBe(livePersistencePageCount);
+      expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
+      expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
+      expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
+    });
+  }
 
   test("loads many protected source-reader images across pages", async ({ browser, baseURL }) => {
     const started = performance.now();
@@ -1723,6 +1774,23 @@ async function runPersistencePages(browser: Browser, baseURL: string) {
   return results.sort((left, right) => left.index - right.index);
 }
 
+async function runLivePersistencePages(browser: Browser, baseURL: string) {
+  const results: LivePersistenceSample[] = [];
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(livePersistenceConcurrency, livePersistencePageCount) },
+    async () => {
+      while (nextIndex < livePersistencePageCount) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results.push(await persistConversationWithLiveBackend(browser, baseURL, index));
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results.sort((left, right) => left.index - right.index);
+}
+
 async function runSourceImagePages(browser: Browser, baseURL: string) {
   const results: SourceImageSample[] = [];
   let nextIndex = 0;
@@ -2047,6 +2115,223 @@ async function persistConversationWithWorkspace(
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+async function persistConversationWithLiveBackend(
+  browser: Browser,
+  baseURL: string,
+  index: number,
+): Promise<LivePersistenceSample> {
+  const page = await browser.newPage();
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  const httpFailures: string[] = [];
+  const apiRequests: Record<string, number> = {};
+  const apiResponses: Record<string, number> = {};
+  const started = performance.now();
+  const tenantId = "tenant-fixed-test";
+  const question = `真实持久化并发问题 ${index}`;
+  const answer = `Live persisted answer ${index}.`;
+  let conversationId = "";
+  let backendSaves = 0;
+  let backendListReads = 0;
+  let backendDetailReads = 0;
+  let savedMessageCount = 0;
+  let restoredMessageCount = 0;
+  let queryMs = 0;
+  let reloadRestoreMs = 0;
+  let cleanupOk = false;
+
+  try {
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        consoleErrors.push(message.text());
+      }
+    });
+    page.on("pageerror", (error) => {
+      pageErrors.push(error.message);
+    });
+    page.on("request", (request) => {
+      recordApiRequest(apiRequests, request.method(), request.url());
+    });
+    page.on("response", (response) => {
+      if (response.status() < 500) {
+        recordApiRequest(apiResponses, response.request().method(), response.url());
+      }
+      if (response.status() >= 500) {
+        httpFailures.push(`${response.status()} ${response.url()}`);
+      }
+    });
+
+    await page.route("**/api/query/stream", async (route) => {
+      const body = JSON.parse(route.request().postData() || "{}") as { request_id?: string };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/x-ndjson",
+        body: `${JSON.stringify({
+          type: "result",
+          request_id: body.request_id || `live-persistence-request-${index}`,
+          answer,
+          citations: [],
+          trace: {},
+        })}\n`,
+      });
+    });
+    await page.route("**/api/conversations**", async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (request.method() === "GET" && path.endsWith("/conversations")) {
+        if (!conversationId) {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ conversations: [] }),
+          });
+          return;
+        }
+        const response = await route.fetch();
+        const payload = await response.json() as { conversations?: Array<Record<string, unknown>> };
+        backendListReads += 1;
+        await route.fulfill({
+          response,
+          json: {
+            conversations: (payload.conversations || []).filter(
+              (conversation) => conversation.id === conversationId,
+            ),
+          },
+        });
+        return;
+      }
+      if (request.method() === "POST" && path.endsWith("/conversations")) {
+        const response = await route.fetch();
+        const payload = await response.json() as {
+          id?: string;
+          messages?: Array<Record<string, unknown>>;
+        };
+        backendSaves += 1;
+        conversationId = payload.id || conversationId;
+        savedMessageCount = Math.max(savedMessageCount, payload.messages?.length || 0);
+        await route.fulfill({ response, json: payload });
+        return;
+      }
+      if (
+        request.method() === "GET"
+        && conversationId
+        && path.endsWith(`/conversations/${conversationId}`)
+      ) {
+        const response = await route.fetch();
+        const payload = await response.json() as { messages?: Array<Record<string, unknown>> };
+        backendDetailReads += 1;
+        restoredMessageCount = Math.max(restoredMessageCount, payload.messages?.length || 0);
+        await route.fulfill({ response, json: payload });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto(
+      `${baseURL.replace(/\/$/, "")}/#token=${encodeURIComponent(token)}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await expect(page.getByRole("heading", { name: "对话" })).toBeVisible();
+    for (const requestKey of ["GET /sources", "GET /artifacts", "GET /conversations"]) {
+      await expect.poll(() => apiResponses[requestKey] || 0, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
+    }
+    const queryStarted = performance.now();
+    await page.locator("#chat-input-textarea").fill(question);
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.getByText(answer)).toBeVisible({ timeout: 15_000 });
+    await expect.poll(() => backendSaves, { timeout: 15_000 }).toBeGreaterThanOrEqual(2);
+    queryMs = roundMs(performance.now() - queryStarted);
+
+    const reloadStarted = performance.now();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByText(question)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(answer)).toBeVisible({ timeout: 15_000 });
+    await expect.poll(() => backendListReads, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
+    await expect.poll(() => backendDetailReads, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
+    reloadRestoreMs = roundMs(performance.now() - reloadStarted);
+
+    const metrics = await collectPageMetrics(page);
+    cleanupOk = await cleanupLiveConversation(page, baseURL, tenantId, conversationId);
+    await closePage(page);
+    return {
+      index,
+      ok:
+        consoleErrors.length === 0
+        && pageErrors.length === 0
+        && httpFailures.length === 0
+        && backendSaves >= 2
+        && backendListReads >= 1
+        && backendDetailReads >= 1
+        && savedMessageCount === 2
+        && restoredMessageCount === 2
+        && cleanupOk,
+      total_ms: roundMs(performance.now() - started),
+      query_ms: queryMs,
+      reload_restore_ms: reloadRestoreMs,
+      backend_saves: backendSaves,
+      backend_list_reads: backendListReads,
+      backend_detail_reads: backendDetailReads,
+      saved_message_count: savedMessageCount,
+      restored_message_count: restoredMessageCount,
+      cleanup_ok: cleanupOk,
+      metrics,
+      api_requests: apiRequests,
+      console_errors: consoleErrors,
+      page_errors: pageErrors,
+      http_failures: httpFailures,
+    };
+  } catch (error) {
+    cleanupOk = await cleanupLiveConversation(page, baseURL, tenantId, conversationId).catch(() => false);
+    const metrics = await collectPageMetrics(page).catch(() => null);
+    await closePage(page);
+    return {
+      index,
+      ok: false,
+      total_ms: roundMs(performance.now() - started),
+      query_ms: queryMs,
+      reload_restore_ms: reloadRestoreMs,
+      backend_saves: backendSaves,
+      backend_list_reads: backendListReads,
+      backend_detail_reads: backendDetailReads,
+      saved_message_count: savedMessageCount,
+      restored_message_count: restoredMessageCount,
+      cleanup_ok: cleanupOk,
+      metrics,
+      api_requests: apiRequests,
+      console_errors: consoleErrors,
+      page_errors: pageErrors,
+      http_failures: httpFailures,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function cleanupLiveConversation(
+  page: Page,
+  baseURL: string,
+  tenantId: string,
+  conversationId: string,
+) {
+  if (!conversationId) {
+    return false;
+  }
+  const url = `${baseURL.replace(/\/$/, "")}/api/conversations/${encodeURIComponent(conversationId)}`
+    + `?tenant_id=${encodeURIComponent(tenantId)}`;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await page.request.delete(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (response.status() === 200 || response.status() === 404) {
+      const verification = await page.request.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      return verification.status() === 404;
+    }
+    await page.waitForTimeout(100 * (attempt + 1));
+  }
+  return false;
 }
 
 async function imageChatWithWorkspace(browser: Browser, baseURL: string, index: number): Promise<ImageChatSample> {
@@ -3139,6 +3424,13 @@ type PersistenceSample = {
   page_errors: string[];
   http_failures: string[];
   error?: string;
+};
+
+type LivePersistenceSample = PersistenceSample & {
+  backend_saves: number;
+  backend_list_reads: number;
+  backend_detail_reads: number;
+  cleanup_ok: boolean;
 };
 
 type SourceImageSample = {
