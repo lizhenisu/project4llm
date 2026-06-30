@@ -8,6 +8,8 @@ const pageCount = envInt("FRONTEND_LOAD_PAGES", 8);
 const concurrency = envInt("FRONTEND_LOAD_CONCURRENCY", 4);
 const heldPageCount = envInt("FRONTEND_HELD_PAGES", 12);
 const heldPageDurationMs = envInt("FRONTEND_HELD_PAGE_DURATION_MS", 3_000);
+const heldMaxAllArrivedMs = envInt("FRONTEND_HELD_MAX_ALL_ARRIVED_MS", 120_000);
+const heldMaxJsHeapMbPerPage = envInt("FRONTEND_HELD_MAX_JS_HEAP_MB_PER_PAGE", 32);
 const interactionPageCount = envInt("FRONTEND_INTERACTION_PAGES", 4);
 const interactionConcurrency = envInt("FRONTEND_INTERACTION_CONCURRENCY", 2);
 const busyPageCount = envInt("FRONTEND_BUSY_PAGES", 4);
@@ -98,21 +100,26 @@ test.describe("browser-level frontend load smoke", () => {
     const result = await runHeldPages(browser, baseURL || "http://127.0.0.1:5173");
     const wallMs = roundMs(performance.now() - started);
     const failures = result.samples.filter((sample) => !sample.ok);
+    const aggregateJsHeapUsedMb = result.samples.reduce(
+      (total, sample) => total + (sample.metrics?.js_heap_used_mb || 0),
+      0,
+    );
+    const aggregateJsHeapLimitMb = heldPageCount * heldMaxJsHeapMbPerPage;
     const payload = {
       pages: heldPageCount,
       startup_concurrency: heldPageCount,
       hold_ms: heldPageDurationMs,
       wall_ms: wallMs,
       all_arrived_ms: result.all_arrived_ms,
+      all_arrived_limit_ms: heldMaxAllArrivedMs,
       simultaneous_ready_pages: result.simultaneous_ready_pages,
       success: result.samples.length - failures.length,
       failed: failures.length,
       failure_rate: round(failures.length / Math.max(1, result.samples.length), 4),
       load_ms: summarize(result.samples.map((sample) => sample.load_ms)),
-      aggregate_js_heap_used_mb: result.samples.reduce(
-        (total, sample) => total + (sample.metrics?.js_heap_used_mb || 0),
-        0,
-      ),
+      aggregate_js_heap_used_mb: aggregateJsHeapUsedMb,
+      aggregate_js_heap_limit_mb: aggregateJsHeapLimitMb,
+      js_heap_limit_mb_per_page: heldMaxJsHeapMbPerPage,
       aggregate_dom_nodes: result.samples.reduce(
         (total, sample) => total + (sample.metrics?.dom_nodes || 0),
         0,
@@ -134,6 +141,10 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.api_requests["GET /conversations"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
+    expect(payload.all_arrived_ms, JSON.stringify(payload, null, 2))
+      .toBeLessThanOrEqual(payload.all_arrived_limit_ms);
+    expect(payload.aggregate_js_heap_used_mb, JSON.stringify(payload, null, 2))
+      .toBeLessThanOrEqual(payload.aggregate_js_heap_limit_mb);
   });
 
   test("uploads a file and renders streamed answers with mocked backend", async ({ browser, baseURL }) => {
