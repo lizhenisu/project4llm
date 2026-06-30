@@ -78,6 +78,9 @@ async function readErrorDetail(response: Response): Promise<string> {
   if (response.status === 503) {
     return "当前服务繁忙，请稍后重试。";
   }
+  if (response.status === 429) {
+    return "请求过于频繁，请稍后重试。";
+  }
   if (response.status === 413) {
     return "文件过大，请压缩文件或拆分后再上传。";
   }

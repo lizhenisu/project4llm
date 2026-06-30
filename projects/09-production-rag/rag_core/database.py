@@ -470,6 +470,17 @@ ON query_admission_slots(lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_query_admission_slots_owner
 ON query_admission_slots(lease_owner);
 
+CREATE TABLE IF NOT EXISTS query_rate_limit_windows (
+    scope_type TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    window_started_at INTEGER NOT NULL,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(scope_type, scope_key, window_started_at)
+);
+CREATE INDEX IF NOT EXISTS idx_query_rate_limit_windows_started
+ON query_rate_limit_windows(window_started_at);
+
 CREATE TABLE IF NOT EXISTS query_result_cache (
     tenant_id TEXT NOT NULL,
     request_id TEXT NOT NULL,

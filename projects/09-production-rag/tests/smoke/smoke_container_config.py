@@ -28,6 +28,10 @@ def main() -> None:
         "RAG_TEXT_INPUT",
         "RAG_IMAGE_INPUT",
         "RAG_REQUIRE_AUTH_CONTEXT",
+        "RAG_QUERY_RATE_LIMIT_WINDOW_SECONDS",
+        "RAG_QUERY_RATE_LIMIT_GLOBAL",
+        "RAG_QUERY_RATE_LIMIT_TENANT",
+        "RAG_QUERY_RATE_LIMIT_USER",
         "RAG_API_TOKEN",
         "RAG_EMBEDDING_BACKEND",
         "RAG_RERANK_BACKEND",
@@ -121,6 +125,10 @@ def main() -> None:
     assert rag_api_env["RAG_IMAGE_EMBEDDING_BACKEND"] == "${RAG_IMAGE_EMBEDDING_BACKEND:-siliconflow}"
     assert "@pgbouncer:6432/" in rag_api_env["RAG_METADATA_DATABASE_URL"]
     assert rag_api_env["RAG_INGEST_EXECUTION_MODE"] == "${RAG_INGEST_EXECUTION_MODE:-external}"
+    assert rag_api_env["RAG_QUERY_RATE_LIMIT_WINDOW_SECONDS"] == "${RAG_QUERY_RATE_LIMIT_WINDOW_SECONDS:-60}"
+    assert rag_api_env["RAG_QUERY_RATE_LIMIT_GLOBAL"] == "${RAG_QUERY_RATE_LIMIT_GLOBAL:-600}"
+    assert rag_api_env["RAG_QUERY_RATE_LIMIT_TENANT"] == "${RAG_QUERY_RATE_LIMIT_TENANT:-120}"
+    assert rag_api_env["RAG_QUERY_RATE_LIMIT_USER"] == "${RAG_QUERY_RATE_LIMIT_USER:-30}"
     assert rag_api_env["NEW_API_URL"] == "${NEW_API_URL:-}"
     assert rag_api_env["NEW_API_KEY"] == "${NEW_API_KEY:-}"
     assert rag_api_env["LLM_MODEL"] == "${LLM_MODEL:-gemini-3-flash-preview}"

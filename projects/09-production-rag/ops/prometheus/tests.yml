@@ -16,6 +16,10 @@ tests:
         values: "1"
       - series: rag_query_result_stale_processing_entries{instance="api-b"}
         values: "1"
+      - series: rag_query_rate_limit_requests{instance="api-a",scope="global"}
+        values: "42"
+      - series: rag_query_rate_limit_requests{instance="api-b",scope="global"}
+        values: "42"
     promql_expr_test:
       - expr: sum(max by (status) (rag_ingestion_tasks{status=~"queued|processing"}))
         eval_time: 0m
@@ -25,3 +29,8 @@ tests:
         eval_time: 0m
         exp_samples:
           - value: 1
+      - expr: max by (scope) (rag_query_rate_limit_requests)
+        eval_time: 0m
+        exp_samples:
+          - labels: '{scope="global"}'
+            value: 42

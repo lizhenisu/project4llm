@@ -19,12 +19,14 @@ import serve  # noqa: E402
 from rag_core.config import load_config  # noqa: E402
 from rag_core.database import connect_metadata_db  # noqa: E402
 from rag_core.model_api_retry import call_model_api_with_retries  # noqa: E402
+from rag_core.query_rate_limits import acquire_query_rate_limit  # noqa: E402
 
 
 def main() -> None:
     with isolated_runtime():
         seed_ingestion_stage_stats()
         seed_query_result_cache()
+        seed_query_rate_limit()
         api = TestClient(serve.create_app())
         assert call_model_api_with_retries("metrics_smoke", lambda: "ok") == "ok"
         serve.record_query_image_size(64 * 1024, accepted=True)
@@ -45,6 +47,11 @@ def main() -> None:
     assert "private-doc" not in text
     assert "sha256-secret" not in text
     assert 'rag_query_stream_events_total{event="rejected_user"}' in text
+    assert 'rag_query_rate_limit_config{scope="global"} 7' in text
+    assert 'rag_query_rate_limit_requests{scope="global"} 1' in text
+    assert 'rag_query_rate_limit_active_keys{scope="tenant"} 1' in text
+    assert 'rag_query_rate_limit_events_total{event="accepted"}' in text
+    assert "metrics-private-rate-tenant" not in text
     assert 'rag_query_result_cache_entries{status="processing"} 1' in text
     assert 'rag_query_result_cache_entries{status="completed"} 1' in text
     assert 'rag_query_result_cache_entries{status="failed"} 0' in text
@@ -154,6 +161,21 @@ def seed_query_result_cache() -> None:
         )
 
 
+def seed_query_rate_limit() -> None:
+    os.environ["RAG_QUERY_RATE_LIMIT_GLOBAL"] = "7"
+    os.environ["RAG_QUERY_RATE_LIMIT_TENANT"] = "5"
+    os.environ["RAG_QUERY_RATE_LIMIT_USER"] = "3"
+    acquire_query_rate_limit(
+        config=load_config(),
+        tenant_id="metrics-private-rate-tenant",
+        user_key="metrics-private-rate-user",
+        global_limit=7,
+        tenant_limit=5,
+        user_limit=3,
+    )
+    serve.record_query_rate_limit_event("accepted")
+
+
 def validate_metric_lines(text: str) -> None:
     sample_pattern = re.compile(
         r'^[a-zA-Z_:][a-zA-Z0-9_:]*(?:\{[a-zA-Z_][a-zA-Z0-9_]*="(?:\\.|[^"\\])*"'
@@ -205,6 +227,14 @@ def validate_query_image_histogram(text: str) -> None:
 def isolated_runtime():
     old_runtime = os.environ.get("RAG_RUNTIME_DIR")
     old_metadata_url = os.environ.get("RAG_METADATA_DATABASE_URL")
+    old_rate_limits = {
+        name: os.environ.get(name)
+        for name in (
+            "RAG_QUERY_RATE_LIMIT_GLOBAL",
+            "RAG_QUERY_RATE_LIMIT_TENANT",
+            "RAG_QUERY_RATE_LIMIT_USER",
+        )
+    }
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["RAG_RUNTIME_DIR"] = str(Path(tmp) / "runtime")
         os.environ["RAG_METADATA_DATABASE_URL"] = ""
@@ -213,6 +243,8 @@ def isolated_runtime():
         finally:
             restore_env("RAG_RUNTIME_DIR", old_runtime)
             restore_env("RAG_METADATA_DATABASE_URL", old_metadata_url)
+            for name, value in old_rate_limits.items():
+                restore_env(name, value)
 
 
 def restore_env(name: str, value: str | None) -> None:

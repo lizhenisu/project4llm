@@ -22,6 +22,7 @@ from rag_core.query_results import (  # noqa: E402
     claim_query_result,
     complete_query_result,
     list_query_result_events,
+    matching_query_result_exists,
     query_result_cache_snapshot,
     query_result_fingerprint,
     wait_for_query_result,
@@ -161,6 +162,18 @@ def test_owner_waiter_and_cached_replay(config) -> None:
     )
     assert replay.mode == "cached"
     assert replay.response == response
+    assert matching_query_result_exists(
+        config=config,
+        tenant_id=tenant_id,
+        request_id=request_id,
+        fingerprint=fingerprint,
+    )
+    assert not matching_query_result_exists(
+        config=config,
+        tenant_id=tenant_id,
+        request_id=request_id,
+        fingerprint=query_result_fingerprint({"query": "different query"}),
+    )
     snapshot = query_result_cache_snapshot(config=config)
     assert snapshot["completed"] >= 1
     assert snapshot["stale_processing"] == 0

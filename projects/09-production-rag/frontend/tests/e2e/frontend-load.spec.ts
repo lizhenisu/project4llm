@@ -227,6 +227,31 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.api_requests["POST /query/stream"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
   });
 
+  test("shows a friendly rate-limit message for streamed answers", async ({ page, baseURL }) => {
+    let rateLimitedRequests = 0;
+    await seedBrowserSession(page, 975);
+    await mockWorkspaceApi(page, 975, "success");
+    await page.route("**/api/query/stream", async (route) => {
+      rateLimitedRequests += 1;
+      await route.fulfill({
+        status: 429,
+        headers: {
+          "Content-Type": "application/json",
+          "Retry-After": "30",
+        },
+        body: JSON.stringify({
+          detail: "Query request rate limit exceeded. Please retry later.",
+        }),
+      });
+    });
+
+    await page.goto(baseURL || "http://127.0.0.1:5173", { waitUntil: "domcontentloaded" });
+    await page.locator("#chat-input-textarea").fill("触发请求速率限制");
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.getByText("请求过于频繁，请稍后重试。")).toBeVisible();
+    await expect.poll(() => rateLimitedRequests).toBe(1);
+  });
+
   test("keeps failed ingestion sources visible after upload polling", async ({ browser, baseURL }) => {
     const started = performance.now();
     const samples = await runFailedUploadPages(browser, baseURL || "http://127.0.0.1:5173");

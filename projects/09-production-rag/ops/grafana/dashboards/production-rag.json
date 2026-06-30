@@ -564,6 +564,61 @@
       ],
       "title": "Ingestion ETA Stage History",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (scope) (rag_query_rate_limit_config)",
+          "legendFormat": "{{scope}} limit",
+          "refId": "A"
+        },
+        {
+          "expr": "max by (scope) (rag_query_rate_limit_requests)",
+          "legendFormat": "{{scope}} requests",
+          "refId": "B"
+        },
+        {
+          "expr": "max by (scope) (rag_query_rate_limit_active_keys)",
+          "legendFormat": "{{scope}} active keys",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by (event) (rate(rag_query_rate_limit_events_total[$__rate_interval]))",
+          "legendFormat": "{{event}} rate",
+          "refId": "D"
+        }
+      ],
+      "title": "Query Request Rate Limits",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

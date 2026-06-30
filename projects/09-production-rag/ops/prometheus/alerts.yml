@@ -47,6 +47,16 @@ groups:
           summary: Query streams are being rejected continuously
           description: Global, tenant, or principal stream capacity has been saturated for five minutes.
 
+      - alert: ProductionRagQueryRateLimitRejections
+        expr: |
+          sum(rate(rag_query_rate_limit_events_total{event=~"rejected_.*"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Query request rate limits are rejecting sustained traffic
+          description: Inspect global, tenant, and principal request budgets before changing model-provider capacity.
+
       - alert: ProductionRagQueryRecoveryStaleProcessing
         expr: max(rag_query_result_stale_processing_entries) > 0
         for: 5m

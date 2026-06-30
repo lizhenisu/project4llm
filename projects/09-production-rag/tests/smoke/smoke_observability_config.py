@@ -59,13 +59,14 @@ def main() -> None:
         }
     ]
     dedup_test = prometheus_tests["tests"][0]
-    expressions = {
+    dedup_expressions = {
         case["expr"]: case["exp_samples"][0]["value"]
         for case in dedup_test["promql_expr_test"]
     }
-    assert expressions == {
+    assert dedup_expressions == {
         'sum(max by (status) (rag_ingestion_tasks{status=~"queued|processing"}))': 900,
         "max(rag_query_result_stale_processing_entries)": 1,
+        "max by (scope) (rag_query_rate_limit_requests)": 42,
     }
 
     configured_source = datasource["datasources"][0]
@@ -85,6 +86,7 @@ def main() -> None:
     ]
     assert any("histogram_quantile" in expression for expression in expressions)
     assert any("rag_query_stream_events_total" in expression for expression in expressions)
+    assert any("rag_query_rate_limit_events_total" in expression for expression in expressions)
     assert any("rag_model_api_operation_calls_total" in expression for expression in expressions)
     assert any("rag_ingestion_tasks" in expression for expression in expressions)
     assert any("rag_ingestion_stage_duration_seconds_average" in expression for expression in expressions)
@@ -121,6 +123,17 @@ def main() -> None:
         "max(rag_query_result_cache_expired_entries)",
         "max(rag_query_result_stale_processing_entries)",
         "max(rag_query_result_events)",
+    ]
+    rate_limit_panel = next(
+        panel for panel in dashboard["panels"]
+        if panel["title"] == "Query Request Rate Limits"
+    )
+    rate_limit_expressions = [target["expr"] for target in rate_limit_panel["targets"]]
+    assert rate_limit_expressions == [
+        "max by (scope) (rag_query_rate_limit_config)",
+        "max by (scope) (rag_query_rate_limit_requests)",
+        "max by (scope) (rag_query_rate_limit_active_keys)",
+        "sum by (event) (rate(rag_query_rate_limit_events_total[$__rate_interval]))",
     ]
     print("smoke_observability_config=ok")
 

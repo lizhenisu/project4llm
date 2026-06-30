@@ -85,6 +85,26 @@ def query_result_fingerprint(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def matching_query_result_exists(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    request_id: str,
+    fingerprint: str,
+) -> bool:
+    timestamp = now_ms()
+    with connect_metadata_db(config) as conn:
+        row = conn.execute(
+            """
+            SELECT request_fingerprint
+            FROM query_result_cache
+            WHERE tenant_id = ? AND request_id = ? AND expires_at >= ?
+            """,
+            (tenant_id, request_id, timestamp),
+        ).fetchone()
+    return row is not None and str(row["request_fingerprint"]) == fingerprint
+
+
 def claim_query_result(
     *,
     config: RagConfig,
