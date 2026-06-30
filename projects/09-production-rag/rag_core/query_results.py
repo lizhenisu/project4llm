@@ -404,6 +404,16 @@ def query_result_cache_snapshot(*, config: RagConfig) -> dict[str, int]:
             "SELECT COUNT(*) AS count FROM query_result_cache WHERE expires_at < ?",
             (timestamp,),
         ).fetchone()
+        stale_processing = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM query_result_cache
+            WHERE status = 'processing'
+              AND lease_expires_at < ?
+              AND expires_at >= ?
+            """,
+            (timestamp, timestamp),
+        ).fetchone()
         event_count = conn.execute(
             """
             SELECT COUNT(*) AS count
@@ -421,6 +431,11 @@ def query_result_cache_snapshot(*, config: RagConfig) -> dict[str, int]:
         "completed": counts.get("completed", 0),
         "failed": counts.get("failed", 0),
         "expired": int(expired["count"] or 0) if expired is not None else 0,
+        "stale_processing": (
+            int(stale_processing["count"] or 0)
+            if stale_processing is not None
+            else 0
+        ),
         "events": int(event_count["count"] or 0) if event_count is not None else 0,
     }
 

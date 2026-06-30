@@ -14,6 +14,9 @@ scrape_configs:
 
   - job_name: production-rag-api
     metrics_path: /metrics
-    static_configs:
-      - targets:
-          - rag-api:8008
+    dns_sd_configs:
+      - names:
+          - rag-api
+        type: A
+        port: 8008
+        refresh_interval: 15s

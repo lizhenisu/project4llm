@@ -163,6 +163,7 @@ def test_owner_waiter_and_cached_replay(config) -> None:
     assert replay.response == response
     snapshot = query_result_cache_snapshot(config=config)
     assert snapshot["completed"] >= 1
+    assert snapshot["stale_processing"] == 0
     assert snapshot["events"] >= 2
 
 

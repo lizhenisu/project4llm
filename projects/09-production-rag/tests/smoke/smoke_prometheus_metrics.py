@@ -45,10 +45,11 @@ def main() -> None:
     assert "private-doc" not in text
     assert "sha256-secret" not in text
     assert 'rag_query_stream_events_total{event="rejected_user"}' in text
-    assert 'rag_query_result_cache_entries{status="processing"} 0' in text
+    assert 'rag_query_result_cache_entries{status="processing"} 1' in text
     assert 'rag_query_result_cache_entries{status="completed"} 1' in text
     assert 'rag_query_result_cache_entries{status="failed"} 0' in text
     assert "rag_query_result_cache_expired_entries 0" in text
+    assert "rag_query_result_stale_processing_entries 1" in text
     assert "rag_query_result_events 1" in text
     assert "metrics-private-tenant" not in text
     assert "metrics-private-request" not in text
@@ -132,6 +133,24 @@ def seed_query_result_cache() -> None:
             VALUES (?, ?, 1, '{}', ?)
             """,
             ("metrics-private-tenant", "metrics-private-request", timestamp),
+        )
+        conn.execute(
+            """
+            INSERT INTO query_result_cache(
+                tenant_id, request_id, request_fingerprint, status, lease_owner,
+                lease_expires_at, response_json, error, created_at, updated_at, expires_at
+            )
+            VALUES (?, ?, ?, 'processing', 'expired-owner', ?, '', '', ?, ?, ?)
+            """,
+            (
+                "metrics-private-tenant",
+                "metrics-private-stale-request",
+                "metrics-private-stale-fingerprint",
+                timestamp - 1,
+                timestamp - 60_000,
+                timestamp - 60_000,
+                timestamp + 60_000,
+            ),
         )
 
 

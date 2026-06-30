@@ -80,6 +80,7 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["query_result_cache"]["completed"] >= 0
     assert body["query_result_cache"]["failed"] >= 0
     assert body["query_result_cache"]["expired"] >= 0
+    assert body["query_result_cache"]["stale_processing"] >= 0
     assert body["query_result_cache"]["events"] >= 0
     assert body["query"]["max_query_image_bytes"] >= 1
     assert body["query"]["max_query_request_bytes"] >= body["query"]["max_query_image_bytes"]

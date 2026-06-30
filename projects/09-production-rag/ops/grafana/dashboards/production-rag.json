@@ -125,7 +125,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rag_ingestion_tasks{status=~\"queued|processing\"})",
+          "expr": "sum(max by (status) (rag_ingestion_tasks{status=~\"queued|processing\"}))",
           "refId": "A"
         }
       ],
@@ -374,7 +374,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (status) (rag_ingestion_tasks)",
+          "expr": "max by (status) (rag_ingestion_tasks)",
           "legendFormat": "{{status}}",
           "refId": "A"
         },
@@ -495,19 +495,24 @@
       },
       "targets": [
         {
-          "expr": "sum by (status) (rag_query_result_cache_entries)",
+          "expr": "max by (status) (rag_query_result_cache_entries)",
           "legendFormat": "{{status}} results",
           "refId": "A"
         },
         {
-          "expr": "sum(rag_query_result_cache_expired_entries)",
+          "expr": "max(rag_query_result_cache_expired_entries)",
           "legendFormat": "expired results",
           "refId": "B"
         },
         {
-          "expr": "sum(rag_query_result_events)",
-          "legendFormat": "replay events",
+          "expr": "max(rag_query_result_stale_processing_entries)",
+          "legendFormat": "stale processing",
           "refId": "C"
+        },
+        {
+          "expr": "max(rag_query_result_events)",
+          "legendFormat": "replay events",
+          "refId": "D"
         }
       ],
       "title": "Query Recovery Cache",
@@ -547,12 +552,12 @@
       },
       "targets": [
         {
-          "expr": "avg by (source_type, stage) (rag_ingestion_stage_duration_seconds_average)",
+          "expr": "max by (source_type, stage) (rag_ingestion_stage_duration_seconds_average)",
           "legendFormat": "{{source_type}} {{stage}} avg",
           "refId": "A"
         },
         {
-          "expr": "sum by (source_type, stage) (rag_ingestion_stage_samples)",
+          "expr": "max by (source_type, stage) (rag_ingestion_stage_samples)",
           "legendFormat": "{{source_type}} {{stage}} samples",
           "refId": "B"
         }

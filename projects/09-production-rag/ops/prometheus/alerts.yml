@@ -47,6 +47,15 @@ groups:
           summary: Query streams are being rejected continuously
           description: Global, tenant, or principal stream capacity has been saturated for five minutes.
 
+      - alert: ProductionRagQueryRecoveryStaleProcessing
+        expr: max(rag_query_result_stale_processing_entries) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Query recovery contains stale processing owners
+          description: At least one durable query result has remained recoverable after its owner lease expired.
+
       - alert: ProductionRagModelApiFailureRateHigh
         expr: |
           sum(rate(rag_model_api_operation_calls_total{outcome="failure"}[10m]))
@@ -70,7 +79,7 @@ groups:
           description: Reduce API concurrency or tune PostgreSQL/PgBouncer capacity.
 
       - alert: ProductionRagIngestionBacklogHigh
-        expr: sum(rag_ingestion_tasks{status=~"queued|processing"}) > 1000
+        expr: sum(max by (status) (rag_ingestion_tasks{status=~"queued|processing"})) > 1000
         for: 15m
         labels:
           severity: warning

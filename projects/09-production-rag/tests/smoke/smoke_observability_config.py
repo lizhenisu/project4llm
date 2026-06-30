@@ -9,6 +9,7 @@ import yaml
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = PROJECT_DIR / "docker-compose.yml"
 PROMETHEUS_PATH = PROJECT_DIR / "ops" / "prometheus" / "prometheus.yml"
+PROMETHEUS_TESTS_PATH = PROJECT_DIR / "ops" / "prometheus" / "tests.yml"
 GRAFANA_DATASOURCE_PATH = (
     PROJECT_DIR / "ops" / "grafana" / "provisioning" / "datasources" / "prometheus.yml"
 )
@@ -21,6 +22,7 @@ GRAFANA_DASHBOARD_PATH = PROJECT_DIR / "ops" / "grafana" / "dashboards" / "produ
 def main() -> None:
     compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
     prometheus = yaml.safe_load(PROMETHEUS_PATH.read_text(encoding="utf-8"))
+    prometheus_tests = yaml.safe_load(PROMETHEUS_TESTS_PATH.read_text(encoding="utf-8"))
     datasource = yaml.safe_load(GRAFANA_DATASOURCE_PATH.read_text(encoding="utf-8"))
     dashboard_provider = yaml.safe_load(GRAFANA_DASHBOARD_PROVIDER_PATH.read_text(encoding="utf-8"))
     dashboard = json.loads(GRAFANA_DASHBOARD_PATH.read_text(encoding="utf-8"))
@@ -47,7 +49,24 @@ def main() -> None:
     assert prometheus["rule_files"] == ["/etc/prometheus/alerts.yml"]
     api_job = next(job for job in prometheus["scrape_configs"] if job["job_name"] == "production-rag-api")
     assert api_job["metrics_path"] == "/metrics"
-    assert api_job["static_configs"][0]["targets"] == ["rag-api:8008"]
+    assert "static_configs" not in api_job
+    assert api_job["dns_sd_configs"] == [
+        {
+            "names": ["rag-api"],
+            "type": "A",
+            "port": 8008,
+            "refresh_interval": "15s",
+        }
+    ]
+    dedup_test = prometheus_tests["tests"][0]
+    expressions = {
+        case["expr"]: case["exp_samples"][0]["value"]
+        for case in dedup_test["promql_expr_test"]
+    }
+    assert expressions == {
+        'sum(max by (status) (rag_ingestion_tasks{status=~"queued|processing"}))': 900,
+        "max(rag_query_result_stale_processing_entries)": 1,
+    }
 
     configured_source = datasource["datasources"][0]
     assert configured_source["uid"] == "prometheus"
@@ -70,6 +89,11 @@ def main() -> None:
     assert any("rag_ingestion_tasks" in expression for expression in expressions)
     assert any("rag_ingestion_stage_duration_seconds_average" in expression for expression in expressions)
     assert any("rag_ingestion_stage_samples" in expression for expression in expressions)
+    assert (
+        'sum(max by (status) (rag_ingestion_tasks{status=~"queued|processing"}))'
+        in expressions
+    )
+    assert "max by (status) (rag_ingestion_tasks)" in expressions
     image_size_panel = next(
         panel for panel in dashboard["panels"]
         if panel["title"] == "Query Image Payload Size p95"
@@ -84,8 +108,8 @@ def main() -> None:
     assert eta_panel["fieldConfig"]["defaults"]["unit"] == "s"
     eta_expressions = [target["expr"] for target in eta_panel["targets"]]
     assert eta_expressions == [
-        "avg by (source_type, stage) (rag_ingestion_stage_duration_seconds_average)",
-        "sum by (source_type, stage) (rag_ingestion_stage_samples)",
+        "max by (source_type, stage) (rag_ingestion_stage_duration_seconds_average)",
+        "max by (source_type, stage) (rag_ingestion_stage_samples)",
     ]
     recovery_panel = next(
         panel for panel in dashboard["panels"]
@@ -93,9 +117,10 @@ def main() -> None:
     )
     recovery_expressions = [target["expr"] for target in recovery_panel["targets"]]
     assert recovery_expressions == [
-        "sum by (status) (rag_query_result_cache_entries)",
-        "sum(rag_query_result_cache_expired_entries)",
-        "sum(rag_query_result_events)",
+        "max by (status) (rag_query_result_cache_entries)",
+        "max(rag_query_result_cache_expired_entries)",
+        "max(rag_query_result_stale_processing_entries)",
+        "max(rag_query_result_events)",
     ]
     print("smoke_observability_config=ok")
 
