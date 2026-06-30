@@ -73,6 +73,13 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["query_shared_admission"]["tenant_slots"] >= 0
     assert body["query_shared_admission"]["user_slots"] >= 0
     assert body["query_shared_admission"]["expired_slots"] >= 0
+    assert body["query_result_cache"]["lease_ms"] >= 1000
+    assert body["query_result_cache"]["ttl_ms"] >= 1000
+    assert body["query_result_cache"]["wait_seconds"] >= 1
+    assert body["query_result_cache"]["processing"] >= 0
+    assert body["query_result_cache"]["completed"] >= 0
+    assert body["query_result_cache"]["failed"] >= 0
+    assert body["query_result_cache"]["expired"] >= 0
     assert body["query"]["max_query_image_bytes"] >= 1
     assert body["query"]["max_query_request_bytes"] >= body["query"]["max_query_image_bytes"]
     assert body["query"]["image_payloads"]["accepted_total"] >= 0
@@ -212,6 +219,8 @@ def test_runtime_metrics_records_query_stream_acceptance_and_completion() -> Non
         assert shared_after["global_slots"] == 0
         assert shared_after["tenant_slots"] == 0
         assert shared_after["user_slots"] == 0
+        result_cache_after = api.get("/runtime-metrics").json()["query_result_cache"]
+        assert result_cache_after["completed"] >= 1
     finally:
         restore_env("RAG_QUERY_STREAM_EVENT_QUEUE_LIMIT", old_event_queue_limit)
 

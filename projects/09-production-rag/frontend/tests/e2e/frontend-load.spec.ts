@@ -6,6 +6,8 @@ import { dirname } from "node:path";
 const enabled = process.env.RUN_FRONTEND_LOAD_E2E === "1";
 const pageCount = envInt("FRONTEND_LOAD_PAGES", 8);
 const concurrency = envInt("FRONTEND_LOAD_CONCURRENCY", 4);
+const heldPageCount = envInt("FRONTEND_HELD_PAGES", 12);
+const heldPageDurationMs = envInt("FRONTEND_HELD_PAGE_DURATION_MS", 3_000);
 const interactionPageCount = envInt("FRONTEND_INTERACTION_PAGES", 4);
 const interactionConcurrency = envInt("FRONTEND_INTERACTION_CONCURRENCY", 2);
 const busyPageCount = envInt("FRONTEND_BUSY_PAGES", 4);
@@ -22,12 +24,17 @@ const persistenceConcurrency = envInt("FRONTEND_PERSISTENCE_CONCURRENCY", 2);
 const sourceImagePageCount = envInt("FRONTEND_SOURCE_IMAGE_PAGES", 4);
 const sourceImageConcurrency = envInt("FRONTEND_SOURCE_IMAGE_CONCURRENCY", 2);
 const sourceImageCount = envInt("FRONTEND_SOURCE_IMAGE_COUNT", 12);
+const uploadPollPageCount = envInt("FRONTEND_UPLOAD_POLL_PAGES", 4);
+const uploadPollConcurrency = envInt("FRONTEND_UPLOAD_POLL_CONCURRENCY", 2);
+const uploadPollCycles = envInt("FRONTEND_UPLOAD_POLL_CYCLES", 5);
 const token = process.env.FRONTEND_LOAD_TOKEN || "production-rag-fixed-test-login-token";
 const startupMaxDomNodes = envInt("FRONTEND_STARTUP_MAX_DOM_NODES", 500);
 const startupMaxImageNodes = envInt("FRONTEND_STARTUP_MAX_IMAGE_NODES", 10);
 const startupMaxResources = envInt("FRONTEND_STARTUP_MAX_RESOURCES", 100);
 const startupMaxTransferKb = envInt("FRONTEND_STARTUP_MAX_TRANSFER_KB", 10_000);
 const outputPath = process.env.FRONTEND_LOAD_OUTPUT || "test-results/frontend-load-summary.json";
+const heldOutputPath =
+  process.env.FRONTEND_HELD_OUTPUT || "test-results/frontend-held-sessions-summary.json";
 const interactionOutputPath =
   process.env.FRONTEND_INTERACTION_OUTPUT || "test-results/frontend-interaction-summary.json";
 const busyOutputPath = process.env.FRONTEND_BUSY_OUTPUT || "test-results/frontend-busy-summary.json";
@@ -41,6 +48,8 @@ const persistenceOutputPath =
   process.env.FRONTEND_PERSISTENCE_OUTPUT || "test-results/frontend-persistence-summary.json";
 const sourceImageOutputPath =
   process.env.FRONTEND_SOURCE_IMAGE_OUTPUT || "test-results/frontend-source-images-summary.json";
+const uploadPollOutputPath =
+  process.env.FRONTEND_UPLOAD_POLL_OUTPUT || "test-results/frontend-upload-poll-summary.json";
 const testTimeoutMs = envInt("FRONTEND_LOAD_TEST_TIMEOUT_MS", 30_000);
 
 test.skip(!enabled, "Set RUN_FRONTEND_LOAD_E2E=1 to run the browser-level frontend load smoke.");
@@ -81,6 +90,49 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.isolated_conversation_requests, JSON.stringify(payload, null, 2)).toBe(pageCount);
     expect(payload.api_requests["GET /sources"]?.max || 0, JSON.stringify(payload, null, 2)).toBeGreaterThan(0);
+    expect(payload.api_requests["GET /conversations"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
+  });
+
+  test("holds authenticated workspace pages open simultaneously", async ({ browser, baseURL }) => {
+    const started = performance.now();
+    const result = await runHeldPages(browser, baseURL || "http://127.0.0.1:5173");
+    const wallMs = roundMs(performance.now() - started);
+    const failures = result.samples.filter((sample) => !sample.ok);
+    const payload = {
+      pages: heldPageCount,
+      startup_concurrency: heldPageCount,
+      hold_ms: heldPageDurationMs,
+      wall_ms: wallMs,
+      all_arrived_ms: result.all_arrived_ms,
+      simultaneous_ready_pages: result.simultaneous_ready_pages,
+      success: result.samples.length - failures.length,
+      failed: failures.length,
+      failure_rate: round(failures.length / Math.max(1, result.samples.length), 4),
+      load_ms: summarize(result.samples.map((sample) => sample.load_ms)),
+      aggregate_js_heap_used_mb: result.samples.reduce(
+        (total, sample) => total + (sample.metrics?.js_heap_used_mb || 0),
+        0,
+      ),
+      aggregate_dom_nodes: result.samples.reduce(
+        (total, sample) => total + (sample.metrics?.dom_nodes || 0),
+        0,
+      ),
+      metrics: summarizePageMetrics(result.samples.map((sample) => sample.metrics)),
+      api_requests: summarizeApiRequestCounts(result.samples.map((sample) => sample.api_requests)),
+      console_errors: result.samples.reduce((total, sample) => total + sample.console_errors.length, 0),
+      page_errors: result.samples.reduce((total, sample) => total + sample.page_errors.length, 0),
+      http_failures: result.samples.reduce((total, sample) => total + sample.http_failures.length, 0),
+      failed_samples: failures.slice(0, 10),
+      samples: result.samples.slice(0, 20),
+    };
+    mkdirSync(dirname(heldOutputPath), { recursive: true });
+    writeFileSync(heldOutputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+
+    expect(payload.failed, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.simultaneous_ready_pages, JSON.stringify(payload, null, 2)).toBe(heldPageCount);
+    expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.api_requests["GET /conversations"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
   });
 
@@ -347,6 +399,48 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.api_requests["GET /source-assets/:asset"]?.min || 0, JSON.stringify(payload, null, 2))
       .toBeGreaterThanOrEqual(sourceImageCount);
+  });
+
+  test("renders long-running upload progress across pages", async ({ browser, baseURL }) => {
+    const started = performance.now();
+    const samples = await runUploadPollPages(browser, baseURL || "http://127.0.0.1:5173");
+    const wallMs = roundMs(performance.now() - started);
+    const failures = samples.filter((sample) => !sample.ok);
+    const payload = {
+      pages: uploadPollPageCount,
+      concurrency: uploadPollConcurrency,
+      processing_polls_per_page: uploadPollCycles,
+      expected_processing_polls: uploadPollPageCount * uploadPollCycles,
+      wall_ms: wallMs,
+      success: samples.length - failures.length,
+      failed: failures.length,
+      failure_rate: round(failures.length / Math.max(1, samples.length), 4),
+      total_ms: summarize(samples.map((sample) => sample.total_ms)),
+      upload_ready_ms: summarize(samples.map((sample) => sample.upload_ready_ms)),
+      source_get_requests: summarize(samples.map((sample) => sample.source_get_requests)),
+      progress_states_rendered: summarize(samples.map((sample) => sample.progress_states_rendered)),
+      max_source_get_inflight: summarize(samples.map((sample) => sample.max_source_get_inflight)),
+      metrics: summarizePageMetrics(samples.map((sample) => sample.metrics)),
+      api_requests: summarizeApiRequestCounts(samples.map((sample) => sample.api_requests)),
+      console_errors: samples.reduce((total, sample) => total + sample.console_errors.length, 0),
+      page_errors: samples.reduce((total, sample) => total + sample.page_errors.length, 0),
+      http_failures: samples.reduce((total, sample) => total + sample.http_failures.length, 0),
+      failed_samples: failures.slice(0, 10),
+      samples: samples.slice(0, 20),
+    };
+    mkdirSync(dirname(uploadPollOutputPath), { recursive: true });
+    writeFileSync(uploadPollOutputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+
+    expect(payload.failed, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.source_get_requests.min, JSON.stringify(payload, null, 2)).toBeGreaterThanOrEqual(
+      uploadPollCycles + 1,
+    );
+    expect(payload.progress_states_rendered.min, JSON.stringify(payload, null, 2)).toBe(uploadPollCycles);
+    expect(payload.max_source_get_inflight.max, JSON.stringify(payload, null, 2)).toBeLessThanOrEqual(1);
+    expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.api_requests["POST /sources/upload"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
   });
 
   test("shows stable status text and recovery guidance for ingestion", async ({ page, baseURL }) => {
@@ -1105,6 +1199,7 @@ test.describe("browser-level frontend load smoke", () => {
   test("preserves an interrupted answer and completes it after reload", async ({ page, baseURL }) => {
     const now = Date.now();
     let queryAttempts = 0;
+    const queryRequestIds: string[] = [];
     let persistedConversation: {
       id: string;
       tenant_id: string;
@@ -1186,6 +1281,8 @@ test.describe("browser-level frontend load smoke", () => {
     });
     await page.route("**/api/query/stream", async (route) => {
       queryAttempts += 1;
+      const body = JSON.parse(route.request().postData() || "{}") as { request_id?: string };
+      queryRequestIds.push(body.request_id || "");
       if (queryAttempts === 1) {
         await route.abort("failed");
         return;
@@ -1195,7 +1292,7 @@ test.describe("browser-level frontend load smoke", () => {
         contentType: "application/x-ndjson",
         body: `${JSON.stringify({
           type: "result",
-          request_id: "interrupted-recovery-request",
+          request_id: body.request_id,
           answer: "Recovered answer after browser reload.",
           citations: [],
           trace: {},
@@ -1213,11 +1310,14 @@ test.describe("browser-level frontend load smoke", () => {
     await expect.poll(() => persistedConversation?.messages.at(-1)?.content).toBe(
       "连接已中断，刷新页面后将自动恢复回答。",
     );
+    await expect.poll(() => persistedConversation?.messages.at(-1)?.request_id).not.toBe("");
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.getByText("Recovered answer after browser reload.")).toBeVisible();
     await expect(page.getByText("测试断流恢复")).toBeVisible();
     await expect.poll(() => queryAttempts).toBe(2);
+    expect(queryRequestIds[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(queryRequestIds[1]).toBe(queryRequestIds[0]);
     await expect.poll(() => persistedConversation?.messages.at(-1)?.status).toBe("done");
     await expect.poll(() => persistedConversation?.messages.at(-1)?.content).toBe(
       "Recovered answer after browser reload.",
@@ -1349,13 +1449,59 @@ async function runPages(browser: Browser, baseURL: string) {
   return results.sort((left, right) => left.index - right.index);
 }
 
-async function openWorkspacePage(browser: Browser, baseURL: string, index: number): Promise<PageSample> {
+async function runHeldPages(browser: Browser, baseURL: string) {
+  let arrived = 0;
+  let simultaneousReadyPages = 0;
+  let releasePages: () => void = () => undefined;
+  let signalAllArrived: () => void = () => undefined;
+  const release = new Promise<void>((resolve) => {
+    releasePages = resolve;
+  });
+  const allArrived = new Promise<void>((resolve) => {
+    signalAllArrived = resolve;
+  });
+  const gate: HeldPageGate = {
+    release,
+    arrive(ok) {
+      arrived += 1;
+      if (ok) {
+        simultaneousReadyPages += 1;
+      }
+      if (arrived === heldPageCount) {
+        signalAllArrived();
+      }
+    },
+  };
+  const started = performance.now();
+  const pagePromises = Array.from({ length: heldPageCount }, (_, index) =>
+    openWorkspacePage(browser, baseURL, 2_000 + index, gate),
+  );
+  await allArrived;
+  const allArrivedMs = roundMs(performance.now() - started);
+  await new Promise((resolve) => setTimeout(resolve, heldPageDurationMs));
+  releasePages();
+  const samples = await Promise.all(pagePromises);
+  return {
+    all_arrived_ms: allArrivedMs,
+    simultaneous_ready_pages: simultaneousReadyPages,
+    samples: samples.sort((left, right) => left.index - right.index),
+  };
+}
+
+async function openWorkspacePage(
+  browser: Browser,
+  baseURL: string,
+  index: number,
+  gate?: HeldPageGate,
+): Promise<PageSample> {
   const page = await browser.newPage();
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   const httpFailures: string[] = [];
   const apiRequests: Record<string, number> = {};
+  const apiResponses: Record<string, number> = {};
   let isolatedConversationRequests = 0;
+  let gateArrived = false;
   await page.route("**/api/conversations**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -1382,6 +1528,9 @@ async function openWorkspacePage(browser: Browser, baseURL: string, index: numbe
     recordApiRequest(apiRequests, request.method(), request.url());
   });
   page.on("response", (response) => {
+    if (response.status() < 500) {
+      recordApiRequest(apiResponses, response.request().method(), response.url());
+    }
     if (response.status() >= 500) {
       httpFailures.push(`${response.status()} ${response.url()}`);
     }
@@ -1398,15 +1547,31 @@ async function openWorkspacePage(browser: Browser, baseURL: string, index: numbe
     await expect(
       page.locator(".message-list .user-message, .message-list .assistant-message"),
     ).toHaveCount(0);
+    for (const requestKey of ["GET /sources", "GET /artifacts", "GET /conversations"]) {
+      await expect.poll(() => apiResponses[requestKey] || 0, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
+    }
     await waitForNetworkQuiet(page, 500, 10_000);
     const loadMs = roundMs(performance.now() - started);
-    const metrics = await collectPageMetrics(page);
-    const baselineWithinLimits = startupMetricsWithinLimits(metrics);
+    let metrics = await collectPageMetrics(page);
+    let baselineWithinLimits = startupMetricsWithinLimits(metrics);
+    const functionallyReady =
+      consoleErrors.length === 0
+      && pageErrors.length === 0
+      && httpFailures.length === 0
+      && isolatedConversationRequests === 1;
+    if (gate) {
+      gate.arrive(functionallyReady);
+      gateArrived = true;
+      await gate.release;
+      metrics = await collectPageMetrics(page);
+      baselineWithinLimits = startupMetricsWithinLimits(metrics);
+    }
     await closePage(page);
     return {
       index,
       ok:
-        consoleErrors.length === 0
+        functionallyReady
+        && consoleErrors.length === 0
         && pageErrors.length === 0
         && httpFailures.length === 0
         && isolatedConversationRequests === 1
@@ -1423,6 +1588,9 @@ async function openWorkspacePage(browser: Browser, baseURL: string, index: numbe
   } catch (error) {
     const loadMs = roundMs(performance.now() - started);
     const metrics = await collectPageMetrics(page).catch(() => null);
+    if (gate && !gateArrived) {
+      gate.arrive(false);
+    }
     await closePage(page);
     return {
       index,
@@ -1536,6 +1704,115 @@ async function runSourceImagePages(browser: Browser, baseURL: string) {
   });
   await Promise.all(workers);
   return results.sort((left, right) => left.index - right.index);
+}
+
+async function runUploadPollPages(browser: Browser, baseURL: string) {
+  const results: UploadPollSample[] = [];
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(uploadPollConcurrency, uploadPollPageCount) }, async () => {
+    while (nextIndex < uploadPollPageCount) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results.push(await uploadPollingWorkspace(browser, baseURL, index));
+    }
+  });
+  await Promise.all(workers);
+  return results.sort((left, right) => left.index - right.index);
+}
+
+async function uploadPollingWorkspace(browser: Browser, baseURL: string, index: number): Promise<UploadPollSample> {
+  const page = await browser.newPage();
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  const httpFailures: string[] = [];
+  const apiRequests: Record<string, number> = {};
+  const started = performance.now();
+  let uploadReadyMs = 0;
+  let progressStatesRendered = 0;
+  let state: UploadPollMockState | null = null;
+  try {
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        consoleErrors.push(message.text());
+      }
+    });
+    page.on("pageerror", (error) => {
+      pageErrors.push(error.message);
+    });
+    page.on("request", (request) => {
+      recordApiRequest(apiRequests, request.method(), request.url());
+    });
+    page.on("response", (response) => {
+      if (response.status() >= 500) {
+        httpFailures.push(`${response.status()} ${response.url()}`);
+      }
+    });
+    await seedBrowserSession(page, 1_100 + index);
+    await mockStartupApi(page);
+    state = await mockUploadPollingApi(page, index);
+
+    await page.goto(`${baseURL.replace(/\/$/, "")}/#token=browser-load-upload-poll-token-${index}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(page.getByRole("heading", { name: "来源" })).toBeVisible();
+    const uploadStarted = performance.now();
+    await chooseUploadFile(page, state.fileName);
+    const row = page.locator(".source-row", { hasText: state.fileName });
+    for (const progress of state.progressStates) {
+      await expect(row.locator(".source-progress")).toContainText(progress.progress_detail, {
+        timeout: 12_000,
+      });
+      await expect(row.getByRole("progressbar")).toHaveAttribute(
+        "aria-valuenow",
+        String(progress.progress_percent),
+      );
+      progressStatesRendered += 1;
+    }
+    await expect(page.locator(".source-row.status-ready", { hasText: state.fileName })).toBeVisible({
+      timeout: 12_000,
+    });
+    uploadReadyMs = roundMs(performance.now() - uploadStarted);
+    const metrics = await collectPageMetrics(page);
+    await closePage(page);
+    return {
+      index,
+      ok:
+        consoleErrors.length === 0
+        && pageErrors.length === 0
+        && httpFailures.length === 0
+        && progressStatesRendered === uploadPollCycles
+        && state.sourceGetRequests >= uploadPollCycles + 1
+        && state.maxSourceGetInFlight <= 1,
+      total_ms: roundMs(performance.now() - started),
+      upload_ready_ms: uploadReadyMs,
+      source_get_requests: state.sourceGetRequests,
+      progress_states_rendered: progressStatesRendered,
+      max_source_get_inflight: state.maxSourceGetInFlight,
+      metrics,
+      api_requests: apiRequests,
+      console_errors: consoleErrors,
+      page_errors: pageErrors,
+      http_failures: httpFailures,
+    };
+  } catch (error) {
+    const metrics = await collectPageMetrics(page).catch(() => null);
+    await closePage(page);
+    return {
+      index,
+      ok: false,
+      total_ms: roundMs(performance.now() - started),
+      upload_ready_ms: uploadReadyMs,
+      source_get_requests: state?.sourceGetRequests || 0,
+      progress_states_rendered: progressStatesRendered,
+      max_source_get_inflight: state?.maxSourceGetInFlight || 0,
+      metrics,
+      api_requests: apiRequests,
+      console_errors: consoleErrors,
+      page_errors: pageErrors,
+      http_failures: httpFailures,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 async function sourceImageWorkspace(browser: Browser, baseURL: string, index: number): Promise<SourceImageSample> {
@@ -2251,6 +2528,121 @@ async function mockStartupApi(page: Page) {
   });
 }
 
+async function mockUploadPollingApi(page: Page, index: number): Promise<UploadPollMockState> {
+  const now = Date.now();
+  const fileName = `long-upload-poll-${index}.txt`;
+  const taskId = `long-upload-poll-${index}`;
+  const pendingSource = {
+    doc_id: taskId,
+    title: fileName,
+    source_type: "txt",
+    source_uri: `mock://${fileName}`,
+    doc_version: 1,
+    chunk_count: 0,
+    acl_groups: ["engineering"],
+    status: "processing",
+    current: false,
+    created_at: now,
+    updated_at: now,
+    child_doc_ids: [],
+    ingestion_stage: "parsing",
+    progress_percent: 5,
+    progress_detail: "0 个进度检查",
+  };
+  const stages = ["parsing", "parsed", "chunking", "text_embedding", "indexing", "persisting", "finalizing"];
+  const progressStates = Array.from({ length: uploadPollCycles }, (_, progressIndex) => ({
+    ...pendingSource,
+    updated_at: now + (progressIndex + 1) * 1_000,
+    ingestion_stage: stages[Math.min(progressIndex, stages.length - 1)],
+    progress_percent: Math.min(95, 10 + Math.round(((progressIndex + 1) / uploadPollCycles) * 80)),
+    progress_detail: `${progressIndex + 1}/${uploadPollCycles} 个进度检查`,
+  }));
+  const readySource = {
+    ...pendingSource,
+    doc_id: `${taskId}@sha256-ready`,
+    status: "ready",
+    current: true,
+    chunk_count: 1,
+    updated_at: now + (uploadPollCycles + 1) * 1_000,
+    child_doc_ids: [`${taskId}@sha256-ready`],
+    workspace_alias_ids: [taskId],
+    ingestion_stage: "",
+    progress_percent: 0,
+    progress_detail: "",
+  };
+  const state: UploadPollMockState = {
+    fileName,
+    progressStates,
+    sourceGetRequests: 0,
+    maxSourceGetInFlight: 0,
+  };
+  let uploaded = false;
+  let sourceGetInFlight = 0;
+
+  await page.route("**/api/sources**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.endsWith("/sources/upload")) {
+      uploaded = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ sources: [pendingSource] }),
+      });
+      return;
+    }
+    if (request.method() === "GET" && path.includes("/sources/content/")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...readySource,
+          guide: "Synthetic long-running upload polling source.",
+          tags: ["load-test"],
+          text: "Synthetic long-running upload polling source.",
+          blocks: [{ type: "text", text: "Synthetic long-running upload polling source." }],
+          suggested_title: fileName,
+        }),
+      });
+      return;
+    }
+    if (request.method() === "GET") {
+      if (!uploaded) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ sources: [] }),
+        });
+        return;
+      }
+      sourceGetInFlight += 1;
+      state.sourceGetRequests += 1;
+      state.maxSourceGetInFlight = Math.max(state.maxSourceGetInFlight, sourceGetInFlight);
+      try {
+        await page.waitForTimeout(75);
+        const source =
+          state.sourceGetRequests <= progressStates.length
+            ? progressStates[state.sourceGetRequests - 1]
+            : readySource;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ sources: [source] }),
+        });
+      } finally {
+        sourceGetInFlight = Math.max(0, sourceGetInFlight - 1);
+      }
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ status: "ok" }),
+    });
+  });
+  return state;
+}
+
 async function mockSourceImageApi(
   page: Page,
   index: number,
@@ -2652,6 +3044,11 @@ type PageSample = {
   error?: string;
 };
 
+type HeldPageGate = {
+  release: Promise<void>;
+  arrive: (ok: boolean) => void;
+};
+
 function startupMetricsWithinLimits(metrics: PageMetrics) {
   return (
     metrics.dom_nodes <= startupMaxDomNodes
@@ -2721,6 +3118,34 @@ type SourceImageSample = {
   authorized_asset_requests: number;
   token_leak_requests: number;
   rendered_images: number;
+  metrics: PageMetrics | null;
+  api_requests: Record<string, number>;
+  console_errors: string[];
+  page_errors: string[];
+  http_failures: string[];
+  error?: string;
+};
+
+type UploadPollProgressState = {
+  progress_percent: number;
+  progress_detail: string;
+};
+
+type UploadPollMockState = {
+  fileName: string;
+  progressStates: UploadPollProgressState[];
+  sourceGetRequests: number;
+  maxSourceGetInFlight: number;
+};
+
+type UploadPollSample = {
+  index: number;
+  ok: boolean;
+  total_ms: number;
+  upload_ready_ms: number;
+  source_get_requests: number;
+  progress_states_rendered: number;
+  max_source_get_inflight: number;
   metrics: PageMetrics | null;
   api_requests: Record<string, number>;
   console_errors: string[];

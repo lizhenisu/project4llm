@@ -470,6 +470,25 @@ ON query_admission_slots(lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_query_admission_slots_owner
 ON query_admission_slots(lease_owner);
 
+CREATE TABLE IF NOT EXISTS query_result_cache (
+    tenant_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    lease_owner TEXT NOT NULL DEFAULT '',
+    lease_expires_at INTEGER NOT NULL DEFAULT 0,
+    response_json TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY(tenant_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_query_result_cache_expiry
+ON query_result_cache(expires_at);
+CREATE INDEX IF NOT EXISTS idx_query_result_cache_status_lease
+ON query_result_cache(status, lease_expires_at);
+
 CREATE TABLE IF NOT EXISTS upload_admission_slots (
     scope_type TEXT NOT NULL,
     scope_key TEXT NOT NULL,

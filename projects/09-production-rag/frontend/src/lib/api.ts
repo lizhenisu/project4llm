@@ -187,6 +187,7 @@ export function queryRag(
   settings: Settings,
   params: {
     query: string;
+    requestId: string;
     docIds: string[];
     history: string[];
     imageDataUrl?: string | null;
@@ -197,6 +198,7 @@ export function queryRag(
     settings,
     json: {
       query: params.query,
+      request_id: params.requestId,
       query_mode: params.imageDataUrl ? "multimodal" : "text",
       image_data_url: params.imageDataUrl || null,
       history: params.history,
@@ -213,6 +215,7 @@ export async function queryRagStream(
   settings: Settings,
   params: {
     query: string;
+    requestId: string;
     docIds: string[];
     history: string[];
     imageDataUrl?: string | null;
@@ -231,6 +234,7 @@ export async function queryRagStream(
     headers,
     body: JSON.stringify({
       query: params.query,
+      request_id: params.requestId,
       query_mode: params.imageDataUrl ? "multimodal" : "text",
       image_data_url: params.imageDataUrl || null,
       history: params.history,

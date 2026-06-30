@@ -508,7 +508,26 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       // Track uploaded sources for the current workspace
       const uploadedIds = uploaded.map((s) => s.doc_id);
       addSourcesToWorkspace(requestWorkspaceId, uploadedIds);
-      const readyRows = await waitForSourcesReady(settings, uploaded, sourceKeysBeforeUpload);
+      const readyRows = await waitForSourcesReady(
+        settings,
+        uploaded,
+        sourceKeysBeforeUpload,
+        (polledRows) => {
+          if (!isCurrentWorkspace()) return;
+          const workspaceSources = loadWorkspaceSources(requestWorkspaceId);
+          const filteredRows = filterWorkspaceSources(sourceRowsForList(polledRows), workspaceSources);
+          setSources((items) =>
+            preservePendingSourceRows(
+              mergeSelectedState(
+                applyWorkspaceSourceTitles(filteredRows, requestWorkspaceId),
+                items,
+                requestWorkspaceId,
+              ),
+              items,
+            ),
+          );
+        },
+      );
       const resolvedUploads = resolveUploadedSources(readyRows, uploaded, sourceKeysBeforeUpload);
       if (resolvedUploads.length > 0) {
         addSourcesToWorkspace(requestWorkspaceId, sourceIdsForWorkspace(resolvedUploads));
@@ -723,6 +742,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       id: crypto.randomUUID(),
       role: "assistant",
       content: requestSelectedDocIds.length > 0 ? "RAG 调用链启动中..." : "大模型正在思考...",
+      requestId: crypto.randomUUID(),
       status: "sending",
       created_at: Date.now(),
       ragProgress: initialRagProgress(requestSelectedDocIds.length > 0 || Boolean(imageDataUrl)),
@@ -754,6 +774,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       try {
         const response = await queryRagStream(settings, {
           query,
+          requestId: pending.requestId!,
           docIds: requestSelectedDocIds,
           history: requestHistory,
           imageDataUrl,
@@ -840,6 +861,10 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     if (userIndex < 0) return;
     const pending = conversation.messages[pendingIndex];
     const userMessage = conversation.messages[userIndex];
+    const recoveryRequestId = pending.requestId || crypto.randomUUID();
+    const recoveryMessages = conversation.messages.map((message, index) =>
+      index === pendingIndex ? { ...message, requestId: recoveryRequestId } : message,
+    );
     setBusy(true);
     setTypingMessageId(null);
     let latestRagProgress = initialRagProgress(conversation.source_doc_ids.length > 0 || Boolean(userMessage.imageDataUrl)) || [];
@@ -868,8 +893,9 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       try {
         const response = await queryRagStream(nextSettings, {
           query: userMessage.content,
+          requestId: recoveryRequestId,
           docIds: conversation.source_doc_ids,
-          history: conversation.messages
+          history: recoveryMessages
             .slice(0, userIndex)
             .map((message) => `${message.role}: ${message.content}`)
             .slice(-8),
@@ -882,7 +908,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         });
         progressUpdater.cancel();
         if (!isCurrentSession()) return;
-        const nextMessages: ChatMessage[] = conversation.messages.map((item, index) =>
+        const nextMessages: ChatMessage[] = recoveryMessages.map((item, index) =>
           index === pendingIndex
             ? {
                 ...item,
@@ -906,7 +932,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       if (!isCurrentSession()) return;
       if (isFetchInterrupted(error)) {
         const interruptedMessages = markPendingAnswerInterrupted(
-          conversation.messages,
+          recoveryMessages,
           pending.id,
           latestRagProgress,
         );
@@ -927,7 +953,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         }
         return;
       }
-      const failedMessages: ChatMessage[] = conversation.messages.map((item, index) =>
+      const failedMessages: ChatMessage[] = recoveryMessages.map((item, index) =>
         index === pendingIndex
           ? {
               ...item,
@@ -2391,6 +2417,7 @@ async function waitForSourcesReady(
   settings: Settings,
   pendingSources: SourceItem[],
   sourceKeysBeforeUpload: Set<string>,
+  onProgress?: (rows: SourceItem[]) => void,
 ): Promise<SourceItem[]> {
   const pendingIds = new Set(pendingSources.map((source) => source.doc_id));
   const pendingUris = new Set(pendingSources.map((source) => source.source_uri));
@@ -2411,6 +2438,7 @@ async function waitForSourcesReady(
     if (pendingRows.some((source) => source.status === "failed") || newReadyRows.length > 0) {
       return rows;
     }
+    onProgress?.(rows);
   }
   return listSourcesCoalesced(settings);
 }

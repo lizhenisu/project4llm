@@ -63,6 +63,15 @@ from rag_core.query_admission import (
     QueryAdmissionRejected,
     query_admission_metrics_snapshot,
 )
+from rag_core.query_results import (
+    QueryResultLeaseGuard,
+    claim_query_result,
+    complete_query_result,
+    fail_query_result,
+    query_result_cache_snapshot,
+    query_result_fingerprint,
+    wait_for_query_result,
+)
 from rag_core.readiness import readiness_report
 from rag_core.sources import (
     count_active_source_tasks,
@@ -243,6 +252,18 @@ def query_shared_admission_enabled() -> bool:
 
 def query_shared_admission_lease_ms() -> int:
     return env_int("RAG_QUERY_SHARED_ADMISSION_LEASE_MS", 15 * 60 * 1000)
+
+
+def query_result_lease_ms() -> int:
+    return env_int("RAG_QUERY_RESULT_LEASE_MS", 15 * 60 * 1000)
+
+
+def query_result_ttl_ms() -> int:
+    return env_int("RAG_QUERY_RESULT_TTL_MS", 60 * 60 * 1000)
+
+
+def query_result_wait_seconds() -> int:
+    return env_int("RAG_QUERY_RESULT_WAIT_SECONDS", 600)
 
 
 def ingest_backlog_limit() -> int:
@@ -1206,6 +1227,12 @@ def create_app():
                 "lease_ms": query_shared_admission_lease_ms(),
                 **query_admission_metrics_snapshot(config=config),
             },
+            "query_result_cache": {
+                "lease_ms": query_result_lease_ms(),
+                "ttl_ms": query_result_ttl_ms(),
+                "wait_seconds": query_result_wait_seconds(),
+                **query_result_cache_snapshot(config=config),
+            },
             "query": {
                 "max_query_image_bytes": config.max_query_image_bytes,
                 "max_query_request_bytes": max_query_request_bytes(config),
@@ -1889,6 +1916,11 @@ def create_app():
             x_rag_acl_groups=x_rag_acl_groups,
             request=request,
         )
+        request_fingerprint = (
+            query_stream_request_fingerprint(request, auth_context)
+            if request.request_id
+            else ""
+        )
         stream_slot = query_stream_semaphore(query_stream_queue_limit())
         if not stream_slot.acquire(blocking=False):
             record_query_stream_rejected("global")
@@ -2004,6 +2036,9 @@ def create_app():
 
             def run_query() -> None:
                 errored = False
+                result_claim = None
+                result_guard = None
+                result_completed = False
                 try:
                     emit(
                         "stage",
@@ -2014,9 +2049,62 @@ def create_app():
                             "detail": "已收到问题，正在准备 RAG 调用链。",
                         },
                     )
+                    if request.request_id:
+                        result_claim = claim_query_result(
+                            config=config,
+                            tenant_id=auth_context.tenant_id,
+                            request_id=request.request_id,
+                            fingerprint=request_fingerprint,
+                            lease_ms=query_result_lease_ms(),
+                            ttl_ms=query_result_ttl_ms(),
+                        )
+                        if result_claim.mode == "waiting":
+                            emit(
+                                "stage",
+                                {
+                                    "stage": "resume",
+                                    "status": "active",
+                                    "label": "恢复回答",
+                                    "detail": "原请求仍在处理中，正在等待已启动的回答。",
+                                },
+                            )
+                            result_claim = wait_for_query_result(
+                                config=config,
+                                tenant_id=auth_context.tenant_id,
+                                request_id=request.request_id,
+                                fingerprint=request_fingerprint,
+                                lease_ms=query_result_lease_ms(),
+                                ttl_ms=query_result_ttl_ms(),
+                                owner=result_claim.owner,
+                                timeout_seconds=query_result_wait_seconds(),
+                                cancelled=client_disconnected,
+                            )
+                        if result_claim.mode == "cached":
+                            response = QueryResponse.model_validate(result_claim.response or {})
+                            emit(
+                                "stage",
+                                {
+                                    "stage": "resume",
+                                    "status": "done",
+                                    "label": "恢复回答",
+                                    "detail": "已复用原请求生成的回答，无需重复调用模型。",
+                                },
+                            )
+                            emit("result", response.model_dump())
+                            return
+                        result_guard = QueryResultLeaseGuard(
+                            config=config,
+                            tenant_id=auth_context.tenant_id,
+                            request_id=request.request_id,
+                            owner=result_claim.owner,
+                            lease_ms=query_result_lease_ms(),
+                        )
+                        result_guard.start()
                     result = resolve_answer_result(request, auth_context, stage_callback=emit_stage_event)
                     if shared_guard is not None and not shared_guard.valid.is_set():
                         raise RuntimeError("Query admission lease was lost before completion")
+                    if result_guard is not None and not result_guard.valid.is_set():
+                        raise RuntimeError("Query result lease was lost before completion")
                     response = QueryResponse(
                         request_id=result.request_id,
                         answer=result.answer,
@@ -2026,6 +2114,17 @@ def create_app():
                         ],
                         trace=result.trace.__dict__,
                     )
+                    if request.request_id and result_claim is not None:
+                        result_completed = complete_query_result(
+                            config=config,
+                            tenant_id=auth_context.tenant_id,
+                            request_id=request.request_id,
+                            owner=result_claim.owner,
+                            response=response.model_dump(mode="json"),
+                            ttl_ms=query_result_ttl_ms(),
+                        )
+                        if not result_completed:
+                            raise RuntimeError("Query result lease was lost before the answer could be saved")
                     append_event(
                         config.runtime_dir,
                         "answer_events",
@@ -2048,8 +2147,26 @@ def create_app():
                     emit("result", response.model_dump())
                 except Exception as exc:  # noqa: BLE001 - streamed API must serialize failures.
                     errored = True
+                    if (
+                        request.request_id
+                        and result_claim is not None
+                        and result_claim.mode == "owner"
+                        and not result_completed
+                    ):
+                        try:
+                            fail_query_result(
+                                config=config,
+                                tenant_id=auth_context.tenant_id,
+                                request_id=request.request_id,
+                                owner=result_claim.owner,
+                                error=str(exc) or exc.__class__.__name__,
+                            )
+                        except Exception:
+                            pass
                     emit("error", {"detail": public_model_api_error(exc)})
                 finally:
+                    if result_guard is not None:
+                        result_guard.close()
                     record_query_stream_finished(auth_context.tenant_id, user_key, errored=errored)
                     if shared_guard is not None:
                         shared_guard.close()
@@ -2781,6 +2898,17 @@ def resolve_answer_result(request: QueryRequest, auth_context, stage_callback=No
         request_id=request.request_id,
         stage_callback=stage_callback,
     )
+
+
+def query_stream_request_fingerprint(request: QueryRequest, auth_context) -> str:
+    payload = request.model_dump(
+        mode="json",
+        exclude={"request_id", "tenant_id", "acl_groups"},
+    )
+    payload["resolved_tenant_id"] = auth_context.tenant_id
+    payload["resolved_acl_groups"] = sorted(auth_context.acl_groups or [])
+    payload["resolved_principal_id"] = auth_context.user_id or auth_context.credential_id or ""
+    return query_result_fingerprint(payload)
 
 
 def hit_to_response(hit, *, config=None, tenant_id: str = "") -> HitResponse:
