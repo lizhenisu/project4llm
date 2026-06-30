@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import type { Browser, Page } from "@playwright/test";
+import type { Browser, Page, Route } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -26,6 +26,10 @@ const persistenceConcurrency = envInt("FRONTEND_PERSISTENCE_CONCURRENCY", 2);
 const livePersistenceEnabled = process.env.RUN_FRONTEND_LIVE_PERSISTENCE_E2E === "1";
 const livePersistencePageCount = envInt("FRONTEND_LIVE_PERSISTENCE_PAGES", 4);
 const livePersistenceConcurrency = envInt("FRONTEND_LIVE_PERSISTENCE_CONCURRENCY", 2);
+const livePersistenceApiOrigins = (process.env.FRONTEND_LIVE_PERSISTENCE_API_ORIGIN || "")
+  .split(",")
+  .map((origin) => origin.trim().replace(/\/$/, ""))
+  .filter(Boolean);
 const sourceImagePageCount = envInt("FRONTEND_SOURCE_IMAGE_PAGES", 4);
 const sourceImageConcurrency = envInt("FRONTEND_SOURCE_IMAGE_CONCURRENCY", 2);
 const sourceImageCount = envInt("FRONTEND_SOURCE_IMAGE_COUNT", 12);
@@ -379,9 +383,21 @@ test.describe("browser-level frontend load smoke", () => {
       const samples = await runLivePersistencePages(browser, baseURL || "http://127.0.0.1:5173");
       const wallMs = roundMs(performance.now() - started);
       const failures = samples.filter((sample) => !sample.ok);
+      const conversationApiSlotCounts = Array.from(
+        { length: Math.max(1, livePersistenceApiOrigins.length) },
+        (_, slot) => samples.filter((sample) => sample.conversation_api_slot === slot).length,
+      );
       const payload = {
         pages: livePersistencePageCount,
         concurrency: livePersistenceConcurrency,
+        conversation_api_mode:
+          livePersistenceApiOrigins.length > 1
+            ? "round-robin-overrides"
+            : livePersistenceApiOrigins.length === 1
+              ? "override"
+              : "frontend-proxy",
+        conversation_api_origins: Math.max(1, livePersistenceApiOrigins.length),
+        conversation_api_slot_counts: conversationApiSlotCounts,
         wall_ms: wallMs,
         success: samples.length - failures.length,
         failed: failures.length,
@@ -413,6 +429,10 @@ test.describe("browser-level frontend load smoke", () => {
       expect(payload.saved_message_counts.min, JSON.stringify(payload, null, 2)).toBe(2);
       expect(payload.restored_message_counts.min, JSON.stringify(payload, null, 2)).toBe(2);
       expect(payload.cleaned_conversations, JSON.stringify(payload, null, 2)).toBe(livePersistencePageCount);
+      expect(
+        Math.min(...payload.conversation_api_slot_counts),
+        JSON.stringify(payload, null, 2),
+      ).toBeGreaterThan(0);
       expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
       expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
       expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
@@ -2130,6 +2150,10 @@ async function persistConversationWithLiveBackend(
   const apiResponses: Record<string, number> = {};
   const started = performance.now();
   const tenantId = "tenant-fixed-test";
+  const conversationApiSlot = livePersistenceApiOrigins.length
+    ? index % livePersistenceApiOrigins.length
+    : 0;
+  const conversationApiOrigin = livePersistenceApiOrigins[conversationApiSlot] || "";
   const question = `真实持久化并发问题 ${index}`;
   const answer = `Live persisted answer ${index}.`;
   let conversationId = "";
@@ -2189,7 +2213,7 @@ async function persistConversationWithLiveBackend(
           });
           return;
         }
-        const response = await route.fetch();
+        const response = await fetchLiveConversationRoute(route, conversationApiOrigin);
         const payload = await response.json() as { conversations?: Array<Record<string, unknown>> };
         backendListReads += 1;
         await route.fulfill({
@@ -2203,7 +2227,7 @@ async function persistConversationWithLiveBackend(
         return;
       }
       if (request.method() === "POST" && path.endsWith("/conversations")) {
-        const response = await route.fetch();
+        const response = await fetchLiveConversationRoute(route, conversationApiOrigin);
         const payload = await response.json() as {
           id?: string;
           messages?: Array<Record<string, unknown>>;
@@ -2219,7 +2243,7 @@ async function persistConversationWithLiveBackend(
         && conversationId
         && path.endsWith(`/conversations/${conversationId}`)
       ) {
-        const response = await route.fetch();
+        const response = await fetchLiveConversationRoute(route, conversationApiOrigin);
         const payload = await response.json() as { messages?: Array<Record<string, unknown>> };
         backendDetailReads += 1;
         restoredMessageCount = Math.max(restoredMessageCount, payload.messages?.length || 0);
@@ -2253,7 +2277,13 @@ async function persistConversationWithLiveBackend(
     reloadRestoreMs = roundMs(performance.now() - reloadStarted);
 
     const metrics = await collectPageMetrics(page);
-    cleanupOk = await cleanupLiveConversation(page, baseURL, tenantId, conversationId);
+    cleanupOk = await cleanupLiveConversation(
+      page,
+      baseURL,
+      tenantId,
+      conversationId,
+      conversationApiOrigin,
+    );
     await closePage(page);
     return {
       index,
@@ -2276,6 +2306,7 @@ async function persistConversationWithLiveBackend(
       saved_message_count: savedMessageCount,
       restored_message_count: restoredMessageCount,
       cleanup_ok: cleanupOk,
+      conversation_api_slot: conversationApiSlot,
       metrics,
       api_requests: apiRequests,
       console_errors: consoleErrors,
@@ -2283,7 +2314,13 @@ async function persistConversationWithLiveBackend(
       http_failures: httpFailures,
     };
   } catch (error) {
-    cleanupOk = await cleanupLiveConversation(page, baseURL, tenantId, conversationId).catch(() => false);
+    cleanupOk = await cleanupLiveConversation(
+      page,
+      baseURL,
+      tenantId,
+      conversationId,
+      conversationApiOrigin,
+    ).catch(() => false);
     const metrics = await collectPageMetrics(page).catch(() => null);
     await closePage(page);
     return {
@@ -2298,6 +2335,7 @@ async function persistConversationWithLiveBackend(
       saved_message_count: savedMessageCount,
       restored_message_count: restoredMessageCount,
       cleanup_ok: cleanupOk,
+      conversation_api_slot: conversationApiSlot,
       metrics,
       api_requests: apiRequests,
       console_errors: consoleErrors,
@@ -2313,11 +2351,15 @@ async function cleanupLiveConversation(
   baseURL: string,
   tenantId: string,
   conversationId: string,
+  conversationApiOrigin: string,
 ) {
   if (!conversationId) {
     return false;
   }
-  const url = `${baseURL.replace(/\/$/, "")}/api/conversations/${encodeURIComponent(conversationId)}`
+  const apiBase = conversationApiOrigin
+    ? conversationApiOrigin
+    : `${baseURL.replace(/\/$/, "")}/api`;
+  const url = `${apiBase}/conversations/${encodeURIComponent(conversationId)}`
     + `?tenant_id=${encodeURIComponent(tenantId)}`;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const response = await page.request.delete(url, {
@@ -2332,6 +2374,17 @@ async function cleanupLiveConversation(
     await page.waitForTimeout(100 * (attempt + 1));
   }
   return false;
+}
+
+function fetchLiveConversationRoute(route: Route, conversationApiOrigin: string) {
+  if (!conversationApiOrigin) {
+    return route.fetch();
+  }
+  const requestUrl = new URL(route.request().url());
+  const backendPath = requestUrl.pathname.replace(/^\/api/, "");
+  return route.fetch({
+    url: `${conversationApiOrigin}${backendPath}${requestUrl.search}`,
+  });
 }
 
 async function imageChatWithWorkspace(browser: Browser, baseURL: string, index: number): Promise<ImageChatSample> {
@@ -3431,6 +3484,7 @@ type LivePersistenceSample = PersistenceSample & {
   backend_list_reads: number;
   backend_detail_reads: number;
   cleanup_ok: boolean;
+  conversation_api_slot: number;
 };
 
 type SourceImageSample = {
