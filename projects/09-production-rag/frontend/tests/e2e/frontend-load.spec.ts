@@ -17,6 +17,11 @@ const stageBurstConcurrency = envInt("FRONTEND_STAGE_BURST_CONCURRENCY", 2);
 const stageBurstEvents = envInt("FRONTEND_STAGE_BURST_EVENTS", 80);
 const imageChatPageCount = envInt("FRONTEND_IMAGE_CHAT_PAGES", 4);
 const imageChatConcurrency = envInt("FRONTEND_IMAGE_CHAT_CONCURRENCY", 2);
+const persistencePageCount = envInt("FRONTEND_PERSISTENCE_PAGES", 4);
+const persistenceConcurrency = envInt("FRONTEND_PERSISTENCE_CONCURRENCY", 2);
+const sourceImagePageCount = envInt("FRONTEND_SOURCE_IMAGE_PAGES", 4);
+const sourceImageConcurrency = envInt("FRONTEND_SOURCE_IMAGE_CONCURRENCY", 2);
+const sourceImageCount = envInt("FRONTEND_SOURCE_IMAGE_COUNT", 12);
 const token = process.env.FRONTEND_LOAD_TOKEN || "production-rag-fixed-test-login-token";
 const startupMaxDomNodes = envInt("FRONTEND_STARTUP_MAX_DOM_NODES", 500);
 const startupMaxImageNodes = envInt("FRONTEND_STARTUP_MAX_IMAGE_NODES", 10);
@@ -32,6 +37,10 @@ const stageBurstOutputPath =
   process.env.FRONTEND_STAGE_BURST_OUTPUT || "test-results/frontend-stage-burst-summary.json";
 const imageChatOutputPath =
   process.env.FRONTEND_IMAGE_CHAT_OUTPUT || "test-results/frontend-image-chat-summary.json";
+const persistenceOutputPath =
+  process.env.FRONTEND_PERSISTENCE_OUTPUT || "test-results/frontend-persistence-summary.json";
+const sourceImageOutputPath =
+  process.env.FRONTEND_SOURCE_IMAGE_OUTPUT || "test-results/frontend-source-images-summary.json";
 const testTimeoutMs = envInt("FRONTEND_LOAD_TEST_TIMEOUT_MS", 30_000);
 
 test.skip(!enabled, "Set RUN_FRONTEND_LOAD_E2E=1 to run the browser-level frontend load smoke.");
@@ -256,6 +265,88 @@ test.describe("browser-level frontend load smoke", () => {
     expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
     expect(payload.api_requests["POST /query/stream"]?.max || 0, JSON.stringify(payload, null, 2)).toBe(1);
+  });
+
+  test("persists streamed conversations across page reloads", async ({ browser, baseURL }) => {
+    const started = performance.now();
+    const samples = await runPersistencePages(browser, baseURL || "http://127.0.0.1:5173");
+    const wallMs = roundMs(performance.now() - started);
+    const failures = samples.filter((sample) => !sample.ok);
+    const payload = {
+      pages: persistencePageCount,
+      concurrency: persistenceConcurrency,
+      wall_ms: wallMs,
+      success: samples.length - failures.length,
+      failed: failures.length,
+      failure_rate: round(failures.length / Math.max(1, samples.length), 4),
+      total_ms: summarize(samples.map((sample) => sample.total_ms)),
+      query_ms: summarize(samples.map((sample) => sample.query_ms)),
+      reload_restore_ms: summarize(samples.map((sample) => sample.reload_restore_ms)),
+      saved_message_counts: summarize(samples.map((sample) => sample.saved_message_count)),
+      restored_message_counts: summarize(samples.map((sample) => sample.restored_message_count)),
+      metrics: summarizePageMetrics(samples.map((sample) => sample.metrics)),
+      api_requests: summarizeApiRequestCounts(samples.map((sample) => sample.api_requests)),
+      console_errors: samples.reduce((total, sample) => total + sample.console_errors.length, 0),
+      page_errors: samples.reduce((total, sample) => total + sample.page_errors.length, 0),
+      http_failures: samples.reduce((total, sample) => total + sample.http_failures.length, 0),
+      failed_samples: failures.slice(0, 10),
+      samples: samples.slice(0, 20),
+    };
+    mkdirSync(dirname(persistenceOutputPath), { recursive: true });
+    writeFileSync(persistenceOutputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+
+    expect(payload.failed, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.saved_message_counts.min, JSON.stringify(payload, null, 2)).toBe(2);
+    expect(payload.restored_message_counts.min, JSON.stringify(payload, null, 2)).toBe(2);
+    expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.api_requests["POST /conversations"]?.max || 0, JSON.stringify(payload, null, 2)).toBeGreaterThan(0);
+    expect(payload.api_requests["GET /conversations/:id"]?.max || 0, JSON.stringify(payload, null, 2)).toBeGreaterThan(0);
+  });
+
+  test("loads many protected source-reader images across pages", async ({ browser, baseURL }) => {
+    const started = performance.now();
+    const samples = await runSourceImagePages(browser, baseURL || "http://127.0.0.1:5173");
+    const wallMs = roundMs(performance.now() - started);
+    const failures = samples.filter((sample) => !sample.ok);
+    const payload = {
+      pages: sourceImagePageCount,
+      concurrency: sourceImageConcurrency,
+      images_per_page: sourceImageCount,
+      expected_image_assets: sourceImagePageCount * sourceImageCount,
+      wall_ms: wallMs,
+      success: samples.length - failures.length,
+      failed: failures.length,
+      failure_rate: round(failures.length / Math.max(1, samples.length), 4),
+      total_ms: summarize(samples.map((sample) => sample.total_ms)),
+      image_asset_requests: summarize(samples.map((sample) => sample.image_asset_requests)),
+      rendered_images: summarize(samples.map((sample) => sample.rendered_images)),
+      metrics: summarizePageMetrics(samples.map((sample) => sample.metrics)),
+      api_requests: summarizeApiRequestCounts(samples.map((sample) => sample.api_requests)),
+      authorized_asset_requests: samples.reduce((total, sample) => total + sample.authorized_asset_requests, 0),
+      token_leak_requests: samples.reduce((total, sample) => total + sample.token_leak_requests, 0),
+      console_errors: samples.reduce((total, sample) => total + sample.console_errors.length, 0),
+      page_errors: samples.reduce((total, sample) => total + sample.page_errors.length, 0),
+      http_failures: samples.reduce((total, sample) => total + sample.http_failures.length, 0),
+      failed_samples: failures.slice(0, 10),
+      samples: samples.slice(0, 20),
+    };
+    mkdirSync(dirname(sourceImageOutputPath), { recursive: true });
+    writeFileSync(sourceImageOutputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+
+    expect(payload.failed, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.image_asset_requests.min, JSON.stringify(payload, null, 2)).toBeGreaterThanOrEqual(sourceImageCount);
+    expect(payload.rendered_images.min, JSON.stringify(payload, null, 2)).toBe(sourceImageCount);
+    expect(payload.authorized_asset_requests, JSON.stringify(payload, null, 2)).toBeGreaterThanOrEqual(
+      payload.expected_image_assets,
+    );
+    expect(payload.token_leak_requests, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.console_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.page_errors, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.http_failures, JSON.stringify(payload, null, 2)).toBe(0);
+    expect(payload.api_requests["GET /source-assets/:asset"]?.min || 0, JSON.stringify(payload, null, 2))
+      .toBeGreaterThanOrEqual(sourceImageCount);
   });
 
   test("shows stable status text and recovery guidance for ingestion", async ({ page, baseURL }) => {
@@ -1419,6 +1510,237 @@ async function runImageChatPages(browser: Browser, baseURL: string) {
   return results.sort((left, right) => left.index - right.index);
 }
 
+async function runPersistencePages(browser: Browser, baseURL: string) {
+  const results: PersistenceSample[] = [];
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(persistenceConcurrency, persistencePageCount) }, async () => {
+    while (nextIndex < persistencePageCount) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results.push(await persistConversationWithWorkspace(browser, baseURL, index));
+    }
+  });
+  await Promise.all(workers);
+  return results.sort((left, right) => left.index - right.index);
+}
+
+async function runSourceImagePages(browser: Browser, baseURL: string) {
+  const results: SourceImageSample[] = [];
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(sourceImageConcurrency, sourceImagePageCount) }, async () => {
+    while (nextIndex < sourceImagePageCount) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results.push(await sourceImageWorkspace(browser, baseURL, index));
+    }
+  });
+  await Promise.all(workers);
+  return results.sort((left, right) => left.index - right.index);
+}
+
+async function sourceImageWorkspace(browser: Browser, baseURL: string, index: number): Promise<SourceImageSample> {
+  const page = await browser.newPage();
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  const httpFailures: string[] = [];
+  const apiRequests: Record<string, number> = {};
+  const started = performance.now();
+  let imageAssetRequests = 0;
+  let authorizedAssetRequests = 0;
+  let tokenLeakRequests = 0;
+  let renderedImages = 0;
+  try {
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        consoleErrors.push(message.text());
+      }
+    });
+    page.on("pageerror", (error) => {
+      pageErrors.push(error.message);
+    });
+    page.on("request", (request) => {
+      recordApiRequest(apiRequests, request.method(), request.url());
+    });
+    page.on("response", (response) => {
+      if (response.status() >= 500) {
+        httpFailures.push(`${response.status()} ${response.url()}`);
+      }
+    });
+    const source = mockSource(`source-image-gallery-${index}.pdf`, 980 + index, "ready");
+    await seedBrowserSession(page, index);
+    await mockStartupApi(page);
+    await mockSourceImageApi(page, index, source, {
+      onAssetRequest: ({ authorized, tokenLeaked }) => {
+        imageAssetRequests += 1;
+        if (authorized) {
+          authorizedAssetRequests += 1;
+        }
+        if (tokenLeaked) {
+          tokenLeakRequests += 1;
+        }
+      },
+    });
+
+    await page.goto(`${baseURL.replace(/\/$/, "")}/#token=browser-load-token-${index}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(page.locator(".source-row", { hasText: source.title })).toBeVisible();
+    await page.locator(".source-row", { hasText: source.title }).getByRole("button", { name: source.title }).click();
+    const images = page.locator(".source-document-image img");
+    await expect(images).toHaveCount(sourceImageCount);
+    for (let imageIndex = 0; imageIndex < sourceImageCount; imageIndex += 1) {
+      const image = images.nth(imageIndex);
+      await expect(image).toHaveAttribute("loading", "lazy");
+      await expect(image).toHaveAttribute("decoding", "async");
+      await image.scrollIntoViewIfNeeded();
+    }
+    await expect.poll(() => imageAssetRequests, { timeout: 12_000 }).toBeGreaterThanOrEqual(sourceImageCount);
+    for (let imageIndex = 0; imageIndex < sourceImageCount; imageIndex += 1) {
+      await expect(images.nth(imageIndex)).toHaveAttribute("src", /^blob:/);
+    }
+    renderedImages = await images.evaluateAll((nodes) =>
+      nodes.filter((node) => node instanceof HTMLImageElement && node.src.startsWith("blob:")).length,
+    );
+    const metrics = await collectPageMetrics(page);
+    await closePage(page);
+    return {
+      index,
+      ok:
+        consoleErrors.length === 0 &&
+        pageErrors.length === 0 &&
+        httpFailures.length === 0 &&
+        imageAssetRequests >= sourceImageCount &&
+        authorizedAssetRequests >= sourceImageCount &&
+        tokenLeakRequests === 0 &&
+        renderedImages === sourceImageCount,
+      total_ms: roundMs(performance.now() - started),
+      image_asset_requests: imageAssetRequests,
+      authorized_asset_requests: authorizedAssetRequests,
+      token_leak_requests: tokenLeakRequests,
+      rendered_images: renderedImages,
+      metrics,
+      api_requests: apiRequests,
+      console_errors: consoleErrors,
+      page_errors: pageErrors,
+      http_failures: httpFailures,
+    };
+  } catch (error) {
+    const metrics = await collectPageMetrics(page).catch(() => null);
+    await closePage(page);
+    return {
+      index,
+      ok: false,
+      total_ms: roundMs(performance.now() - started),
+      image_asset_requests: imageAssetRequests,
+      authorized_asset_requests: authorizedAssetRequests,
+      token_leak_requests: tokenLeakRequests,
+      rendered_images: renderedImages,
+      metrics,
+      api_requests: apiRequests,
+      console_errors: consoleErrors,
+      page_errors: pageErrors,
+      http_failures: httpFailures,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function persistConversationWithWorkspace(
+  browser: Browser,
+  baseURL: string,
+  index: number,
+): Promise<PersistenceSample> {
+  const page = await browser.newPage();
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  const httpFailures: string[] = [];
+  const apiRequests: Record<string, number> = {};
+  const started = performance.now();
+  let queryMs = 0;
+  let reloadRestoreMs = 0;
+  let savedMessageCount = 0;
+  let restoredMessageCount = 0;
+  try {
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        consoleErrors.push(message.text());
+      }
+    });
+    page.on("pageerror", (error) => {
+      pageErrors.push(error.message);
+    });
+    page.on("request", (request) => {
+      recordApiRequest(apiRequests, request.method(), request.url());
+    });
+    page.on("response", (response) => {
+      if (response.status() >= 500) {
+        httpFailures.push(`${response.status()} ${response.url()}`);
+      }
+    });
+    const state = await mockPersistenceApi(page, index);
+
+    await page.goto(`${baseURL.replace(/\/$/, "")}/#token=browser-load-persistence-token-${index}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(page.getByRole("heading", { name: "对话" })).toBeVisible();
+    const question = `持久化并发问题 ${index}`;
+    const answer = `Persisted answer ${index}.`;
+    const queryStarted = performance.now();
+    await page.locator("#chat-input-textarea").fill(question);
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await expect(page.getByText(answer)).toBeVisible({ timeout: 12_000 });
+    queryMs = roundMs(performance.now() - queryStarted);
+    savedMessageCount = state.conversation?.messages.length || 0;
+
+    const reloadStarted = performance.now();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByText(question)).toBeVisible({ timeout: 12_000 });
+    await expect(page.getByText(answer)).toBeVisible({ timeout: 12_000 });
+    reloadRestoreMs = roundMs(performance.now() - reloadStarted);
+    restoredMessageCount = state.conversation?.messages.length || 0;
+
+    const metrics = await collectPageMetrics(page);
+    await closePage(page);
+    return {
+      index,
+      ok:
+        consoleErrors.length === 0 &&
+        pageErrors.length === 0 &&
+        httpFailures.length === 0 &&
+        savedMessageCount >= 2 &&
+        restoredMessageCount >= 2,
+      total_ms: roundMs(performance.now() - started),
+      query_ms: queryMs,
+      reload_restore_ms: reloadRestoreMs,
+      saved_message_count: savedMessageCount,
+      restored_message_count: restoredMessageCount,
+      metrics,
+      api_requests: apiRequests,
+      console_errors: consoleErrors,
+      page_errors: pageErrors,
+      http_failures: httpFailures,
+    };
+  } catch (error) {
+    const metrics = await collectPageMetrics(page).catch(() => null);
+    await closePage(page);
+    return {
+      index,
+      ok: false,
+      total_ms: roundMs(performance.now() - started),
+      query_ms: queryMs,
+      reload_restore_ms: reloadRestoreMs,
+      saved_message_count: savedMessageCount,
+      restored_message_count: restoredMessageCount,
+      metrics,
+      api_requests: apiRequests,
+      console_errors: consoleErrors,
+      page_errors: pageErrors,
+      http_failures: httpFailures,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function imageChatWithWorkspace(browser: Browser, baseURL: string, index: number): Promise<ImageChatSample> {
   const page = await browser.newPage();
   const consoleErrors: string[] = [];
@@ -1929,6 +2251,59 @@ async function mockStartupApi(page: Page) {
   });
 }
 
+async function mockSourceImageApi(
+  page: Page,
+  index: number,
+  source: ReturnType<typeof mockSource>,
+  callbacks: { onAssetRequest: (value: { authorized: boolean; tokenLeaked: boolean }) => void },
+) {
+  await page.route("**/api/source-assets/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    callbacks.onAssetRequest({
+      authorized: request.headers().authorization === `Bearer browser-load-token-${index}`,
+      tokenLeaked: url.searchParams.has("token"),
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: "image/png",
+      body: sourceImagePng(),
+    });
+  });
+  await page.route("**/api/sources**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path.includes("/sources/content/")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...source,
+          guide: "Source image gallery used for browser load testing.",
+          tags: ["image", "load-test"],
+          text: "",
+          child_doc_ids: [source.doc_id],
+          blocks: Array.from({ length: sourceImageCount }, (_, imageIndex) => ({
+            type: "image",
+            title: `Architecture figure ${imageIndex + 1}`,
+            page: `p${imageIndex + 1}`,
+            url:
+              `/api/source-assets/browser-load-source-${index}-figure-${imageIndex + 1}.png`
+              + `?token=legacy-source-image-token-${index}-${imageIndex}`,
+          })),
+          suggested_title: source.title,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ sources: [source] }),
+    });
+  });
+}
+
 async function mockImageChatApi(
   page: Page,
   index: number,
@@ -2020,6 +2395,131 @@ async function mockImageChatApi(
   });
 }
 
+async function mockPersistenceApi(page: Page, index: number) {
+  const now = Date.now();
+  const state: {
+    conversation: {
+      id: string;
+      tenant_id: string;
+      title: string;
+      messages: Array<Record<string, unknown>>;
+      source_doc_ids: string[];
+      created_at: number;
+      updated_at: number;
+    } | null;
+  } = { conversation: null };
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith("/health")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok" }) });
+      return;
+    }
+    if (path.endsWith("/auth/me")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: `persistence-user-${index}`,
+          username: `persistence-user-${index}`,
+          display_name: `Persistence User ${index}`,
+          role: "user",
+          tenant_id: `browser-load-persistence-tenant-${index}`,
+          created_at: now,
+          status: "active",
+        }),
+      });
+      return;
+    }
+    if (path.endsWith("/admin/settings")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ registration_enabled: true, latest_announcement: null }),
+      });
+      return;
+    }
+    if (path.endsWith("/announcements")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ announcements: [] }) });
+      return;
+    }
+    if (path.endsWith("/sources")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sources: [] }) });
+      return;
+    }
+    if (path.endsWith("/artifacts")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ artifacts: [] }) });
+      return;
+    }
+    if (path.endsWith("/conversations") && request.method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          conversations: state.conversation
+            ? [{
+                id: state.conversation.id,
+                tenant_id: state.conversation.tenant_id,
+                title: state.conversation.title,
+                message_count: state.conversation.messages.length,
+                source_doc_ids: state.conversation.source_doc_ids,
+                created_at: state.conversation.created_at,
+                updated_at: state.conversation.updated_at,
+              }]
+            : [],
+        }),
+      });
+      return;
+    }
+    if (path.endsWith(`/conversations/persistence-conversation-${index}`) && request.method() === "GET") {
+      await route.fulfill({
+        status: state.conversation ? 200 : 404,
+        contentType: "application/json",
+        body: JSON.stringify(state.conversation || { detail: "Conversation not found" }),
+      });
+      return;
+    }
+    if (path.endsWith("/conversations") && request.method() === "POST") {
+      const body = JSON.parse(request.postData() || "{}") as {
+        title?: string;
+        messages?: Array<Record<string, unknown>>;
+        source_doc_ids?: string[];
+      };
+      state.conversation = {
+        id: `persistence-conversation-${index}`,
+        tenant_id: `browser-load-persistence-tenant-${index}`,
+        title: body.title || `Persistence conversation ${index}`,
+        messages: body.messages || [],
+        source_doc_ids: body.source_doc_ids || [],
+        created_at: state.conversation?.created_at || now,
+        updated_at: Date.now(),
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(state.conversation),
+      });
+      return;
+    }
+    if (path.endsWith("/query/stream") && request.method() === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/x-ndjson",
+        body: `${JSON.stringify({
+          type: "result",
+          request_id: `persistence-request-${index}`,
+          answer: `Persisted answer ${index}.`,
+          citations: [],
+          trace: {},
+        })}\n`,
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok" }) });
+  });
+  return state;
+}
+
 function largeChatImageSvg(index: number) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="3200" height="1800"><rect width="3200" height="1800" fill="#ffffff"/><text x="120" y="220" font-size="120" fill="#111827">large chat image ${index}</text></svg>`;
 }
@@ -2053,6 +2553,15 @@ function mockSource(title: string, index: number, status: "processing" | "ready"
     updated_at: now,
     child_doc_ids: status === "ready" ? [`${docId}@sha256-ready`] : [],
   };
+}
+
+function sourceImagePng() {
+  // 1x1 PNG. The test pressure comes from concurrent protected image requests
+  // and React/source-reader rendering, not from synthetic image byte size.
+  return Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+    "base64",
+  );
 }
 
 async function waitForNetworkQuiet(page: Page, quietMs: number, timeoutMs: number) {
@@ -2180,6 +2689,38 @@ type ImageChatSample = {
   compressed_preview: boolean;
   compressed_stream_payload: boolean;
   compressed_saved_message: boolean;
+  metrics: PageMetrics | null;
+  api_requests: Record<string, number>;
+  console_errors: string[];
+  page_errors: string[];
+  http_failures: string[];
+  error?: string;
+};
+
+type PersistenceSample = {
+  index: number;
+  ok: boolean;
+  total_ms: number;
+  query_ms: number;
+  reload_restore_ms: number;
+  saved_message_count: number;
+  restored_message_count: number;
+  metrics: PageMetrics | null;
+  api_requests: Record<string, number>;
+  console_errors: string[];
+  page_errors: string[];
+  http_failures: string[];
+  error?: string;
+};
+
+type SourceImageSample = {
+  index: number;
+  ok: boolean;
+  total_ms: number;
+  image_asset_requests: number;
+  authorized_asset_requests: number;
+  token_leak_requests: number;
+  rendered_images: number;
   metrics: PageMetrics | null;
   api_requests: Record<string, number>;
   console_errors: string[];

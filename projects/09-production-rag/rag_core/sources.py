@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import shutil
 import hashlib
 import json
+import logging
 import mimetypes
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -50,6 +51,7 @@ from rag_core.versioning import load_current_versions, publish_current_versions,
 MIN_EMBEDDABLE_IMAGE_SIDE = 8
 MIN_EMBEDDABLE_IMAGE_PIXELS = 32
 MAX_EMBEDDABLE_IMAGE_ASPECT_RATIO = 20.0
+LOGGER = logging.getLogger(__name__)
 
 
 SUPPORTED_FILE_SUFFIXES = {".pdf", ".html", ".htm", ".md", ".txt", ".csv", ".tsv"}
@@ -1290,14 +1292,24 @@ def generate_ingested_source_guides(
         source_docs = sorted(source_docs, key=source_document_sort_key)
         if not source_docs:
             continue
-        get_or_create_source_guide(
-            config=config,
-            tenant_id=source_docs[0].tenant_id,
-            source_doc_id=source.doc_id,
-            doc_version=source.doc_version,
-            doc_title=source.title,
-            docs=source_docs,
-        )
+        try:
+            get_or_create_source_guide(
+                config=config,
+                tenant_id=source_docs[0].tenant_id,
+                source_doc_id=source.doc_id,
+                doc_version=source.doc_version,
+                doc_title=source.title,
+                docs=source_docs,
+            )
+        except Exception as exc:  # noqa: BLE001 - source guides are an optional ingestion enhancement.
+            LOGGER.warning(
+                "Source guide generation failed for tenant=%s source=%s version=%s; "
+                "continuing ingestion without a guide: %s",
+                source_docs[0].tenant_id,
+                source.doc_id,
+                source.doc_version,
+                exc,
+            )
         save_source_section_summaries(
             config.object_store_dir,
             tenant_id=source_docs[0].tenant_id,

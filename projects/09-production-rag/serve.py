@@ -54,7 +54,7 @@ from rag_core.jsonl_store import (
     s3_key,
     unquote_object_uri,
 )
-from rag_core.model_api_retry import model_api_metrics_snapshot
+from rag_core.model_api_retry import model_api_metrics_snapshot, public_model_api_error
 from rag_core.milvus_store import milvus_client_metrics_snapshot
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.query_admission import (
@@ -2048,7 +2048,7 @@ def create_app():
                     emit("result", response.model_dump())
                 except Exception as exc:  # noqa: BLE001 - streamed API must serialize failures.
                     errored = True
-                    emit("error", {"detail": str(exc) or exc.__class__.__name__})
+                    emit("error", {"detail": public_model_api_error(exc)})
                 finally:
                     record_query_stream_finished(auth_context.tenant_id, user_key, errored=errored)
                     if shared_guard is not None:
@@ -2500,7 +2500,7 @@ def build_mindmap_background(artifact: MindMapArtifact, context_limit: int) -> N
             replace(artifact, status="ready", root=root, updated_at=int(time.time() * 1000)),
         )
     except Exception as exc:
-        fail_metadata_artifact(config, artifact, str(exc))
+        fail_metadata_artifact(config, artifact, public_model_api_error(exc))
 
 
 def build_table_background(artifact: MindMapArtifact) -> None:
@@ -2517,7 +2517,7 @@ def build_table_background(artifact: MindMapArtifact) -> None:
             replace(artifact, status="ready", table=table, updated_at=int(time.time() * 1000)),
         )
     except Exception as exc:
-        fail_metadata_artifact(config, artifact, str(exc))
+        fail_metadata_artifact(config, artifact, public_model_api_error(exc))
 
 
 def migrate_legacy_artifacts(config, *, tenant_id: str) -> None:

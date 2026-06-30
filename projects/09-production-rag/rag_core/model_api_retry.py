@@ -4,9 +4,10 @@ import os
 import re
 import threading
 import time
-from contextlib import contextmanager
 from collections.abc import Callable
-from typing import TypeVar
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, TypeVar
 
 
 T = TypeVar("T")
@@ -21,6 +22,16 @@ _MODEL_API_METRICS = {
     "rejected_total": 0,
 }
 _MODEL_API_OPERATION_METRICS: dict[str, dict[str, int | float]] = {}
+_LLM_FAILOVER_LOCK = threading.Lock()
+_LLM_PRIMARY_CIRCUITS: dict[tuple[str, str], float] = {}
+
+
+@dataclass(frozen=True)
+class ChatCompletionResult:
+    response: Any
+    model: str
+    backend: str
+    client: Any
 
 
 def call_model_api_with_retries(operation: str, func: Callable[[], T]) -> T:
@@ -52,6 +63,148 @@ def call_model_api_with_retries(operation: str, func: Callable[[], T]) -> T:
             succeeded=succeeded,
             latency_ms=(time.perf_counter() - started) * 1000,
         )
+
+
+def chat_completion_with_fallback(
+    *,
+    config,
+    operation: str,
+    messages: list[dict[str, object]],
+    **kwargs: object,
+) -> ChatCompletionResult:
+    from openai import OpenAI
+
+    if not config.llm_base_url or not config.llm_api_key:
+        raise RuntimeError("NEW_API_URL/NEW_API_KEY must be configured for model generation.")
+    fallback = resolve_llm_fallback(config)
+    primary_client = OpenAI(
+        base_url=config.llm_base_url,
+        api_key=config.llm_api_key,
+        max_retries=0,
+    )
+    primary_key = (str(config.llm_base_url), str(config.llm_model))
+    if fallback is not None and llm_primary_circuit_open(primary_key):
+        return call_fallback_completion(
+            fallback=fallback,
+            operation=operation,
+            messages=messages,
+            kwargs=kwargs,
+        )
+    try:
+        response = call_model_api_with_retries(
+            operation,
+            lambda: primary_client.chat.completions.create(
+                model=config.llm_model,
+                messages=messages,
+                **kwargs,
+            ),
+        )
+    except Exception as exc:
+        if fallback is None or not is_transient_model_api_error(exc):
+            raise
+        open_llm_primary_circuit(primary_key)
+        return call_fallback_completion(
+            fallback=fallback,
+            operation=operation,
+            messages=messages,
+            kwargs=kwargs,
+        )
+    close_llm_primary_circuit(primary_key)
+    return ChatCompletionResult(
+        response=response,
+        model=config.llm_model,
+        backend="newapi",
+        client=primary_client,
+    )
+
+
+def call_fallback_completion(
+    *,
+    fallback: tuple[str, str, str, str],
+    operation: str,
+    messages: list[dict[str, object]],
+    kwargs: dict[str, object],
+) -> ChatCompletionResult:
+    from openai import OpenAI
+
+    fallback_base_url, fallback_api_key, fallback_model, fallback_backend = fallback
+    fallback_client = OpenAI(
+        base_url=fallback_base_url,
+        api_key=fallback_api_key,
+        max_retries=0,
+    )
+    response = call_model_api_with_retries(
+        f"{operation}_fallback",
+        lambda: fallback_client.chat.completions.create(
+            model=fallback_model,
+            messages=messages,
+            **kwargs,
+        ),
+    )
+    return ChatCompletionResult(
+        response=response,
+        model=fallback_model,
+        backend=fallback_backend,
+        client=fallback_client,
+    )
+
+
+def llm_primary_circuit_open(key: tuple[str, str]) -> bool:
+    now = time.monotonic()
+    with _LLM_FAILOVER_LOCK:
+        expires_at = _LLM_PRIMARY_CIRCUITS.get(key, 0.0)
+        if expires_at <= now:
+            _LLM_PRIMARY_CIRCUITS.pop(key, None)
+            return False
+        return True
+
+
+def open_llm_primary_circuit(key: tuple[str, str]) -> None:
+    cooldown = env_float("RAG_LLM_FAILOVER_COOLDOWN_SECONDS", 60.0)
+    if cooldown <= 0:
+        return
+    with _LLM_FAILOVER_LOCK:
+        _LLM_PRIMARY_CIRCUITS[key] = time.monotonic() + cooldown
+
+
+def close_llm_primary_circuit(key: tuple[str, str]) -> None:
+    with _LLM_FAILOVER_LOCK:
+        _LLM_PRIMARY_CIRCUITS.pop(key, None)
+
+
+def reset_llm_failover_state() -> None:
+    with _LLM_FAILOVER_LOCK:
+        _LLM_PRIMARY_CIRCUITS.clear()
+
+
+def resolve_llm_fallback(config) -> tuple[str, str, str, str] | None:
+    base_url = normalize_openai_base_url(os.environ.get("RAG_LLM_FALLBACK_BASE_URL", ""))
+    model = os.environ.get("RAG_LLM_FALLBACK_MODEL", "").strip()
+    if not base_url or not model:
+        return None
+    api_key = os.environ.get("RAG_LLM_FALLBACK_API_KEY", "").strip()
+    siliconflow_base_url = normalize_openai_base_url(
+        str(getattr(config, "siliconflow_base_url", "") or "")
+    )
+    if not api_key and base_url == siliconflow_base_url:
+        api_key = str(getattr(config, "siliconflow_api_key", "") or "").strip()
+    if not api_key:
+        return None
+    backend = os.environ.get("RAG_LLM_FALLBACK_BACKEND", "fallback").strip() or "fallback"
+    return base_url, api_key, model, backend
+
+
+def normalize_openai_base_url(value: str) -> str:
+    base_url = value.strip().rstrip("/")
+    if base_url and not base_url.endswith("/v1"):
+        base_url = f"{base_url}/v1"
+    return base_url
+
+
+def public_model_api_error(exc: Exception) -> str:
+    if is_transient_model_api_error(exc):
+        return "大模型服务暂时不可用，请稍后重试。"
+    return str(exc) or exc.__class__.__name__
 
 
 @contextmanager

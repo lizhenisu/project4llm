@@ -25,7 +25,7 @@ class FakeCompletions:
 
 
 class FakeOpenAI:
-    def __init__(self, *, base_url: str, api_key: str) -> None:
+    def __init__(self, *, base_url: str, api_key: str, **_kwargs) -> None:
         self.chat = SimpleNamespace(completions=FakeCompletions())
 
 
@@ -51,12 +51,13 @@ def main() -> None:
         rewritten = llm_rewrite(
             "现在怎么处理？",
             ["第一轮", "第二轮", "第三轮"],
+            [],
             config,
         )
         assert rewritten == "改写后的独立检索 query"
         request = FakeCompletions.last_request
         assert request is not None
-        assert request["max_tokens"] == 384
+        assert request["max_tokens"] == 1024
         user_message = request["messages"][1]["content"]  # type: ignore[index]
         assert "第一轮" not in user_message
         assert "第二轮" in user_message

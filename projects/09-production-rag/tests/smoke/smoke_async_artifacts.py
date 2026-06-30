@@ -15,7 +15,7 @@ from serve import create_app
 
 
 class FakeOpenAI:
-    def __init__(self, *, base_url: str, api_key: str) -> None:
+    def __init__(self, *, base_url: str, api_key: str, **_kwargs) -> None:
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
     def create(self, *, model: str, messages: list[dict], temperature: float):
