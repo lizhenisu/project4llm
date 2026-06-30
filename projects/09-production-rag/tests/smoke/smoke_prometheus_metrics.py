@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from rag_core.model_api_retry import call_model_api_with_retries  # noqa: E402
 def main() -> None:
     with isolated_runtime():
         seed_ingestion_stage_stats()
+        seed_query_result_cache()
         api = TestClient(serve.create_app())
         assert call_model_api_with_retries("metrics_smoke", lambda: "ok") == "ok"
         serve.record_query_image_size(64 * 1024, accepted=True)
@@ -43,6 +45,13 @@ def main() -> None:
     assert "private-doc" not in text
     assert "sha256-secret" not in text
     assert 'rag_query_stream_events_total{event="rejected_user"}' in text
+    assert 'rag_query_result_cache_entries{status="processing"} 0' in text
+    assert 'rag_query_result_cache_entries{status="completed"} 1' in text
+    assert 'rag_query_result_cache_entries{status="failed"} 0' in text
+    assert "rag_query_result_cache_expired_entries 0" in text
+    assert "rag_query_result_events 1" in text
+    assert "metrics-private-tenant" not in text
+    assert "metrics-private-request" not in text
     assert 'rag_query_shared_admission_slots{scope="global"}' in text
     assert 'rag_query_shared_admission_slots{scope="tenant"}' in text
     assert 'rag_query_shared_admission_slots{scope="user"}' in text
@@ -91,6 +100,38 @@ def seed_ingestion_stage_stats() -> None:
             )
             VALUES ('txt', 'text_embedding', 2, 8000, 1)
             """
+        )
+
+
+def seed_query_result_cache() -> None:
+    config = load_config()
+    timestamp = int(time.time() * 1000)
+    with connect_metadata_db(config) as conn:
+        conn.execute(
+            """
+            INSERT INTO query_result_cache(
+                tenant_id, request_id, request_fingerprint, status, lease_owner,
+                lease_expires_at, response_json, error, created_at, updated_at, expires_at
+            )
+            VALUES (?, ?, ?, 'completed', '', 0, '{}', '', ?, ?, ?)
+            """,
+            (
+                "metrics-private-tenant",
+                "metrics-private-request",
+                "metrics-private-fingerprint",
+                timestamp,
+                timestamp,
+                timestamp + 60_000,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO query_result_events(
+                tenant_id, request_id, sequence, event_json, created_at
+            )
+            VALUES (?, ?, 1, '{}', ?)
+            """,
+            ("metrics-private-tenant", "metrics-private-request", timestamp),
         )
 
 

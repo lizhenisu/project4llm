@@ -65,9 +65,11 @@ from rag_core.query_admission import (
 )
 from rag_core.query_results import (
     QueryResultLeaseGuard,
+    append_query_result_event,
     claim_query_result,
     complete_query_result,
     fail_query_result,
+    list_query_result_events,
     query_result_cache_snapshot,
     query_result_fingerprint,
     wait_for_query_result,
@@ -505,6 +507,7 @@ def query_stream_metrics_snapshot() -> dict[str, object]:
 def prometheus_metrics_text(config) -> str:
     http = http_metrics_snapshot()
     query_stream = query_stream_metrics_snapshot()
+    query_results = query_result_cache_snapshot(config=config)
     query_images = query_image_metrics_snapshot()
     model_api = model_api_metrics_snapshot()
     metadata = metadata_pool_metrics_snapshot()
@@ -585,6 +588,28 @@ def prometheus_metrics_text(config) -> str:
         ("event_queue_backpressure", "event_queue_backpressure_total"),
     ):
         lines.append(f'rag_query_stream_events_total{{event="{event}"}} {int(query_stream[key])}')
+
+    lines.extend(
+        [
+            "# HELP rag_query_result_cache_entries Current durable query-result rows by status.",
+            "# TYPE rag_query_result_cache_entries gauge",
+        ]
+    )
+    for status in ("processing", "completed", "failed"):
+        lines.append(
+            f'rag_query_result_cache_entries{{status="{status}"}} '
+            f'{int(query_results[status])}'
+        )
+    lines.extend(
+        [
+            "# HELP rag_query_result_cache_expired_entries Durable query-result rows past their retention deadline.",
+            "# TYPE rag_query_result_cache_expired_entries gauge",
+            f"rag_query_result_cache_expired_entries {int(query_results['expired'])}",
+            "# HELP rag_query_result_events Current durable partial-stream events retained for replay.",
+            "# TYPE rag_query_result_events gauge",
+            f"rag_query_result_events {int(query_results['events'])}",
+        ]
+    )
 
     lines.extend(
         [
@@ -2031,9 +2056,6 @@ def create_app():
             def emit(event_type: str, payload: dict[str, object]) -> bool:
                 return enqueue_event({"type": event_type, **payload})
 
-            def emit_stage_event(payload: dict[str, object]) -> None:
-                emit("stage", payload)
-
             def run_query() -> None:
                 errored = False
                 result_claim = None
@@ -2050,6 +2072,7 @@ def create_app():
                         },
                     )
                     if request.request_id:
+                        waited_for_existing_result = False
                         result_claim = claim_query_result(
                             config=config,
                             tenant_id=auth_context.tenant_id,
@@ -2059,6 +2082,7 @@ def create_app():
                             ttl_ms=query_result_ttl_ms(),
                         )
                         if result_claim.mode == "waiting":
+                            waited_for_existing_result = True
                             emit(
                                 "stage",
                                 {
@@ -2078,9 +2102,17 @@ def create_app():
                                 owner=result_claim.owner,
                                 timeout_seconds=query_result_wait_seconds(),
                                 cancelled=client_disconnected,
+                                on_event=lambda event: enqueue_event(event),
                             )
                         if result_claim.mode == "cached":
                             response = QueryResponse.model_validate(result_claim.response or {})
+                            if not waited_for_existing_result:
+                                for _sequence, event in list_query_result_events(
+                                    config=config,
+                                    tenant_id=auth_context.tenant_id,
+                                    request_id=request.request_id,
+                                ):
+                                    enqueue_event(event)
                             emit(
                                 "stage",
                                 {
@@ -2100,7 +2132,23 @@ def create_app():
                             lease_ms=query_result_lease_ms(),
                         )
                         result_guard.start()
-                    result = resolve_answer_result(request, auth_context, stage_callback=emit_stage_event)
+
+                    def emit_owned_stage(payload: dict[str, object]) -> None:
+                        event: dict[str, object] = {"type": "stage", **payload}
+                        if request.request_id and result_claim is not None:
+                            sequence = append_query_result_event(
+                                config=config,
+                                tenant_id=auth_context.tenant_id,
+                                request_id=request.request_id,
+                                owner=result_claim.owner,
+                                event=event,
+                            )
+                            if sequence is None:
+                                raise RuntimeError("Query result lease was lost while saving stream progress")
+                            event["sequence"] = sequence
+                        enqueue_event(event)
+
+                    result = resolve_answer_result(request, auth_context, stage_callback=emit_owned_stage)
                     if shared_guard is not None and not shared_guard.valid.is_set():
                         raise RuntimeError("Query admission lease was lost before completion")
                     if result_guard is not None and not result_guard.valid.is_set():

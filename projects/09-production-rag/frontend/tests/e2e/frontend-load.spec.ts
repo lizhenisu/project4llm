@@ -1290,13 +1290,31 @@ test.describe("browser-level frontend load smoke", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/x-ndjson",
-        body: `${JSON.stringify({
-          type: "result",
-          request_id: body.request_id,
-          answer: "Recovered answer after browser reload.",
-          citations: [],
-          trace: {},
-        })}\n`,
+        body: [
+          JSON.stringify({
+            type: "stage",
+            sequence: 1,
+            stage: "search",
+            status: "active",
+            label: "恢复历史检索阶段",
+            detail: "正在重放原请求的检索进度。",
+          }),
+          JSON.stringify({
+            type: "stage",
+            sequence: 2,
+            stage: "search",
+            status: "done",
+            label: "恢复历史检索阶段",
+            detail: "原请求的检索进度已恢复。",
+          }),
+          JSON.stringify({
+            type: "result",
+            request_id: body.request_id,
+            answer: "Recovered answer after browser reload.",
+            citations: [],
+            trace: {},
+          }),
+        ].join("\n") + "\n",
       });
     });
 
@@ -1314,6 +1332,8 @@ test.describe("browser-level frontend load smoke", () => {
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.getByText("Recovered answer after browser reload.")).toBeVisible();
+    await page.getByText("已思考").click();
+    await expect(page.getByText("原请求的检索进度已恢复。")).toBeVisible();
     await expect(page.getByText("测试断流恢复")).toBeVisible();
     await expect.poll(() => queryAttempts).toBe(2);
     expect(queryRequestIds[0]).toMatch(/^[0-9a-f-]{36}$/);

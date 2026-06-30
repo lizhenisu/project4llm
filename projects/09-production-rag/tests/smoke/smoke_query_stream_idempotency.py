@@ -51,7 +51,25 @@ def main() -> None:
         def resolve_once(request, _auth_context, stage_callback=None):
             calls["count"] += 1
             started.set()
+            if stage_callback is not None:
+                stage_callback(
+                    {
+                        "stage": "search",
+                        "status": "active",
+                        "label": "向量检索",
+                        "detail": "正在检索。",
+                    }
+                )
             assert release.wait(timeout=5)
+            if stage_callback is not None:
+                stage_callback(
+                    {
+                        "stage": "search",
+                        "status": "done",
+                        "label": "向量检索",
+                        "detail": "检索完成。",
+                    }
+                )
             return SimpleNamespace(
                 request_id=request.request_id,
                 answer="generated exactly once",
@@ -92,10 +110,17 @@ def main() -> None:
             assert all(events[-1]["type"] == "result" for events in parsed), parsed
             assert all(events[-1]["answer"] == "generated exactly once" for events in parsed)
             assert any(any(event.get("stage") == "resume" for event in events) for events in parsed)
+            replayed = next(events for events in parsed if any(event.get("stage") == "resume" for event in events))
+            assert [event["status"] for event in replayed if event.get("stage") == "search"] == [
+                "active",
+                "done",
+            ]
+            assert [event["sequence"] for event in replayed if event.get("stage") == "search"] == [1, 2]
 
             replay = api.post("/query/stream", json=payload)
             replay_events = parse_events(replay)
             assert replay_events[-1]["answer"] == "generated exactly once"
+            assert [event["sequence"] for event in replay_events if event.get("stage") == "search"] == [1, 2]
             assert calls["count"] == 1
 
             conflict = api.post(

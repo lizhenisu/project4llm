@@ -87,6 +87,16 @@ def main() -> None:
         "avg by (source_type, stage) (rag_ingestion_stage_duration_seconds_average)",
         "sum by (source_type, stage) (rag_ingestion_stage_samples)",
     ]
+    recovery_panel = next(
+        panel for panel in dashboard["panels"]
+        if panel["title"] == "Query Recovery Cache"
+    )
+    recovery_expressions = [target["expr"] for target in recovery_panel["targets"]]
+    assert recovery_expressions == [
+        "sum by (status) (rag_query_result_cache_entries)",
+        "sum(rag_query_result_cache_expired_entries)",
+        "sum(rag_query_result_events)",
+    ]
     print("smoke_observability_config=ok")
 
 

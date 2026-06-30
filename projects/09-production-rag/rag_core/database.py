@@ -489,6 +489,17 @@ ON query_result_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_query_result_cache_status_lease
 ON query_result_cache(status, lease_expires_at);
 
+CREATE TABLE IF NOT EXISTS query_result_events (
+    tenant_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    event_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(tenant_id, request_id, sequence),
+    FOREIGN KEY(tenant_id, request_id)
+        REFERENCES query_result_cache(tenant_id, request_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS upload_admission_slots (
     scope_type TEXT NOT NULL,
     scope_key TEXT NOT NULL,

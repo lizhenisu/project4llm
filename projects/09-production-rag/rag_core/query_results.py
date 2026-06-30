@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any, Literal
 
 from rag_core.config import RagConfig
@@ -165,6 +166,10 @@ def claim_query_result(
                 ),
             )
             if int(takeover.rowcount or 0) == 1:
+                conn.execute(
+                    "DELETE FROM query_result_events WHERE tenant_id = ? AND request_id = ?",
+                    (tenant_id, request_id),
+                )
                 return QueryResultClaim(mode="owner", owner=resolved_owner)
     return QueryResultClaim(mode="waiting", owner=resolved_owner)
 
@@ -180,13 +185,25 @@ def wait_for_query_result(
     owner: str,
     timeout_seconds: float,
     cancelled: threading.Event | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> QueryResultClaim:
     deadline = time.monotonic() + max(0.1, float(timeout_seconds))
     poll_seconds = query_result_poll_seconds()
     max_poll_seconds = query_result_poll_max_seconds()
+    last_sequence = 0
     while time.monotonic() < deadline:
         if cancelled is not None and cancelled.is_set():
             raise QueryResultWaitTimeout("Client disconnected while waiting for the original query")
+        events = list_query_result_events(
+            config=config,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            after_sequence=last_sequence,
+        )
+        for sequence, event in events:
+            last_sequence = sequence
+            if on_event is not None:
+                on_event(event)
         claim = claim_query_result(
             config=config,
             tenant_id=tenant_id,
@@ -197,10 +214,98 @@ def wait_for_query_result(
             owner=owner,
         )
         if claim.mode != "waiting":
+            events = list_query_result_events(
+                config=config,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                after_sequence=last_sequence,
+            )
+            for sequence, event in events:
+                last_sequence = sequence
+                if on_event is not None:
+                    on_event(event)
             return claim
         time.sleep(poll_seconds)
         poll_seconds = min(max_poll_seconds, poll_seconds * 1.5)
     raise QueryResultWaitTimeout("Timed out waiting for the original query result")
+
+
+def append_query_result_event(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    request_id: str,
+    owner: str,
+    event: dict[str, Any],
+) -> int | None:
+    timestamp = now_ms()
+    with connect_metadata_db(config) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO query_result_events(
+                tenant_id, request_id, sequence, event_json, created_at
+            )
+            SELECT ?, ?, COALESCE((
+                SELECT MAX(sequence)
+                FROM query_result_events
+                WHERE tenant_id = ? AND request_id = ?
+            ), 0) + 1, ?, ?
+            WHERE EXISTS (
+                SELECT 1
+                FROM query_result_cache
+                WHERE tenant_id = ? AND request_id = ?
+                  AND status = 'processing' AND lease_owner = ?
+            )
+            """,
+            (
+                tenant_id,
+                request_id,
+                tenant_id,
+                request_id,
+                json.dumps(event, ensure_ascii=False, separators=(",", ":")),
+                timestamp,
+                tenant_id,
+                request_id,
+                owner,
+            ),
+        )
+        if int(cursor.rowcount or 0) != 1:
+            return None
+        row = conn.execute(
+            """
+            SELECT MAX(sequence) AS sequence
+            FROM query_result_events
+            WHERE tenant_id = ? AND request_id = ?
+            """,
+            (tenant_id, request_id),
+        ).fetchone()
+    return int(row["sequence"]) if row is not None and row["sequence"] is not None else None
+
+
+def list_query_result_events(
+    *,
+    config: RagConfig,
+    tenant_id: str,
+    request_id: str,
+    after_sequence: int = 0,
+) -> list[tuple[int, dict[str, Any]]]:
+    with connect_metadata_db(config) as conn:
+        rows = conn.execute(
+            """
+            SELECT sequence, event_json
+            FROM query_result_events
+            WHERE tenant_id = ? AND request_id = ? AND sequence > ?
+            ORDER BY sequence
+            """,
+            (tenant_id, request_id, max(0, int(after_sequence))),
+        ).fetchall()
+    events: list[tuple[int, dict[str, Any]]] = []
+    for row in rows:
+        sequence = int(row["sequence"])
+        event = json.loads(str(row["event_json"]))
+        event["sequence"] = sequence
+        events.append((sequence, event))
+    return events
 
 
 def complete_query_result(
@@ -299,12 +404,24 @@ def query_result_cache_snapshot(*, config: RagConfig) -> dict[str, int]:
             "SELECT COUNT(*) AS count FROM query_result_cache WHERE expires_at < ?",
             (timestamp,),
         ).fetchone()
+        event_count = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM query_result_events AS events
+            JOIN query_result_cache AS cache
+              ON cache.tenant_id = events.tenant_id
+             AND cache.request_id = events.request_id
+            WHERE cache.expires_at >= ?
+            """,
+            (timestamp,),
+        ).fetchone()
     counts = {str(row["status"]): int(row["count"] or 0) for row in rows}
     return {
         "processing": counts.get("processing", 0),
         "completed": counts.get("completed", 0),
         "failed": counts.get("failed", 0),
         "expired": int(expired["count"] or 0) if expired is not None else 0,
+        "events": int(event_count["count"] or 0) if event_count is not None else 0,
     }
 
 

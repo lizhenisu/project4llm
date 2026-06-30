@@ -468,6 +468,58 @@
       },
       "fieldConfig": {
         "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 20
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (status) (rag_query_result_cache_entries)",
+          "legendFormat": "{{status}} results",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rag_query_result_cache_expired_entries)",
+          "legendFormat": "expired results",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rag_query_result_events)",
+          "legendFormat": "replay events",
+          "refId": "C"
+        }
+      ],
+      "title": "Query Recovery Cache",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
           "unit": "s"
         },
         "overrides": []

@@ -18,8 +18,10 @@ from rag_core.database import connect_metadata_db  # noqa: E402
 from rag_core.query_results import (  # noqa: E402
     QueryResultConflictError,
     QueryResultLeaseGuard,
+    append_query_result_event,
     claim_query_result,
     complete_query_result,
+    list_query_result_events,
     query_result_cache_snapshot,
     query_result_fingerprint,
     wait_for_query_result,
@@ -91,6 +93,22 @@ def test_owner_waiter_and_cached_replay(config) -> None:
         "trace": {"retrieval_mode": "synthetic"},
     }
     waiter_result: list = []
+    replayed_events: list[dict] = []
+    first_sequence = append_query_result_event(
+        config=config,
+        tenant_id=tenant_id,
+        request_id=request_id,
+        owner=first.owner,
+        event={"type": "stage", "stage": "search", "status": "active"},
+    )
+    second_sequence = append_query_result_event(
+        config=config,
+        tenant_id=tenant_id,
+        request_id=request_id,
+        owner=first.owner,
+        event={"type": "stage", "stage": "search", "status": "done"},
+    )
+    assert (first_sequence, second_sequence) == (1, 2)
 
     def wait() -> None:
         waiter_result.append(
@@ -103,6 +121,7 @@ def test_owner_waiter_and_cached_replay(config) -> None:
                 ttl_ms=60_000,
                 owner=waiting.owner,
                 timeout_seconds=5,
+                on_event=replayed_events.append,
             )
         )
 
@@ -124,6 +143,13 @@ def test_owner_waiter_and_cached_replay(config) -> None:
     assert len(waiter_result) == 1
     assert waiter_result[0].mode == "cached"
     assert waiter_result[0].response == response
+    assert [event["sequence"] for event in replayed_events] == [1, 2]
+    assert [event["status"] for event in replayed_events] == ["active", "done"]
+    assert [sequence for sequence, _event in list_query_result_events(
+        config=config,
+        tenant_id=tenant_id,
+        request_id=request_id,
+    )] == [1, 2]
 
     replay = claim_query_result(
         config=config,
@@ -137,6 +163,7 @@ def test_owner_waiter_and_cached_replay(config) -> None:
     assert replay.response == response
     snapshot = query_result_cache_snapshot(config=config)
     assert snapshot["completed"] >= 1
+    assert snapshot["events"] >= 2
 
 
 def test_conflicting_payload_is_rejected(config) -> None:
