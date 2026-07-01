@@ -47,6 +47,25 @@ groups:
           summary: Query streams are being rejected continuously
           description: Global, tenant, or principal stream capacity has been saturated for five minutes.
 
+      - alert: ProductionRagQueryRateLimitRejections
+        expr: |
+          sum(rate(rag_query_rate_limit_events_total{event=~"rejected_.*"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Query request rate limits are rejecting sustained traffic
+          description: Inspect global, tenant, and principal request budgets before changing model-provider capacity.
+
+      - alert: ProductionRagQueryRecoveryStaleProcessing
+        expr: max(rag_query_result_stale_processing_entries) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Query recovery contains stale processing owners
+          description: At least one durable query result has remained recoverable after its owner lease expired.
+
       - alert: ProductionRagModelApiFailureRateHigh
         expr: |
           sum(rate(rag_model_api_operation_calls_total{outcome="failure"}[10m]))
@@ -60,6 +79,15 @@ groups:
           summary: External model API failure rate is above 10%
           description: Inspect per-operation retries and latency before raising provider concurrency.
 
+      - alert: ProductionRagModelUsageRecordingFailure
+        expr: increase(rag_model_usage_recording_events_total{outcome="write_failure"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Model usage ledger writes are failing
+          description: Provider calls are succeeding but tenant usage accounting is incomplete.
+
       - alert: ProductionRagMetadataPoolTimeout
         expr: increase(rag_metadata_pool_timeouts_total[5m]) > 0
         for: 1m
@@ -70,7 +98,7 @@ groups:
           description: Reduce API concurrency or tune PostgreSQL/PgBouncer capacity.
 
       - alert: ProductionRagIngestionBacklogHigh
-        expr: sum(rag_ingestion_tasks{status=~"queued|processing"}) > 1000
+        expr: sum(max by (status) (rag_ingestion_tasks{status=~"queued|processing"})) > 1000
         for: 15m
         labels:
           severity: warning

@@ -2,6 +2,9 @@ import type {
   ChatMessage,
   AdminUserList,
   AdminSettings,
+  AdminDeadLetterList,
+  AdminIngestionAuditList,
+  AdminIngestionRedriveResponse,
   Announcement,
   AuthResponse,
   AuthUser,
@@ -77,6 +80,9 @@ async function request<T>(path: string, options: RequestOptions): Promise<T> {
 async function readErrorDetail(response: Response): Promise<string> {
   if (response.status === 503) {
     return "当前服务繁忙，请稍后重试。";
+  }
+  if (response.status === 429) {
+    return "请求过于频繁，请稍后重试。";
   }
   if (response.status === 413) {
     return "文件过大，请压缩文件或拆分后再上传。";
@@ -187,6 +193,7 @@ export function queryRag(
   settings: Settings,
   params: {
     query: string;
+    requestId: string;
     docIds: string[];
     history: string[];
     imageDataUrl?: string | null;
@@ -197,6 +204,7 @@ export function queryRag(
     settings,
     json: {
       query: params.query,
+      request_id: params.requestId,
       query_mode: params.imageDataUrl ? "multimodal" : "text",
       image_data_url: params.imageDataUrl || null,
       history: params.history,
@@ -213,6 +221,7 @@ export async function queryRagStream(
   settings: Settings,
   params: {
     query: string;
+    requestId: string;
     docIds: string[];
     history: string[];
     imageDataUrl?: string | null;
@@ -231,6 +240,7 @@ export async function queryRagStream(
     headers,
     body: JSON.stringify({
       query: params.query,
+      request_id: params.requestId,
       query_mode: params.imageDataUrl ? "multimodal" : "text",
       image_data_url: params.imageDataUrl || null,
       history: params.history,
@@ -638,6 +648,46 @@ export function getAdminSettings(settings: Settings): Promise<AdminSettings> {
   return request<AdminSettings>("/admin/settings", {
     settings,
   });
+}
+
+export function listAdminDeadLetters(
+  settings: Settings,
+  params: { limit?: number; offset?: number } = {},
+): Promise<AdminDeadLetterList> {
+  const query = new URLSearchParams();
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.offset) query.set("offset", String(params.offset));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<AdminDeadLetterList>(`/admin/ingestion/dead-letters${suffix}`, {
+    settings,
+  });
+}
+
+export function listAdminIngestionAudit(
+  settings: Settings,
+  params: { limit?: number; offset?: number } = {},
+): Promise<AdminIngestionAuditList> {
+  const query = new URLSearchParams();
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.offset) query.set("offset", String(params.offset));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<AdminIngestionAuditList>(`/admin/ingestion/audit${suffix}`, {
+    settings,
+  });
+}
+
+export function redriveAdminDeadLetters(
+  settings: Settings,
+  tasks: Array<{ tenant_id: string; task_id: string }>,
+): Promise<AdminIngestionRedriveResponse> {
+  return request<AdminIngestionRedriveResponse>(
+    "/admin/ingestion/dead-letters/redrive",
+    {
+      method: "POST",
+      settings,
+      json: { tasks },
+    },
+  );
 }
 
 export function updateRegistrationEnabled(settings: Settings, registrationEnabled: boolean): Promise<AdminSettings> {

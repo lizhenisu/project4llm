@@ -47,6 +47,14 @@ from rag_core.conversations import (
 )
 from rag_core.events import append_event, event_log_limits_snapshot, hit_event_summaries
 from rag_core.ingestion_jobs import submit_upload_ingestion_job
+from rag_core.ingestion_operations import (
+    append_ingestion_operation_audit,
+    count_dead_letter_source_tasks,
+    count_ingestion_operation_audit,
+    ingestion_operation_metrics_snapshot,
+    list_dead_letter_source_tasks,
+    list_ingestion_operation_audit,
+)
 from rag_core.jsonl_store import (
     parse_s3_uri,
     read_object_bytes_by_uri,
@@ -54,7 +62,16 @@ from rag_core.jsonl_store import (
     s3_key,
     unquote_object_uri,
 )
-from rag_core.model_api_retry import model_api_metrics_snapshot
+from rag_core.model_api_retry import model_api_metrics_snapshot, public_model_api_error
+from rag_core.model_usage import (
+    count_model_usage_rows,
+    list_model_usage,
+    model_usage_context,
+    model_usage_daily_metrics_snapshot,
+    model_usage_totals,
+    usage_date,
+    validate_usage_date,
+)
 from rag_core.milvus_store import milvus_client_metrics_snapshot
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.query_admission import (
@@ -62,6 +79,23 @@ from rag_core.query_admission import (
     QueryAdmissionLeaseGuard,
     QueryAdmissionRejected,
     query_admission_metrics_snapshot,
+)
+from rag_core.query_results import (
+    QueryResultLeaseGuard,
+    append_query_result_event,
+    claim_query_result,
+    complete_query_result,
+    fail_query_result,
+    list_query_result_events,
+    matching_query_result_exists,
+    query_result_cache_snapshot,
+    query_result_fingerprint,
+    wait_for_query_result,
+)
+from rag_core.query_rate_limits import (
+    QueryRateLimitRejected,
+    acquire_query_rate_limit,
+    query_rate_limit_window_snapshot,
 )
 from rag_core.readiness import readiness_report
 from rag_core.sources import (
@@ -73,6 +107,7 @@ from rag_core.sources import (
     fail_source_task,
     get_source,
     get_source_content,
+    ingestion_stage_stats_snapshot,
     list_sources,
     rename_source,
     resolve_metadata_display_block_urls,
@@ -137,6 +172,15 @@ _QUERY_STREAM_METRICS = {
 }
 _QUERY_STREAM_ACTIVE_BY_TENANT: dict[str, int] = {}
 _QUERY_STREAM_ACTIVE_BY_USER: dict[str, int] = {}
+_QUERY_RATE_LIMIT_METRICS_LOCK = threading.Lock()
+_QUERY_RATE_LIMIT_METRICS = {
+    "accepted_total": 0,
+    "replay_bypassed_total": 0,
+    "rejected_global_total": 0,
+    "rejected_tenant_total": 0,
+    "rejected_user_total": 0,
+    "unavailable_total": 0,
+}
 _HTTP_METRICS_LOCK = threading.Lock()
 _HTTP_METRICS: dict[str, dict[str, Any]] = {}
 _HTTP_ACTIVE_TOTAL = 0
@@ -244,6 +288,45 @@ def query_shared_admission_lease_ms() -> int:
     return env_int("RAG_QUERY_SHARED_ADMISSION_LEASE_MS", 15 * 60 * 1000)
 
 
+def query_rate_limit_window_seconds() -> int:
+    return env_int("RAG_QUERY_RATE_LIMIT_WINDOW_SECONDS", 60)
+
+
+def query_rate_limit_global() -> int:
+    return env_nonnegative_int("RAG_QUERY_RATE_LIMIT_GLOBAL", 0)
+
+
+def query_rate_limit_tenant() -> int:
+    return env_nonnegative_int("RAG_QUERY_RATE_LIMIT_TENANT", 0)
+
+
+def query_rate_limit_user() -> int:
+    return env_nonnegative_int("RAG_QUERY_RATE_LIMIT_USER", 0)
+
+
+def query_rate_limit_enabled() -> bool:
+    return any(
+        limit > 0
+        for limit in (
+            query_rate_limit_global(),
+            query_rate_limit_tenant(),
+            query_rate_limit_user(),
+        )
+    )
+
+
+def query_result_lease_ms() -> int:
+    return env_int("RAG_QUERY_RESULT_LEASE_MS", 15 * 60 * 1000)
+
+
+def query_result_ttl_ms() -> int:
+    return env_int("RAG_QUERY_RESULT_TTL_MS", 60 * 60 * 1000)
+
+
+def query_result_wait_seconds() -> int:
+    return env_int("RAG_QUERY_RESULT_WAIT_SECONDS", 600)
+
+
 def ingest_backlog_limit() -> int:
     return env_int("RAG_INGEST_BACKLOG_LIMIT", 100_000)
 
@@ -254,6 +337,15 @@ def ingest_tenant_backlog_limit() -> int:
 
 def ingest_upload_reservation_ms() -> int:
     return env_int("RAG_INGEST_UPLOAD_RESERVATION_MS", 15 * 60 * 1000)
+
+
+def ingest_operation_audit_retention_days() -> int:
+    return env_int("RAG_INGEST_OPERATION_AUDIT_RETENTION_DAYS", 90)
+
+
+def default_model_usage_date_range() -> tuple[str, str]:
+    timestamp = int(time.time() * 1000)
+    return usage_date(timestamp - 30 * 24 * 60 * 60 * 1000), usage_date(timestamp)
 
 
 def max_upload_request_bytes(config) -> int:
@@ -342,6 +434,16 @@ def query_stream_user_key(auth_context) -> str:
     credential_id = str(getattr(auth_context, "credential_id", "") or "").strip()
     if credential_id:
         return f"{auth_context.tenant_id}:api_token:{credential_id}"
+    return ""
+
+
+def model_usage_principal_key(auth_context) -> str:
+    user_id = str(getattr(auth_context, "user_id", "") or "").strip()
+    if user_id:
+        return f"user:{user_id}"
+    credential_id = str(getattr(auth_context, "credential_id", "") or "").strip()
+    if credential_id:
+        return f"api_token:{credential_id}"
     return ""
 
 
@@ -480,15 +582,50 @@ def query_stream_metrics_snapshot() -> dict[str, object]:
         }
 
 
+def record_query_rate_limit_event(event: str) -> None:
+    key = f"{event}_total"
+    if key not in _QUERY_RATE_LIMIT_METRICS:
+        raise ValueError(f"Unsupported query rate-limit event: {event}")
+    with _QUERY_RATE_LIMIT_METRICS_LOCK:
+        _QUERY_RATE_LIMIT_METRICS[key] += 1
+
+
+def query_rate_limit_metrics_snapshot(config) -> dict[str, object]:
+    with _QUERY_RATE_LIMIT_METRICS_LOCK:
+        events = dict(_QUERY_RATE_LIMIT_METRICS)
+    return {
+        "enabled": query_rate_limit_enabled(),
+        "window_seconds": query_rate_limit_window_seconds(),
+        "limits": {
+            "global": query_rate_limit_global(),
+            "tenant": query_rate_limit_tenant(),
+            "user": query_rate_limit_user(),
+        },
+        "events": events,
+        **query_rate_limit_window_snapshot(
+            config=config,
+            window_seconds=query_rate_limit_window_seconds(),
+        ),
+    }
+
+
 def prometheus_metrics_text(config) -> str:
     http = http_metrics_snapshot()
     query_stream = query_stream_metrics_snapshot()
+    query_rate_limit = query_rate_limit_metrics_snapshot(config)
+    query_results = query_result_cache_snapshot(config=config)
     query_images = query_image_metrics_snapshot()
     model_api = model_api_metrics_snapshot()
+    model_usage = model_usage_daily_metrics_snapshot(config=config)
     metadata = metadata_pool_metrics_snapshot()
     ingestion = count_source_tasks_by_status(config=config, tenant_id=None)
     ingestion_leases = source_task_lease_metrics_snapshot(config=config, tenant_id=None)
     ingestion_recovery = source_task_recovery_metrics_snapshot(config=config, tenant_id=None)
+    ingestion_stage_stats = ingestion_stage_stats_snapshot(config=config)
+    ingestion_operations = ingestion_operation_metrics_snapshot(
+        config=config,
+        retention_days=ingest_operation_audit_retention_days(),
+    )
     upload_admission = upload_admission_metrics_snapshot(config=config)
     shared_query_admission = query_admission_metrics_snapshot(config=config)
     lines = [
@@ -562,6 +699,73 @@ def prometheus_metrics_text(config) -> str:
         ("event_queue_backpressure", "event_queue_backpressure_total"),
     ):
         lines.append(f'rag_query_stream_events_total{{event="{event}"}} {int(query_stream[key])}')
+
+    lines.extend(
+        [
+            "# HELP rag_query_rate_limit_config Configured query requests per fixed window.",
+            "# TYPE rag_query_rate_limit_config gauge",
+            "# HELP rag_query_rate_limit_requests Accepted query requests in the current shared window.",
+            "# TYPE rag_query_rate_limit_requests gauge",
+            "# HELP rag_query_rate_limit_active_keys Active shared rate-limit keys in the current window.",
+            "# TYPE rag_query_rate_limit_active_keys gauge",
+        ]
+    )
+    for scope in ("global", "tenant", "user"):
+        lines.append(
+            f'rag_query_rate_limit_config{{scope="{scope}"}} '
+            f'{int(query_rate_limit["limits"][scope])}'
+        )
+        lines.append(
+            f'rag_query_rate_limit_requests{{scope="{scope}"}} '
+            f'{int(query_rate_limit["requests"][scope])}'
+        )
+        lines.append(
+            f'rag_query_rate_limit_active_keys{{scope="{scope}"}} '
+            f'{int(query_rate_limit["active_keys"][scope])}'
+        )
+    lines.extend(
+        [
+            "# HELP rag_query_rate_limit_events_total Query rate-limit decisions in this API process.",
+            "# TYPE rag_query_rate_limit_events_total counter",
+        ]
+    )
+    for event, key in (
+        ("accepted", "accepted_total"),
+        ("replay_bypassed", "replay_bypassed_total"),
+        ("rejected_global", "rejected_global_total"),
+        ("rejected_tenant", "rejected_tenant_total"),
+        ("rejected_user", "rejected_user_total"),
+        ("unavailable", "unavailable_total"),
+    ):
+        lines.append(
+            f'rag_query_rate_limit_events_total{{event="{event}"}} '
+            f'{int(query_rate_limit["events"][key])}'
+        )
+
+    lines.extend(
+        [
+            "# HELP rag_query_result_cache_entries Current durable query-result rows by status.",
+            "# TYPE rag_query_result_cache_entries gauge",
+        ]
+    )
+    for status in ("processing", "completed", "failed"):
+        lines.append(
+            f'rag_query_result_cache_entries{{status="{status}"}} '
+            f'{int(query_results[status])}'
+        )
+    lines.extend(
+        [
+            "# HELP rag_query_result_cache_expired_entries Durable query-result rows past their retention deadline.",
+            "# TYPE rag_query_result_cache_expired_entries gauge",
+            f"rag_query_result_cache_expired_entries {int(query_results['expired'])}",
+            "# HELP rag_query_result_stale_processing_entries Durable processing results whose owner lease expired before retention.",
+            "# TYPE rag_query_result_stale_processing_entries gauge",
+            f"rag_query_result_stale_processing_entries {int(query_results['stale_processing'])}",
+            "# HELP rag_query_result_events Current durable partial-stream events retained for replay.",
+            "# TYPE rag_query_result_events gauge",
+            f"rag_query_result_events {int(query_results['events'])}",
+        ]
+    )
 
     lines.extend(
         [
@@ -672,6 +876,37 @@ def prometheus_metrics_text(config) -> str:
             f'rag_model_api_operation_latency_seconds_max{{operation="{operation_label}"}} '
             f'{float(metrics["latency_max_ms"]) / 1000.0:.6f}'
         )
+    lines.extend(
+        [
+            "# HELP rag_model_usage_daily Current UTC-day model usage by bounded workload.",
+            "# TYPE rag_model_usage_daily gauge",
+        ]
+    )
+    for workload, usage in model_usage["workloads"].items():
+        for kind in (
+            "request_count",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+        ):
+            lines.append(
+                f'rag_model_usage_daily{{workload="{workload}",kind="{kind}"}} '
+                f'{int(usage[kind])}'
+            )
+    lines.extend(
+        [
+            "# HELP rag_model_usage_recording_events_total Model usage ledger recording outcomes.",
+            "# TYPE rag_model_usage_recording_events_total counter",
+            (
+                'rag_model_usage_recording_events_total{outcome="recorded"} '
+                f'{int(model_usage["recording"]["recorded_total"])}'
+            ),
+            (
+                'rag_model_usage_recording_events_total{outcome="write_failure"} '
+                f'{int(model_usage["recording"]["write_failures_total"])}'
+            ),
+        ]
+    )
 
     pool_fields = {
         "total": "rag_metadata_pool_connections",
@@ -711,6 +946,47 @@ def prometheus_metrics_text(config) -> str:
             f'rag_ingestion_task_recovery{{state="retry_waiting"}} {ingestion_recovery["retry_waiting"]}',
             f'rag_ingestion_task_recovery{{state="dead_lettered"}} {ingestion_recovery["dead_lettered"]}',
             f'rag_ingestion_task_recovery{{state="retries_recorded"}} {ingestion_recovery["retries_recorded"]}',
+            "# HELP rag_ingestion_operator_audit_events Retained ingestion operator audit events.",
+            "# TYPE rag_ingestion_operator_audit_events gauge",
+        ]
+    )
+    for outcome, value in ingestion_operations["bulk_redrive_outcomes"].items():
+        lines.append(
+            "rag_ingestion_operator_audit_events"
+            f'{{operation="bulk_redrive",outcome="{outcome}"}} {int(value)}'
+        )
+    lines.extend(
+        [
+            "# HELP rag_ingestion_stage_samples Historical ingestion stage samples used for ETA estimates.",
+            "# TYPE rag_ingestion_stage_samples gauge",
+        ]
+    )
+    for source_type, stages in ingestion_stage_stats.items():
+        source_type_label = prometheus_label(source_type)
+        for stage, stats in stages.items():
+            stage_label = prometheus_label(stage)
+            lines.append(
+                "rag_ingestion_stage_samples"
+                f'{{source_type="{source_type_label}",stage="{stage_label}"}} '
+                f'{int(stats["sample_count"])}'
+            )
+    lines.extend(
+        [
+            "# HELP rag_ingestion_stage_duration_seconds_average Average historical ingestion stage duration used for ETA estimates.",
+            "# TYPE rag_ingestion_stage_duration_seconds_average gauge",
+        ]
+    )
+    for source_type, stages in ingestion_stage_stats.items():
+        source_type_label = prometheus_label(source_type)
+        for stage, stats in stages.items():
+            stage_label = prometheus_label(stage)
+            lines.append(
+                "rag_ingestion_stage_duration_seconds_average"
+                f'{{source_type="{source_type_label}",stage="{stage_label}"}} '
+                f'{float(stats["average_seconds"]):.3f}'
+            )
+    lines.extend(
+        [
             "# HELP rag_ingestion_upload_reservations Current shared upload admission reservations.",
             "# TYPE rag_ingestion_upload_reservations gauge",
             (
@@ -744,6 +1020,16 @@ def env_int(name: str, default: int) -> int:
         return default
     try:
         return max(1, int(value))
+    except ValueError:
+        return default
+
+
+def env_nonnegative_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return max(0, int(value))
     except ValueError:
         return default
 
@@ -838,6 +1124,7 @@ class SourceResponse(BaseModel):
     ingestion_stage: str = ""
     progress_percent: int = 0
     progress_detail: str = ""
+    eta_seconds: int | None = None
 
 
 class SourceListResponse(BaseModel):
@@ -854,6 +1141,107 @@ class SourceUploadResponse(BaseModel):
 class RetrySourceResponse(BaseModel):
     status: str
     source: SourceResponse
+
+
+class AdminDeadLetterTaskResponse(BaseModel):
+    tenant_id: str
+    task_id: str
+    title: str
+    source_type: str
+    error: str
+    attempt_count: int
+    dead_lettered_at: int
+    updated_at: int
+
+
+class AdminDeadLetterListResponse(BaseModel):
+    tasks: list[AdminDeadLetterTaskResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class AdminIngestionRedriveItem(BaseModel):
+    tenant_id: str = Field(min_length=1, max_length=200)
+    task_id: str = Field(min_length=1, max_length=500)
+
+
+class AdminIngestionRedriveRequest(BaseModel):
+    tasks: list[AdminIngestionRedriveItem] = Field(min_length=1, max_length=50)
+
+    @field_validator("tasks")
+    @classmethod
+    def unique_tasks(
+        cls,
+        tasks: list[AdminIngestionRedriveItem],
+    ) -> list[AdminIngestionRedriveItem]:
+        keys = [(item.tenant_id, item.task_id) for item in tasks]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Duplicate ingestion tasks are not allowed")
+        return tasks
+
+
+class AdminIngestionRedriveResult(BaseModel):
+    tenant_id: str
+    task_id: str
+    outcome: str
+
+
+class AdminIngestionRedriveResponse(BaseModel):
+    results: list[AdminIngestionRedriveResult]
+    queued: int
+    rejected: int
+
+
+class AdminIngestionAuditResponse(BaseModel):
+    id: str
+    actor_user_id: str
+    tenant_id: str
+    task_id: str
+    operation: str
+    outcome: str
+    detail: str
+    created_at: int
+
+
+class AdminIngestionAuditListResponse(BaseModel):
+    events: list[AdminIngestionAuditResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class AdminModelUsageRowResponse(BaseModel):
+    usage_date: str
+    tenant_id: str
+    principal_key: str
+    workload: str
+    provider: str
+    model: str
+    operation: str
+    request_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    updated_at: int
+
+
+class AdminModelUsageTotalsResponse(BaseModel):
+    request_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class AdminModelUsageListResponse(BaseModel):
+    rows: list[AdminModelUsageRowResponse]
+    totals: AdminModelUsageTotalsResponse
+    total: int
+    limit: int
+    offset: int
+    tenant_id: str
+    start_date: str
+    end_date: str
 
 
 class SourceContentResponse(BaseModel):
@@ -1168,10 +1556,17 @@ def create_app():
         return {
             "http": http_metrics_snapshot(),
             "query_stream": query_stream_metrics_snapshot(),
+            "query_rate_limit": query_rate_limit_metrics_snapshot(config),
             "query_shared_admission": {
                 "enabled": query_shared_admission_enabled(),
                 "lease_ms": query_shared_admission_lease_ms(),
                 **query_admission_metrics_snapshot(config=config),
+            },
+            "query_result_cache": {
+                "lease_ms": query_result_lease_ms(),
+                "ttl_ms": query_result_ttl_ms(),
+                "wait_seconds": query_result_wait_seconds(),
+                **query_result_cache_snapshot(config=config),
             },
             "query": {
                 "max_query_image_bytes": config.max_query_image_bytes,
@@ -1184,6 +1579,7 @@ def create_app():
                 "max_conversation_image_bytes": max_conversation_image_bytes(config),
             },
             "model_api": model_api_metrics_snapshot(),
+            "model_usage": model_usage_daily_metrics_snapshot(config=config),
             "milvus_client": milvus_client_metrics_snapshot(),
             "metadata_db": metadata_pool_metrics_snapshot(),
             "auth_token_cache": auth_token_cache_metrics_snapshot(),
@@ -1192,6 +1588,14 @@ def create_app():
                 "source_tasks_by_status": count_source_tasks_by_status(config=config, tenant_id=tenant_id),
                 "task_leases": source_task_lease_metrics_snapshot(config=config, tenant_id=tenant_id),
                 "task_recovery": source_task_recovery_metrics_snapshot(config=config, tenant_id=tenant_id),
+                "operator_operations": {
+                    "audit_retention_days": ingest_operation_audit_retention_days(),
+                    **ingestion_operation_metrics_snapshot(
+                        config=config,
+                        retention_days=ingest_operation_audit_retention_days(),
+                    ),
+                },
+                "stage_stats": ingestion_stage_stats_snapshot(config=config),
                 "upload_admission": {
                     "reservation_ms": ingest_upload_reservation_ms(),
                     **upload_admission_metrics_snapshot(config=config),
@@ -1361,6 +1765,141 @@ def create_app():
             limit=len(users),
             offset=0,
             query="",
+        )
+
+    @app.get(
+        "/admin/ingestion/dead-letters",
+        response_model=AdminDeadLetterListResponse,
+    )
+    def admin_ingestion_dead_letters(
+        authorization: str | None = Header(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> AdminDeadLetterListResponse:
+        config = load_config()
+        require_admin(config=config, authorization=authorization)
+        tasks = list_dead_letter_source_tasks(
+            config=config,
+            limit=limit,
+            offset=offset,
+        )
+        return AdminDeadLetterListResponse(
+            tasks=[AdminDeadLetterTaskResponse(**task.__dict__) for task in tasks],
+            total=count_dead_letter_source_tasks(config=config),
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get(
+        "/admin/ingestion/audit",
+        response_model=AdminIngestionAuditListResponse,
+    )
+    def admin_ingestion_audit(
+        authorization: str | None = Header(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> AdminIngestionAuditListResponse:
+        config = load_config()
+        require_admin(config=config, authorization=authorization)
+        events = list_ingestion_operation_audit(
+            config=config,
+            limit=limit,
+            offset=offset,
+            retention_days=ingest_operation_audit_retention_days(),
+        )
+        return AdminIngestionAuditListResponse(
+            events=[AdminIngestionAuditResponse(**event.__dict__) for event in events],
+            total=count_ingestion_operation_audit(
+                config=config,
+                retention_days=ingest_operation_audit_retention_days(),
+            ),
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.post(
+        "/admin/ingestion/dead-letters/redrive",
+        response_model=AdminIngestionRedriveResponse,
+    )
+    def admin_redrive_ingestion_dead_letters(
+        request: AdminIngestionRedriveRequest,
+        authorization: str | None = Header(default=None),
+    ) -> AdminIngestionRedriveResponse:
+        config = load_config()
+        actor = require_admin(config=config, authorization=authorization)
+        results: list[AdminIngestionRedriveResult] = []
+        for item in request.tasks:
+            outcome = redrive_ingestion_task_for_admin(
+                config=config,
+                actor_user_id=actor.id,
+                tenant_id=item.tenant_id,
+                task_id=item.task_id,
+            )
+            results.append(
+                AdminIngestionRedriveResult(
+                    tenant_id=item.tenant_id,
+                    task_id=item.task_id,
+                    outcome=outcome,
+                )
+            )
+        queued = sum(result.outcome == "queued" for result in results)
+        return AdminIngestionRedriveResponse(
+            results=results,
+            queued=queued,
+            rejected=len(results) - queued,
+        )
+
+    @app.get("/admin/model-usage", response_model=AdminModelUsageListResponse)
+    def admin_model_usage(
+        authorization: str | None = Header(default=None),
+        tenant_id: str = Query(default="", max_length=200),
+        start_date: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+        end_date: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> AdminModelUsageListResponse:
+        config = load_config()
+        require_admin(config=config, authorization=authorization)
+        default_start, default_end = default_model_usage_date_range()
+        try:
+            selected_start = validate_usage_date(start_date or default_start)
+            selected_end = validate_usage_date(end_date or default_end)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if selected_start > selected_end:
+            raise HTTPException(
+                status_code=400,
+                detail="开始日期不能晚于结束日期",
+            )
+        selected_tenant = tenant_id.strip()
+        rows = list_model_usage(
+            config=config,
+            tenant_id=selected_tenant or None,
+            start_date=selected_start,
+            end_date=selected_end,
+            limit=limit,
+            offset=offset,
+        )
+        totals = model_usage_totals(
+            config=config,
+            tenant_id=selected_tenant or None,
+            start_date=selected_start,
+            end_date=selected_end,
+        )
+        return AdminModelUsageListResponse(
+            rows=[AdminModelUsageRowResponse(**row.__dict__) for row in rows],
+            totals=AdminModelUsageTotalsResponse(**totals),
+            total=count_model_usage_rows(
+                config=config,
+                tenant_id=selected_tenant or None,
+                start_date=selected_start,
+                end_date=selected_end,
+            ),
+            limit=limit,
+            offset=offset,
+            tenant_id=selected_tenant,
+            start_date=selected_start,
+            end_date=selected_end,
         )
 
     @app.get("/admin/settings", response_model=AdminSettingsResponse)
@@ -1769,7 +2308,13 @@ def create_app():
             x_rag_acl_groups=x_rag_acl_groups,
             request=request,
         )
-        result = resolve_search_result(request, auth_context)
+        with model_usage_context(
+            config=config,
+            tenant_id=auth_context.tenant_id,
+            principal_key=model_usage_principal_key(auth_context),
+            workload="search",
+        ):
+            result = resolve_search_result(request, auth_context)
         response = SearchResponse(
             request_id=result.request_id,
             hits=[hit_to_response(hit, config=config, tenant_id=auth_context.tenant_id) for hit in result.hits],
@@ -1811,7 +2356,13 @@ def create_app():
             x_rag_acl_groups=x_rag_acl_groups,
             request=request,
         )
-        result = resolve_answer_result(request, auth_context)
+        with model_usage_context(
+            config=config,
+            tenant_id=auth_context.tenant_id,
+            principal_key=model_usage_principal_key(auth_context),
+            workload="query",
+        ):
+            result = resolve_answer_result(request, auth_context)
         response = QueryResponse(
             request_id=result.request_id,
             answer=result.answer,
@@ -1854,6 +2405,11 @@ def create_app():
             x_rag_tenant_id=x_rag_tenant_id,
             x_rag_acl_groups=x_rag_acl_groups,
             request=request,
+        )
+        request_fingerprint = (
+            query_stream_request_fingerprint(request, auth_context)
+            if request.request_id
+            else ""
         )
         stream_slot = query_stream_semaphore(query_stream_queue_limit())
         if not stream_slot.acquire(blocking=False):
@@ -1946,6 +2502,55 @@ def create_app():
                     status_code=503,
                     detail="Query service shared admission is unavailable. Please retry later.",
                 ) from exc
+        if query_rate_limit_enabled():
+            try:
+                is_existing_request = bool(
+                    request.request_id
+                    and matching_query_result_exists(
+                        config=config,
+                        tenant_id=auth_context.tenant_id,
+                        request_id=request.request_id,
+                        fingerprint=request_fingerprint,
+                    )
+                )
+                if not is_existing_request:
+                    acquire_query_rate_limit(
+                        config=config,
+                        tenant_id=auth_context.tenant_id,
+                        user_key=user_key,
+                        global_limit=query_rate_limit_global(),
+                        tenant_limit=query_rate_limit_tenant(),
+                        user_limit=query_rate_limit_user(),
+                        window_seconds=query_rate_limit_window_seconds(),
+                    )
+                    record_query_rate_limit_event("accepted")
+                else:
+                    record_query_rate_limit_event("replay_bypassed")
+            except QueryRateLimitRejected as exc:
+                record_query_rate_limit_event(f"rejected_{exc.kind}")
+                if shared_guard is not None:
+                    shared_guard.close()
+                if user_slot is not None:
+                    user_slot.release()
+                tenant_slot.release()
+                stream_slot.release()
+                raise HTTPException(
+                    status_code=429,
+                    detail="Query request rate limit exceeded. Please retry later.",
+                    headers={"Retry-After": str(exc.retry_after_seconds)},
+                ) from exc
+            except Exception as exc:
+                record_query_rate_limit_event("unavailable")
+                if shared_guard is not None:
+                    shared_guard.close()
+                if user_slot is not None:
+                    user_slot.release()
+                tenant_slot.release()
+                stream_slot.release()
+                raise HTTPException(
+                    status_code=503,
+                    detail="Query rate limit is unavailable. Please retry later.",
+                ) from exc
         record_query_stream_accepted(auth_context.tenant_id)
         record_query_stream_user_accepted(user_key)
 
@@ -1965,11 +2570,11 @@ def create_app():
             def emit(event_type: str, payload: dict[str, object]) -> bool:
                 return enqueue_event({"type": event_type, **payload})
 
-            def emit_stage_event(payload: dict[str, object]) -> None:
-                emit("stage", payload)
-
             def run_query() -> None:
                 errored = False
+                result_claim = None
+                result_guard = None
+                result_completed = False
                 try:
                     emit(
                         "stage",
@@ -1980,9 +2585,98 @@ def create_app():
                             "detail": "已收到问题，正在准备 RAG 调用链。",
                         },
                     )
-                    result = resolve_answer_result(request, auth_context, stage_callback=emit_stage_event)
+                    if request.request_id:
+                        waited_for_existing_result = False
+                        result_claim = claim_query_result(
+                            config=config,
+                            tenant_id=auth_context.tenant_id,
+                            request_id=request.request_id,
+                            fingerprint=request_fingerprint,
+                            lease_ms=query_result_lease_ms(),
+                            ttl_ms=query_result_ttl_ms(),
+                        )
+                        if result_claim.mode == "waiting":
+                            waited_for_existing_result = True
+                            emit(
+                                "stage",
+                                {
+                                    "stage": "resume",
+                                    "status": "active",
+                                    "label": "恢复回答",
+                                    "detail": "原请求仍在处理中，正在等待已启动的回答。",
+                                },
+                            )
+                            result_claim = wait_for_query_result(
+                                config=config,
+                                tenant_id=auth_context.tenant_id,
+                                request_id=request.request_id,
+                                fingerprint=request_fingerprint,
+                                lease_ms=query_result_lease_ms(),
+                                ttl_ms=query_result_ttl_ms(),
+                                owner=result_claim.owner,
+                                timeout_seconds=query_result_wait_seconds(),
+                                cancelled=client_disconnected,
+                                on_event=lambda event: enqueue_event(event),
+                            )
+                        if result_claim.mode == "cached":
+                            response = QueryResponse.model_validate(result_claim.response or {})
+                            if not waited_for_existing_result:
+                                for _sequence, event in list_query_result_events(
+                                    config=config,
+                                    tenant_id=auth_context.tenant_id,
+                                    request_id=request.request_id,
+                                ):
+                                    enqueue_event(event)
+                            emit(
+                                "stage",
+                                {
+                                    "stage": "resume",
+                                    "status": "done",
+                                    "label": "恢复回答",
+                                    "detail": "已复用原请求生成的回答，无需重复调用模型。",
+                                },
+                            )
+                            emit("result", response.model_dump())
+                            return
+                        result_guard = QueryResultLeaseGuard(
+                            config=config,
+                            tenant_id=auth_context.tenant_id,
+                            request_id=request.request_id,
+                            owner=result_claim.owner,
+                            lease_ms=query_result_lease_ms(),
+                        )
+                        result_guard.start()
+
+                    def emit_owned_stage(payload: dict[str, object]) -> None:
+                        event: dict[str, object] = {"type": "stage", **payload}
+                        if request.request_id and result_claim is not None:
+                            sequence = append_query_result_event(
+                                config=config,
+                                tenant_id=auth_context.tenant_id,
+                                request_id=request.request_id,
+                                owner=result_claim.owner,
+                                event=event,
+                            )
+                            if sequence is None:
+                                raise RuntimeError("Query result lease was lost while saving stream progress")
+                            event["sequence"] = sequence
+                        enqueue_event(event)
+
+                    with model_usage_context(
+                        config=config,
+                        tenant_id=auth_context.tenant_id,
+                        principal_key=model_usage_principal_key(auth_context),
+                        workload="query",
+                    ):
+                        result = resolve_answer_result(
+                            request,
+                            auth_context,
+                            stage_callback=emit_owned_stage,
+                        )
                     if shared_guard is not None and not shared_guard.valid.is_set():
                         raise RuntimeError("Query admission lease was lost before completion")
+                    if result_guard is not None and not result_guard.valid.is_set():
+                        raise RuntimeError("Query result lease was lost before completion")
                     response = QueryResponse(
                         request_id=result.request_id,
                         answer=result.answer,
@@ -1992,6 +2686,17 @@ def create_app():
                         ],
                         trace=result.trace.__dict__,
                     )
+                    if request.request_id and result_claim is not None:
+                        result_completed = complete_query_result(
+                            config=config,
+                            tenant_id=auth_context.tenant_id,
+                            request_id=request.request_id,
+                            owner=result_claim.owner,
+                            response=response.model_dump(mode="json"),
+                            ttl_ms=query_result_ttl_ms(),
+                        )
+                        if not result_completed:
+                            raise RuntimeError("Query result lease was lost before the answer could be saved")
                     append_event(
                         config.runtime_dir,
                         "answer_events",
@@ -2014,8 +2719,26 @@ def create_app():
                     emit("result", response.model_dump())
                 except Exception as exc:  # noqa: BLE001 - streamed API must serialize failures.
                     errored = True
-                    emit("error", {"detail": str(exc) or exc.__class__.__name__})
+                    if (
+                        request.request_id
+                        and result_claim is not None
+                        and result_claim.mode == "owner"
+                        and not result_completed
+                    ):
+                        try:
+                            fail_query_result(
+                                config=config,
+                                tenant_id=auth_context.tenant_id,
+                                request_id=request.request_id,
+                                owner=result_claim.owner,
+                                error=str(exc) or exc.__class__.__name__,
+                            )
+                        except Exception:
+                            pass
+                    emit("error", {"detail": public_model_api_error(exc)})
                 finally:
+                    if result_guard is not None:
+                        result_guard.close()
                     record_query_stream_finished(auth_context.tenant_id, user_key, errored=errored)
                     if shared_guard is not None:
                         shared_guard.close()
@@ -2246,6 +2969,7 @@ def create_app():
             build_mindmap_background,
             artifact,
             request.context_limit,
+            model_usage_principal_key(auth_context),
         )
         return artifact_to_response(artifact)
 
@@ -2277,7 +3001,11 @@ def create_app():
             save_metadata_artifact(config, artifact)
         except ArtifactTenantConflictError as exc:
             raise HTTPException(status_code=409, detail="Artifact ID is unavailable") from exc
-        background_tasks.add_task(build_table_background, artifact)
+        background_tasks.add_task(
+            build_table_background,
+            artifact,
+            model_usage_principal_key(auth_context),
+        )
         return artifact_to_response(artifact)
 
     @app.get("/artifacts/{artifact_id}", response_model=MindMapArtifactResponse)
@@ -2451,39 +3179,58 @@ def pending_artifact(
     )
 
 
-def build_mindmap_background(artifact: MindMapArtifact, context_limit: int) -> None:
+def build_mindmap_background(
+    artifact: MindMapArtifact,
+    context_limit: int,
+    principal_key: str = "",
+) -> None:
     config = load_config()
     try:
-        root = build_mindmap_root(
-            title=artifact.title,
+        with model_usage_context(
             config=config,
             tenant_id=artifact.tenant_id,
-            source_doc_ids=artifact.source_doc_ids,
-            batch_chunk_count=context_limit,
-        )
+            principal_key=principal_key,
+            workload="studio_mindmap",
+        ):
+            root = build_mindmap_root(
+                title=artifact.title,
+                config=config,
+                tenant_id=artifact.tenant_id,
+                source_doc_ids=artifact.source_doc_ids,
+                batch_chunk_count=context_limit,
+            )
         save_metadata_artifact(
             config,
             replace(artifact, status="ready", root=root, updated_at=int(time.time() * 1000)),
         )
     except Exception as exc:
-        fail_metadata_artifact(config, artifact, str(exc))
+        fail_metadata_artifact(config, artifact, public_model_api_error(exc))
 
 
-def build_table_background(artifact: MindMapArtifact) -> None:
+def build_table_background(
+    artifact: MindMapArtifact,
+    principal_key: str = "",
+) -> None:
     config = load_config()
     try:
-        table = build_llm_table(
-            title=artifact.title,
+        with model_usage_context(
             config=config,
             tenant_id=artifact.tenant_id,
-            source_doc_ids=artifact.source_doc_ids,
-        )
+            principal_key=principal_key,
+            workload="studio_table",
+        ):
+            table = build_llm_table(
+                title=artifact.title,
+                config=config,
+                tenant_id=artifact.tenant_id,
+                source_doc_ids=artifact.source_doc_ids,
+            )
         save_metadata_artifact(
             config,
             replace(artifact, status="ready", table=table, updated_at=int(time.time() * 1000)),
         )
     except Exception as exc:
-        fail_metadata_artifact(config, artifact, str(exc))
+        fail_metadata_artifact(config, artifact, public_model_api_error(exc))
 
 
 def migrate_legacy_artifacts(config, *, tenant_id: str) -> None:
@@ -2749,6 +3496,17 @@ def resolve_answer_result(request: QueryRequest, auth_context, stage_callback=No
     )
 
 
+def query_stream_request_fingerprint(request: QueryRequest, auth_context) -> str:
+    payload = request.model_dump(
+        mode="json",
+        exclude={"request_id", "tenant_id", "acl_groups"},
+    )
+    payload["resolved_tenant_id"] = auth_context.tenant_id
+    payload["resolved_acl_groups"] = sorted(auth_context.acl_groups or [])
+    payload["resolved_principal_id"] = auth_context.user_id or auth_context.credential_id or ""
+    return query_result_fingerprint(payload)
+
+
 def hit_to_response(hit, *, config=None, tenant_id: str = "") -> HitResponse:
     metadata = hit.metadata
     if config is not None and tenant_id:
@@ -2791,6 +3549,7 @@ def source_to_response(source) -> SourceResponse:
         ingestion_stage=getattr(source, "ingestion_stage", ""),
         progress_percent=max(0, min(100, int(getattr(source, "progress_percent", 0)))),
         progress_detail=str(getattr(source, "progress_detail", "") or ""),
+        eta_seconds=getattr(source, "eta_seconds", None),
     )
 
 
@@ -2885,6 +3644,123 @@ def admin_settings_response(config) -> AdminSettingsResponse:
     return AdminSettingsResponse(
         registration_enabled=is_registration_enabled(config),
         latest_announcement=AnnouncementResponse(**latest[0]) if latest else None,
+    )
+
+
+def redrive_ingestion_task_for_admin(
+    *,
+    config,
+    actor_user_id: str,
+    tenant_id: str,
+    task_id: str,
+) -> str:
+    try:
+        reservation = acquire_upload_admission_reservation(
+            config=config,
+            tenant_id=tenant_id,
+            global_limit=ingest_backlog_limit(),
+            tenant_limit=ingest_tenant_backlog_limit(),
+            lease_ms=ingest_upload_reservation_ms(),
+        )
+    except UploadAdmissionRejected as exc:
+        outcome = f"admission_rejected_{exc.kind}"
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome=outcome,
+        )
+        return outcome
+    except Exception:
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome="admission_unavailable",
+        )
+        return "admission_unavailable"
+
+    try:
+        queued = retry_failed_source_task(
+            config=config,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            upload_reservation_owner=reservation.owner,
+            audit_actor_user_id=actor_user_id,
+            audit_operation="bulk_redrive",
+            audit_retention_days=ingest_operation_audit_retention_days(),
+            require_dead_lettered=True,
+        )
+    except SourceTaskNotFoundError:
+        release_upload_admission_reservation(config=config, reservation=reservation)
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome="not_found",
+        )
+        return "not_found"
+    except SourceTaskNotRetryableError:
+        release_upload_admission_reservation(config=config, reservation=reservation)
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome="not_retryable",
+        )
+        return "not_retryable"
+    except UploadReservationLostError:
+        release_upload_admission_reservation(config=config, reservation=reservation)
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome="reservation_lost",
+        )
+        return "reservation_lost"
+    except Exception:
+        release_upload_admission_reservation(config=config, reservation=reservation)
+        append_ingestion_redrive_audit(
+            config=config,
+            actor_user_id=actor_user_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            outcome="retry_unavailable",
+        )
+        return "retry_unavailable"
+
+    submit_upload_ingestion_job(
+        pending_source=queued.source,
+        saved_path=Path(queued.source.source_uri),
+        tenant_id=tenant_id,
+        acl_groups=queued.source.acl_groups,
+        doc_version=queued.requested_doc_version,
+        language="zh",
+    )
+    return "queued"
+
+
+def append_ingestion_redrive_audit(
+    *,
+    config,
+    actor_user_id: str,
+    tenant_id: str,
+    task_id: str,
+    outcome: str,
+) -> None:
+    append_ingestion_operation_audit(
+        config=config,
+        actor_user_id=actor_user_id,
+        tenant_id=tenant_id,
+        task_id=task_id,
+        operation="bulk_redrive",
+        outcome=outcome,
+        retention_days=ingest_operation_audit_retention_days(),
     )
 
 

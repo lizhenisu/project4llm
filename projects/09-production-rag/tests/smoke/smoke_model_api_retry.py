@@ -3,13 +3,19 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from rag_core.model_api_retry import call_model_api_with_retries, model_api_metrics_snapshot
+from rag_core.model_api_retry import (
+    call_model_api_with_retries,
+    chat_completion_with_fallback,
+    model_api_metrics_snapshot,
+    reset_llm_failover_state,
+)
 
 
 class ApiError(Exception):
@@ -28,6 +34,7 @@ def main() -> None:
         os.environ["RAG_MODEL_API_BACKOFF_MAX_SECONDS"] = "0"
         test_transient_errors_retry_until_success()
         test_non_transient_errors_do_not_retry()
+        test_transient_primary_failure_uses_fallback_and_circuit()
     finally:
         restore_env("RAG_MODEL_API_RETRIES", old_retries)
         restore_env("RAG_MODEL_API_BACKOFF_SECONDS", old_backoff)
@@ -77,6 +84,74 @@ def test_non_transient_errors_do_not_retry() -> None:
     assert after["retries_total"] == before["retries_total"]
     assert after["failures_total"] == before["failures_total"] + 1
     assert after["latency_max_ms"] >= 0
+
+
+def test_transient_primary_failure_uses_fallback_and_circuit() -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeOpenAI:
+        def __init__(self, *, base_url: str, api_key: str, **_kwargs) -> None:
+            self.base_url = base_url
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, *, model: str, messages: list[dict], **kwargs):
+            calls.append((self.base_url, model))
+            if self.base_url == "https://primary.example/v1":
+                raise ApiError(502)
+            assert self.base_url == "https://fallback.example/v1"
+            assert self.api_key == "fallback-key"
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+
+    config = SimpleNamespace(
+        llm_base_url="https://primary.example/v1",
+        llm_api_key="primary-key",
+        llm_model="primary-model",
+        siliconflow_base_url="https://api.siliconflow.cn",
+        siliconflow_api_key=None,
+    )
+    old_values = {
+        name: os.environ.get(name)
+        for name in (
+            "RAG_MODEL_API_RETRIES",
+            "RAG_LLM_FALLBACK_BASE_URL",
+            "RAG_LLM_FALLBACK_API_KEY",
+            "RAG_LLM_FALLBACK_MODEL",
+            "RAG_LLM_FALLBACK_BACKEND",
+            "RAG_LLM_FAILOVER_COOLDOWN_SECONDS",
+        )
+    }
+    try:
+        os.environ["RAG_MODEL_API_RETRIES"] = "1"
+        os.environ["RAG_LLM_FALLBACK_BASE_URL"] = "https://fallback.example"
+        os.environ["RAG_LLM_FALLBACK_API_KEY"] = "fallback-key"
+        os.environ["RAG_LLM_FALLBACK_MODEL"] = "fallback-model"
+        os.environ["RAG_LLM_FALLBACK_BACKEND"] = "backup"
+        os.environ["RAG_LLM_FAILOVER_COOLDOWN_SECONDS"] = "60"
+        reset_llm_failover_state()
+        with patch("openai.OpenAI", FakeOpenAI):
+            first = chat_completion_with_fallback(
+                config=config,
+                operation="fallback_probe",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+            second = chat_completion_with_fallback(
+                config=config,
+                operation="fallback_probe",
+                messages=[{"role": "user", "content": "hello again"}],
+            )
+    finally:
+        reset_llm_failover_state()
+        for name, value in old_values.items():
+            restore_env(name, value)
+
+    assert first.model == second.model == "fallback-model"
+    assert first.backend == second.backend == "backup"
+    assert calls == [
+        ("https://primary.example/v1", "primary-model"),
+        ("https://fallback.example/v1", "fallback-model"),
+        ("https://fallback.example/v1", "fallback-model"),
+    ]
 
 
 def operation_metrics(operation: str) -> dict[str, int | float]:

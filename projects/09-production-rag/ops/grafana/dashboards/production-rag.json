@@ -125,7 +125,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rag_ingestion_tasks{status=~\"queued|processing\"})",
+          "expr": "sum(max by (status) (rag_ingestion_tasks{status=~\"queued|processing\"}))",
           "refId": "A"
         }
       ],
@@ -343,6 +343,16 @@
           "expr": "sum by (operation) (rate(rag_model_api_operation_retries_total[$__rate_interval]))",
           "legendFormat": "{{operation}} retries",
           "refId": "B"
+        },
+        {
+          "expr": "max by (workload) (rag_model_usage_daily{kind=\"total_tokens\"})",
+          "legendFormat": "{{workload}} UTC-day tokens",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(rag_model_usage_recording_events_total{outcome=\"write_failure\"}[$__rate_interval]))",
+          "legendFormat": "usage ledger write failures",
+          "refId": "D"
         }
       ],
       "title": "External Model Calls and Retries",
@@ -374,7 +384,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (status) (rag_ingestion_tasks)",
+          "expr": "max by (status) (rag_ingestion_tasks)",
           "legendFormat": "{{status}}",
           "refId": "A"
         },
@@ -382,6 +392,11 @@
           "expr": "increase(rag_metadata_pool_timeouts_total[$__rate_interval])",
           "legendFormat": "metadata pool timeouts",
           "refId": "B"
+        },
+        {
+          "expr": "max by (outcome) (rag_ingestion_operator_audit_events{operation=\"bulk_redrive\"})",
+          "legendFormat": "redrive {{outcome}}",
+          "refId": "C"
         }
       ],
       "title": "Ingestion and Metadata Pressure",
@@ -459,6 +474,165 @@
         }
       ],
       "title": "Query Image Payload Size p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 20
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (status) (rag_query_result_cache_entries)",
+          "legendFormat": "{{status}} results",
+          "refId": "A"
+        },
+        {
+          "expr": "max(rag_query_result_cache_expired_entries)",
+          "legendFormat": "expired results",
+          "refId": "B"
+        },
+        {
+          "expr": "max(rag_query_result_stale_processing_entries)",
+          "legendFormat": "stale processing",
+          "refId": "C"
+        },
+        {
+          "expr": "max(rag_query_result_events)",
+          "legendFormat": "replay events",
+          "refId": "D"
+        }
+      ],
+      "title": "Query Recovery Cache",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (source_type, stage) (rag_ingestion_stage_duration_seconds_average)",
+          "legendFormat": "{{source_type}} {{stage}} avg",
+          "refId": "A"
+        },
+        {
+          "expr": "max by (source_type, stage) (rag_ingestion_stage_samples)",
+          "legendFormat": "{{source_type}} {{stage}} samples",
+          "refId": "B"
+        }
+      ],
+      "title": "Ingestion ETA Stage History",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (scope) (rag_query_rate_limit_config)",
+          "legendFormat": "{{scope}} limit",
+          "refId": "A"
+        },
+        {
+          "expr": "max by (scope) (rag_query_rate_limit_requests)",
+          "legendFormat": "{{scope}} requests",
+          "refId": "B"
+        },
+        {
+          "expr": "max by (scope) (rag_query_rate_limit_active_keys)",
+          "legendFormat": "{{scope}} active keys",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by (event) (rate(rag_query_rate_limit_events_total[$__rate_interval]))",
+          "legendFormat": "{{event}} rate",
+          "refId": "D"
+        }
+      ],
+      "title": "Query Request Rate Limits",
       "type": "timeseries"
     }
   ],

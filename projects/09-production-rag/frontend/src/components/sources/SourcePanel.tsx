@@ -337,10 +337,22 @@ function sourceProgressDetail(source: SourceItem) {
     const progress = normalizedProgress(source);
     const attemptDetail = attemptCount > 1 ? ` · 第 ${attemptCount} 次尝试` : "";
     const workDetail = source.progress_detail?.trim() ? ` · ${source.progress_detail.trim()}` : "";
-    if (stage && progress > 0) return `${stage} · ${progress}%${workDetail}${attemptDetail}`;
+    const etaDetail = formatEtaDetail(source.eta_seconds);
+    if (stage && progress > 0) return `${stage} · ${progress}%${workDetail}${etaDetail}${attemptDetail}`;
     if (attemptCount > 1) return `第 ${attemptCount} 次处理尝试`;
   }
   return "";
+}
+
+function formatEtaDetail(etaSeconds?: number | null) {
+  const seconds = Math.round(Number(etaSeconds));
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 60) return ` · 预计剩余约 ${Math.max(1, seconds)} 秒`;
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 60) return ` · 预计剩余约 ${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return ` · 预计剩余约 ${hours} 小时${restMinutes ? ` ${restMinutes} 分钟` : ""}`;
 }
 
 function normalizedProgress(source: SourceItem) {

@@ -431,8 +431,10 @@ CREATE TABLE IF NOT EXISTS source_tasks (
     status TEXT NOT NULL,
     error TEXT NOT NULL DEFAULT '',
     ingestion_stage TEXT NOT NULL DEFAULT 'queued',
+    stage_started_at INTEGER NOT NULL DEFAULT 0,
     progress_percent INTEGER NOT NULL DEFAULT 0,
     progress_detail TEXT NOT NULL DEFAULT '',
+    eta_seconds INTEGER,
     lease_owner TEXT NOT NULL DEFAULT '',
     lease_expires_at INTEGER NOT NULL DEFAULT 0,
     attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -443,6 +445,50 @@ CREATE TABLE IF NOT EXISTS source_tasks (
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_source_tasks_tenant_updated ON source_tasks(tenant_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ingestion_operation_audit (
+    id TEXT PRIMARY KEY,
+    actor_user_id TEXT NOT NULL DEFAULT '',
+    tenant_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ingestion_operation_audit_created
+ON ingestion_operation_audit(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ingestion_operation_audit_task
+ON ingestion_operation_audit(tenant_id, task_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS model_usage_daily (
+    usage_date TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    principal_key TEXT NOT NULL DEFAULT '',
+    workload TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(
+        usage_date, tenant_id, principal_key, workload, provider, model, operation
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_model_usage_daily_date_tenant
+ON model_usage_daily(usage_date DESC, tenant_id);
+
+CREATE TABLE IF NOT EXISTS ingestion_stage_stats (
+    source_type TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    total_duration_ms INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(source_type, stage)
+);
 
 CREATE TABLE IF NOT EXISTS query_admission_slots (
     scope_type TEXT NOT NULL,
@@ -458,6 +504,47 @@ CREATE INDEX IF NOT EXISTS idx_query_admission_slots_expiry
 ON query_admission_slots(lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_query_admission_slots_owner
 ON query_admission_slots(lease_owner);
+
+CREATE TABLE IF NOT EXISTS query_rate_limit_windows (
+    scope_type TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    window_started_at INTEGER NOT NULL,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(scope_type, scope_key, window_started_at)
+);
+CREATE INDEX IF NOT EXISTS idx_query_rate_limit_windows_started
+ON query_rate_limit_windows(window_started_at);
+
+CREATE TABLE IF NOT EXISTS query_result_cache (
+    tenant_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    lease_owner TEXT NOT NULL DEFAULT '',
+    lease_expires_at INTEGER NOT NULL DEFAULT 0,
+    response_json TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY(tenant_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_query_result_cache_expiry
+ON query_result_cache(expires_at);
+CREATE INDEX IF NOT EXISTS idx_query_result_cache_status_lease
+ON query_result_cache(status, lease_expires_at);
+
+CREATE TABLE IF NOT EXISTS query_result_events (
+    tenant_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    event_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(tenant_id, request_id, sequence),
+    FOREIGN KEY(tenant_id, request_id)
+        REFERENCES query_result_cache(tenant_id, request_id) ON DELETE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS upload_admission_slots (
     scope_type TEXT NOT NULL,
@@ -547,8 +634,10 @@ def ensure_sqlite_columns(conn: sqlite3.Connection) -> None:
     ensure_sqlite_column(conn, table="source_tasks", column="next_attempt_at", definition="INTEGER NOT NULL DEFAULT 0")
     ensure_sqlite_column(conn, table="source_tasks", column="dead_lettered_at", definition="INTEGER NOT NULL DEFAULT 0")
     ensure_sqlite_column(conn, table="source_tasks", column="ingestion_stage", definition="TEXT NOT NULL DEFAULT 'queued'")
+    ensure_sqlite_column(conn, table="source_tasks", column="stage_started_at", definition="INTEGER NOT NULL DEFAULT 0")
     ensure_sqlite_column(conn, table="source_tasks", column="progress_percent", definition="INTEGER NOT NULL DEFAULT 0")
     ensure_sqlite_column(conn, table="source_tasks", column="progress_detail", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_sqlite_column(conn, table="source_tasks", column="eta_seconds", definition="INTEGER")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
@@ -583,8 +672,10 @@ def ensure_postgres_columns(conn: PostgresConnection) -> None:
     ensure_postgres_column(conn, table="source_tasks", column="next_attempt_at", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="dead_lettered_at", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="ingestion_stage", definition="TEXT NOT NULL DEFAULT 'queued'")
+    ensure_postgres_column(conn, table="source_tasks", column="stage_started_at", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="progress_percent", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="progress_detail", definition="TEXT NOT NULL DEFAULT ''")
+    ensure_postgres_column(conn, table="source_tasks", column="eta_seconds", definition="BIGINT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"

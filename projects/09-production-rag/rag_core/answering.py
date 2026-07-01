@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from time import perf_counter
 
 from rag_core.config import RagConfig
-from rag_core.model_api_retry import call_model_api_with_retries
+from rag_core.model_api_retry import chat_completion_with_fallback
 from rag_core.prompts import ANSWER_SYSTEM_PROMPT
 from rag_core.prompts import build_answer_prompt
 from rag_core.prompts import format_evidence_header as prompt_evidence_header
@@ -35,29 +35,25 @@ def generate_answer(config: RagConfig, query: str, hits: list[SearchHit]) -> Ans
     if not config.llm_base_url or not config.llm_api_key:
         raise RuntimeError("NEW_API_URL/NEW_API_KEY must be configured for answer generation.")
 
-    from openai import OpenAI
-
-    client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
-    response = call_model_api_with_retries(
-        "answer_generation",
-        lambda: client.chat.completions.create(
-            model=config.llm_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": ANSWER_SYSTEM_PROMPT,
-                },
-                {"role": "user", "content": prompt},
-            ],
-        ),
+    completion = chat_completion_with_fallback(
+        config=config,
+        operation="answer_generation",
+        messages=[
+            {
+                "role": "system",
+                "content": ANSWER_SYSTEM_PROMPT,
+            },
+            {"role": "user", "content": prompt},
+        ],
     )
+    response = completion.response
     answer = response.choices[0].message.content or ""
     if not answer.strip():
         raise RuntimeError("LLM answer generation returned empty content.")
     return AnswerGeneration(
         answer=answer,
-        llm_model=config.llm_model,
-        llm_backend="newapi",
+        llm_model=completion.model,
+        llm_backend=completion.backend,
         latency_ms=elapsed_ms(start),
         token_usage=extract_usage(response),
     )
@@ -73,23 +69,19 @@ def generate_chat(config: RagConfig, messages: list[dict[str, str]]) -> AnswerGe
     if not config.llm_base_url or not config.llm_api_key:
         raise RuntimeError("NEW_API_URL/NEW_API_KEY must be configured for chat generation.")
 
-    from openai import OpenAI
-
-    client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
-    response = call_model_api_with_retries(
-        "chat_generation",
-        lambda: client.chat.completions.create(
-            model=config.llm_model,
-            messages=messages,
-        ),
+    completion = chat_completion_with_fallback(
+        config=config,
+        operation="chat_generation",
+        messages=messages,
     )
+    response = completion.response
     answer = response.choices[0].message.content or ""
     if not answer.strip():
         raise RuntimeError("LLM chat generation returned empty content.")
     return AnswerGeneration(
         answer=answer,
-        llm_model=config.llm_model,
-        llm_backend="newapi",
+        llm_model=completion.model,
+        llm_backend=completion.backend,
         latency_ms=elapsed_ms(start),
         token_usage=extract_usage(response),
     )

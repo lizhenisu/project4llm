@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import shutil
 import hashlib
 import json
+import logging
 import mimetypes
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -19,6 +20,11 @@ from rag_core.config import RagConfig
 from rag_core.database import connect_metadata_db
 from rag_core.embeddings import build_embedding_model, build_image_embedding_model, zero_image_vector
 from rag_core.io import image_bytes_are_informative, load_file_documents, load_table_documents
+from rag_core.ingestion_operations import (
+    insert_ingestion_operation_audit,
+    new_ingestion_operation_audit,
+    prune_ingestion_operation_audit,
+)
 from rag_core.jsonl_store import (
     delete_object,
     object_store_backend,
@@ -50,12 +56,26 @@ from rag_core.versioning import load_current_versions, publish_current_versions,
 MIN_EMBEDDABLE_IMAGE_SIDE = 8
 MIN_EMBEDDABLE_IMAGE_PIXELS = 32
 MAX_EMBEDDABLE_IMAGE_ASPECT_RATIO = 20.0
+LOGGER = logging.getLogger(__name__)
 
 
 SUPPORTED_FILE_SUFFIXES = {".pdf", ".html", ".htm", ".md", ".txt", ".csv", ".tsv"}
 _SOURCE_LIST_CACHE_LOCK = threading.Lock()
 _SOURCE_LIST_CACHE: dict[tuple[str, str, str], tuple[float, list["SourceSummary"]]] = {}
 _REQUESTED_DOC_VERSION_UNSET = object()
+INGESTION_STAGE_ORDER = [
+    "parsing",
+    "parsed",
+    "preparing",
+    "chunking",
+    "text_embedding",
+    "image_embedding",
+    "summarizing",
+    "indexing",
+    "persisting",
+    "finalizing",
+]
+MIN_ETA_STAGE_SAMPLES = 2
 
 
 class UploadTooLargeError(ValueError):
@@ -99,8 +119,10 @@ class SourceSummary:
     next_attempt_at: int = 0
     dead_lettered: bool = False
     ingestion_stage: str = ""
+    stage_started_at: int = 0
     progress_percent: int = 0
     progress_detail: str = ""
+    eta_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -326,6 +348,7 @@ def create_source_task(
         updated_at=timestamp,
         child_doc_ids=[],
         ingestion_stage="queued",
+        stage_started_at=timestamp,
         progress_percent=0,
     )
     save_source_task_for_tenant(
@@ -359,16 +382,19 @@ def save_source_task_for_tenant(
             """
             INSERT INTO source_tasks(
                 id, tenant_id, doc_id, title, source_type, source_uri, doc_version,
-                acl_groups, status, error, ingestion_stage, progress_percent, progress_detail,
+                acl_groups, status, error, ingestion_stage, stage_started_at, progress_percent, progress_detail,
+                eta_seconds,
                 requested_doc_version, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 error = excluded.error,
                 ingestion_stage = excluded.ingestion_stage,
+                stage_started_at = excluded.stage_started_at,
                 progress_percent = excluded.progress_percent,
                 progress_detail = excluded.progress_detail,
+                eta_seconds = excluded.eta_seconds,
                 lease_owner = '',
                 lease_expires_at = 0,
                 next_attempt_at = 0,
@@ -390,8 +416,10 @@ def save_source_task_for_tenant(
                 source.status,
                 error,
                 source.ingestion_stage or source.status,
+                source.stage_started_at or source.updated_at or source.created_at or now_ms(),
                 max(0, min(100, int(source.progress_percent))),
                 source.progress_detail[:160],
+                source.eta_seconds,
                 resolved_requested_version,
                 source.created_at or now_ms(),
                 source.updated_at or now_ms(),
@@ -418,6 +446,23 @@ def delete_source_task(
 ) -> bool:
     with connect_metadata_db(config) as conn:
         if lease_owner:
+            row = conn.execute(
+                """
+                SELECT source_type, ingestion_stage, stage_started_at, updated_at
+                FROM source_tasks
+                WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
+                """,
+                (tenant_id, task_id, lease_owner),
+            ).fetchone()
+            if row is not None:
+                timestamp = now_ms()
+                record_ingestion_stage_duration(
+                    conn,
+                    source_type=str(row["source_type"] or "file"),
+                    stage=str(row["ingestion_stage"] or ""),
+                    duration_ms=timestamp - int(row["stage_started_at"] or row["updated_at"] or timestamp),
+                    timestamp=timestamp,
+                )
             cursor = conn.execute(
                 """
                 DELETE FROM source_tasks
@@ -633,10 +678,10 @@ def fail_source_task(
             """
             UPDATE source_tasks
             SET status = 'failed', error = ?, updated_at = ?, lease_owner = '', lease_expires_at = 0,
-                ingestion_stage = 'failed', progress_detail = ''
+                ingestion_stage = 'failed', stage_started_at = ?, progress_detail = '', eta_seconds = NULL
             WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
             """,
-            (error[:500], failed.updated_at, tenant_id, source.doc_id, lease_owner),
+            (error[:500], failed.updated_at, failed.updated_at, tenant_id, source.doc_id, lease_owner),
         )
     updated = int(cursor.rowcount or 0) == 1
     if updated:
@@ -681,13 +726,15 @@ def retry_or_fail_source_task(
                 SET status = 'queued', error = ?, updated_at = ?,
                     lease_owner = '', lease_expires_at = 0,
                     next_attempt_at = ?, dead_lettered_at = 0,
-                    ingestion_stage = 'waiting_retry', progress_percent = 0, progress_detail = ''
+                    ingestion_stage = 'waiting_retry', stage_started_at = ?, progress_percent = 0,
+                    progress_detail = '', eta_seconds = NULL
                 WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
                 """,
                 (
                     error[:500],
                     timestamp,
                     next_attempt_at,
+                    timestamp,
                     tenant_id,
                     source.doc_id,
                     lease_owner,
@@ -701,11 +748,12 @@ def retry_or_fail_source_task(
                 SET status = 'failed', error = ?, updated_at = ?,
                     lease_owner = '', lease_expires_at = 0,
                     next_attempt_at = 0, dead_lettered_at = ?,
-                    ingestion_stage = 'failed', progress_detail = ''
+                    ingestion_stage = 'failed', stage_started_at = ?, progress_detail = '', eta_seconds = NULL
                 WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
                 """,
                 (
                     error[:500],
+                    timestamp,
                     timestamp,
                     timestamp,
                     tenant_id,
@@ -726,6 +774,10 @@ def retry_failed_source_task(
     tenant_id: str,
     task_id: str,
     upload_reservation_owner: str | None = None,
+    audit_actor_user_id: str = "",
+    audit_operation: str = "",
+    audit_retention_days: int = 90,
+    require_dead_lettered: bool = False,
 ) -> QueuedSourceTask:
     timestamp = now_ms()
     with connect_metadata_db(config) as conn:
@@ -734,7 +786,8 @@ def retry_failed_source_task(
         row = conn.execute(
             """
             SELECT tenant_id, doc_id, title, source_type, source_uri, doc_version,
-                   acl_groups, status, error, requested_doc_version, created_at, updated_at
+                   acl_groups, status, error, requested_doc_version, dead_lettered_at,
+                   created_at, updated_at
             FROM source_tasks
             WHERE tenant_id = ? AND id = ?
             """,
@@ -744,16 +797,19 @@ def retry_failed_source_task(
             raise SourceTaskNotFoundError("Source task not found")
         if str(row["status"]) != "failed":
             raise SourceTaskNotRetryableError("Only failed source tasks can be retried")
+        if require_dead_lettered and int(row["dead_lettered_at"] or 0) <= 0:
+            raise SourceTaskNotRetryableError("Only dead-lettered source tasks can be redriven")
         cursor = conn.execute(
             """
             UPDATE source_tasks
             SET status = 'queued', error = '', updated_at = ?,
                 lease_owner = '', lease_expires_at = 0, attempt_count = 0,
                 next_attempt_at = 0, dead_lettered_at = 0,
-                ingestion_stage = 'queued', progress_percent = 0, progress_detail = ''
+                ingestion_stage = 'queued', stage_started_at = ?, progress_percent = 0,
+                progress_detail = '', eta_seconds = NULL
             WHERE tenant_id = ? AND id = ? AND status = 'failed'
             """,
-            (timestamp, tenant_id, task_id),
+            (timestamp, timestamp, tenant_id, task_id),
         )
         if int(cursor.rowcount or 0) != 1:
             raise SourceTaskNotRetryableError("Source task state changed before retry")
@@ -766,6 +822,23 @@ def retry_failed_source_task(
                 raise UploadReservationLostError(
                     "Upload admission reservation expired before task retry"
                 )
+        if audit_operation:
+            prune_ingestion_operation_audit(
+                conn,
+                retention_days=audit_retention_days,
+                timestamp_ms=timestamp,
+            )
+            insert_ingestion_operation_audit(
+                conn,
+                new_ingestion_operation_audit(
+                    actor_user_id=audit_actor_user_id,
+                    tenant_id=tenant_id,
+                    task_id=task_id,
+                    operation=audit_operation,
+                    outcome="queued",
+                    timestamp_ms=timestamp,
+                ),
+            )
     invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     source = SourceSummary(
         doc_id=str(row["doc_id"]),
@@ -782,6 +855,7 @@ def retry_failed_source_task(
         child_doc_ids=[],
         error="",
         ingestion_stage="queued",
+        stage_started_at=timestamp,
         progress_percent=0,
     )
     return QueuedSourceTask(
@@ -803,13 +877,16 @@ def update_source_task_status(
     status: str,
     error: str = "",
 ) -> SourceSummary:
+    timestamp = now_ms()
     updated = replace(
         source,
         status=status,
         ingestion_stage=status,
+        stage_started_at=timestamp,
         progress_percent=0 if status in {"queued", "failed"} else source.progress_percent,
         progress_detail="" if status in {"queued", "failed"} else source.progress_detail,
-        updated_at=now_ms(),
+        eta_seconds=None if status in {"queued", "failed"} else source.eta_seconds,
+        updated_at=timestamp,
     )
     save_source_task_for_tenant(config=config, tenant_id=tenant_id, source=updated, error=error[:500])
     return updated
@@ -1244,14 +1321,24 @@ def generate_ingested_source_guides(
         source_docs = sorted(source_docs, key=source_document_sort_key)
         if not source_docs:
             continue
-        get_or_create_source_guide(
-            config=config,
-            tenant_id=source_docs[0].tenant_id,
-            source_doc_id=source.doc_id,
-            doc_version=source.doc_version,
-            doc_title=source.title,
-            docs=source_docs,
-        )
+        try:
+            get_or_create_source_guide(
+                config=config,
+                tenant_id=source_docs[0].tenant_id,
+                source_doc_id=source.doc_id,
+                doc_version=source.doc_version,
+                doc_title=source.title,
+                docs=source_docs,
+            )
+        except Exception as exc:  # noqa: BLE001 - source guides are an optional ingestion enhancement.
+            LOGGER.warning(
+                "Source guide generation failed for tenant=%s source=%s version=%s; "
+                "continuing ingestion without a guide: %s",
+                source_docs[0].tenant_id,
+                source.doc_id,
+                source.doc_version,
+                exc,
+            )
         save_source_section_summaries(
             config.object_store_dir,
             tenant_id=source_docs[0].tenant_id,
@@ -1384,7 +1471,7 @@ def list_source_tasks(*, config: RagConfig, tenant_id: str) -> list[SourceSummar
             """
             SELECT doc_id, title, source_type, source_uri, doc_version, acl_groups,
                    status, error, attempt_count, next_attempt_at, dead_lettered_at,
-                   ingestion_stage, progress_percent, progress_detail,
+                   ingestion_stage, stage_started_at, progress_percent, progress_detail, eta_seconds,
                    created_at, updated_at
             FROM source_tasks
             WHERE tenant_id = ?
@@ -1411,8 +1498,10 @@ def list_source_tasks(*, config: RagConfig, tenant_id: str) -> list[SourceSummar
             next_attempt_at=int(row["next_attempt_at"] or 0),
             dead_lettered=int(row["dead_lettered_at"] or 0) > 0,
             ingestion_stage=str(row["ingestion_stage"] or ""),
+            stage_started_at=int(row["stage_started_at"] or 0),
             progress_percent=max(0, min(100, int(row["progress_percent"] or 0))),
             progress_detail=str(row["progress_detail"] or ""),
+            eta_seconds=int(row["eta_seconds"]) if row["eta_seconds"] is not None else None,
         )
         for row in rows
     ]
@@ -1523,6 +1612,33 @@ def source_task_recovery_metrics_snapshot(
     }
 
 
+def ingestion_stage_stats_snapshot(*, config: RagConfig) -> dict[str, dict[str, dict[str, float | int]]]:
+    with connect_metadata_db(config) as conn:
+        rows = conn.execute(
+            """
+            SELECT source_type, stage, sample_count, total_duration_ms
+            FROM ingestion_stage_stats
+            ORDER BY source_type, stage
+            """
+        ).fetchall()
+    snapshot: dict[str, dict[str, dict[str, float | int]]] = {}
+    for row in rows:
+        source_type = str(row["source_type"] or "file")[:32]
+        stage = str(row["stage"] or "")[:64]
+        sample_count = max(0, int(row["sample_count"] or 0))
+        total_duration_ms = max(0, int(row["total_duration_ms"] or 0))
+        average_seconds = (
+            round((total_duration_ms / sample_count) / 1000.0, 3)
+            if sample_count > 0
+            else 0.0
+        )
+        snapshot.setdefault(source_type, {})[stage] = {
+            "sample_count": sample_count,
+            "average_seconds": average_seconds,
+        }
+    return snapshot
+
+
 def count_active_source_tasks(*, config: RagConfig, tenant_id: str | None = None) -> int:
     params: list[object] = ["queued", "processing", "uploading"]
     where = "WHERE status IN (?, ?, ?)"
@@ -1548,7 +1664,7 @@ def list_queued_source_tasks(*, config: RagConfig, limit: int = 100) -> list[Que
             """
             SELECT tenant_id, doc_id, title, source_type, source_uri, doc_version, acl_groups,
                    status, error, requested_doc_version, ingestion_stage, progress_percent,
-                   progress_detail,
+                   progress_detail, stage_started_at, eta_seconds,
                    created_at, updated_at
             FROM source_tasks
             WHERE status = 'queued' AND next_attempt_at <= ?
@@ -1575,8 +1691,10 @@ def list_queued_source_tasks(*, config: RagConfig, limit: int = 100) -> list[Que
                 child_doc_ids=[],
                 error=str(row["error"] or ""),
                 ingestion_stage=str(row["ingestion_stage"] or ""),
+                stage_started_at=int(row["stage_started_at"] or 0),
                 progress_percent=max(0, min(100, int(row["progress_percent"] or 0))),
                 progress_detail=str(row["progress_detail"] or ""),
+                eta_seconds=int(row["eta_seconds"]) if row["eta_seconds"] is not None else None,
             ),
             requested_doc_version=(
                 int(row["requested_doc_version"])
@@ -1621,7 +1739,7 @@ def requeue_stale_processing_source_tasks(
             UPDATE source_tasks
             SET status = 'queued', updated_at = ?, error = '', lease_owner = '', lease_expires_at = 0,
                 next_attempt_at = ?, ingestion_stage = 'queued', progress_percent = 0,
-                progress_detail = ''
+                stage_started_at = ?, progress_detail = '', eta_seconds = NULL
             WHERE id IN ({placeholders})
               AND status = 'processing'
               AND (
@@ -1629,7 +1747,7 @@ def requeue_stale_processing_source_tasks(
                 OR (lease_expires_at = 0 AND updated_at < ?)
               )
             """,
-            (timestamp, timestamp, *task_ids, timestamp, cutoff),
+            (timestamp, timestamp, timestamp, *task_ids, timestamp, cutoff),
         )
         updated_count = int(cursor.rowcount or 0)
     for tenant_id in tenant_ids:
@@ -1645,13 +1763,16 @@ def claim_source_task_for_processing(
     lease_owner: str,
     lease_ms: int,
 ) -> SourceSummary | None:
+    timestamp = now_ms()
     updated = replace(
         source,
         status="processing",
         ingestion_stage="parsing",
+        stage_started_at=timestamp,
         progress_percent=5,
         progress_detail="",
-        updated_at=now_ms(),
+        eta_seconds=None,
+        updated_at=timestamp,
     )
     lease_expires_at = updated.updated_at + max(1000, int(lease_ms))
     with connect_metadata_db(config) as conn:
@@ -1661,13 +1782,14 @@ def claim_source_task_for_processing(
             SET status = 'processing', updated_at = ?, error = '',
                 lease_owner = ?, lease_expires_at = ?, attempt_count = attempt_count + 1,
                 next_attempt_at = 0, ingestion_stage = 'parsing', progress_percent = 5,
-                progress_detail = ''
+                stage_started_at = ?, progress_detail = '', eta_seconds = NULL
             WHERE tenant_id = ? AND id = ? AND status = 'queued' AND next_attempt_at <= ?
             """,
             (
                 updated.updated_at,
                 lease_owner,
                 lease_expires_at,
+                updated.updated_at,
                 tenant_id,
                 source.doc_id,
                 updated.updated_at,
@@ -1721,16 +1843,48 @@ def update_source_task_progress(
     clean_detail = progress_detail.strip()[:160]
     timestamp = now_ms()
     with connect_metadata_db(config) as conn:
+        row = conn.execute(
+            """
+            SELECT source_type, ingestion_stage, stage_started_at, updated_at
+            FROM source_tasks
+            WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
+            """,
+            (tenant_id, task_id, lease_owner),
+        ).fetchone()
+        if row is None:
+            return False
+        source_type = str(row["source_type"] or "file")
+        previous_stage = str(row["ingestion_stage"] or "")
+        previous_started_at = int(row["stage_started_at"] or row["updated_at"] or timestamp)
+        stage_started_at = previous_started_at if clean_stage == previous_stage else timestamp
+        if clean_stage != previous_stage:
+            record_ingestion_stage_duration(
+                conn,
+                source_type=source_type,
+                stage=previous_stage,
+                duration_ms=timestamp - previous_started_at,
+                timestamp=timestamp,
+            )
+        eta_seconds = estimate_ingestion_eta_seconds(
+            conn,
+            source_type=source_type,
+            current_stage=clean_stage,
+            stage_started_at=stage_started_at,
+            timestamp=timestamp,
+        )
         cursor = conn.execute(
             """
             UPDATE source_tasks
-            SET ingestion_stage = ?, progress_percent = ?, progress_detail = ?, updated_at = ?
+            SET ingestion_stage = ?, stage_started_at = ?, progress_percent = ?,
+                progress_detail = ?, eta_seconds = ?, updated_at = ?
             WHERE tenant_id = ? AND id = ? AND status = 'processing' AND lease_owner = ?
             """,
             (
                 clean_stage,
+                stage_started_at,
                 max(0, min(99, int(progress_percent))),
                 clean_detail,
+                eta_seconds,
                 timestamp,
                 tenant_id,
                 task_id,
@@ -1741,6 +1895,103 @@ def update_source_task_progress(
     if updated:
         invalidate_source_list_cache(config=config, tenant_id=tenant_id)
     return updated
+
+
+def record_ingestion_stage_duration(
+    conn,
+    *,
+    source_type: str,
+    stage: str,
+    duration_ms: int,
+    timestamp: int,
+) -> None:
+    clean_stage = stage.strip()[:64]
+    if clean_stage not in INGESTION_STAGE_ORDER:
+        return
+    clean_source_type = source_type.strip()[:32] or "file"
+    bounded_duration = max(1, min(int(duration_ms), 24 * 60 * 60 * 1000))
+    for stats_source_type in (clean_source_type, "_all"):
+        conn.execute(
+            """
+            INSERT INTO ingestion_stage_stats(
+                source_type, stage, sample_count, total_duration_ms, updated_at
+            )
+            VALUES (?, ?, 1, ?, ?)
+            ON CONFLICT(source_type, stage) DO UPDATE SET
+                sample_count = ingestion_stage_stats.sample_count + 1,
+                total_duration_ms = ingestion_stage_stats.total_duration_ms + excluded.total_duration_ms,
+                updated_at = excluded.updated_at
+            """,
+            (stats_source_type, clean_stage, bounded_duration, timestamp),
+        )
+
+
+def estimate_ingestion_eta_seconds(
+    conn,
+    *,
+    source_type: str,
+    current_stage: str,
+    stage_started_at: int,
+    timestamp: int,
+) -> int | None:
+    if current_stage not in INGESTION_STAGE_ORDER:
+        return None
+    source_stats = load_ingestion_stage_stats(conn, source_type=source_type)
+    fallback_stats = load_ingestion_stage_stats(conn, source_type="_all")
+
+    remaining_ms = 0
+    seen_current = False
+    for stage in expected_ingestion_eta_stages(source_type, stats={**fallback_stats, **source_stats}):
+        if stage == current_stage:
+            seen_current = True
+            average = stage_average_ms(source_stats.get(stage) or fallback_stats.get(stage))
+            if average is None:
+                return None
+            elapsed = max(0, timestamp - max(0, int(stage_started_at or timestamp)))
+            remaining_ms += max(0, average - elapsed)
+            continue
+        if not seen_current:
+            continue
+        average = stage_average_ms(source_stats.get(stage) or fallback_stats.get(stage))
+        if average is None:
+            return None
+        remaining_ms += average
+    if not seen_current:
+        return None
+    return max(1, int(round(remaining_ms / 1000))) if remaining_ms > 0 else 1
+
+
+def load_ingestion_stage_stats(conn, *, source_type: str) -> dict[str, tuple[int, int]]:
+    rows = conn.execute(
+        """
+        SELECT stage, sample_count, total_duration_ms
+        FROM ingestion_stage_stats
+        WHERE source_type = ?
+        """,
+        (source_type.strip()[:32] or "file",),
+    ).fetchall()
+    return {
+        str(row["stage"]): (int(row["sample_count"] or 0), int(row["total_duration_ms"] or 0))
+        for row in rows
+    }
+
+
+def stage_average_ms(stats: tuple[int, int] | None) -> int | None:
+    if stats is None:
+        return None
+    sample_count, total_duration_ms = stats
+    if sample_count < MIN_ETA_STAGE_SAMPLES or total_duration_ms <= 0:
+        return None
+    return max(1, int(total_duration_ms / sample_count))
+
+
+def expected_ingestion_eta_stages(source_type: str, *, stats: dict[str, tuple[int, int]]) -> list[str]:
+    stages = list(INGESTION_STAGE_ORDER)
+    if source_type.strip().lower() != "pdf" and "image_embedding" not in stats:
+        stages.remove("image_embedding")
+    elif "image_embedding" not in stats:
+        stages.remove("image_embedding")
+    return stages
 
 
 def load_source_title_overrides(*, config: RagConfig, tenant_id: str) -> dict[tuple[str, int], str]:

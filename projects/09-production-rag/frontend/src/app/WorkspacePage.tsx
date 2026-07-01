@@ -22,11 +22,14 @@ import {
   getSourceContent,
   health,
   listAdminUsers,
+  listAdminDeadLetters,
+  listAdminIngestionAudit,
   listAnnouncements,
   listArtifacts,
   listConversations,
   listSources,
   publishAnnouncement,
+  redriveAdminDeadLetters,
   queryRagStream,
   changeCurrentPassword,
   refreshLoginToken,
@@ -65,7 +68,7 @@ import {
   saveWorkspaceName,
   saveWorkspaces,
 } from "../lib/storage";
-import type { AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, ConversationListItem, MindMapArtifact, RagProgressStage, Settings, SourceContent, SourceItem, WorkspaceRecord } from "../lib/types";
+import type { AdminDeadLetterTask, AdminIngestionAuditEvent, AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, ConversationListItem, MindMapArtifact, RagProgressStage, Settings, SourceContent, SourceItem, WorkspaceRecord } from "../lib/types";
 
 type PanelLayout = {
   source: number;
@@ -75,7 +78,7 @@ type PanelLayout = {
 
 type ResizeHandle = "source-chat" | "chat-studio";
 type AppView = "workspace" | "profile" | "admin";
-type AdminSection = "settings" | "announcements" | "users";
+type AdminSection = "settings" | "announcements" | "users" | "ingestion";
 type AdminUserDraft = {
   profileNameEditAllowed: boolean;
   avatarEditAllowed: boolean;
@@ -508,7 +511,26 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       // Track uploaded sources for the current workspace
       const uploadedIds = uploaded.map((s) => s.doc_id);
       addSourcesToWorkspace(requestWorkspaceId, uploadedIds);
-      const readyRows = await waitForSourcesReady(settings, uploaded, sourceKeysBeforeUpload);
+      const readyRows = await waitForSourcesReady(
+        settings,
+        uploaded,
+        sourceKeysBeforeUpload,
+        (polledRows) => {
+          if (!isCurrentWorkspace()) return;
+          const workspaceSources = loadWorkspaceSources(requestWorkspaceId);
+          const filteredRows = filterWorkspaceSources(sourceRowsForList(polledRows), workspaceSources);
+          setSources((items) =>
+            preservePendingSourceRows(
+              mergeSelectedState(
+                applyWorkspaceSourceTitles(filteredRows, requestWorkspaceId),
+                items,
+                requestWorkspaceId,
+              ),
+              items,
+            ),
+          );
+        },
+      );
       const resolvedUploads = resolveUploadedSources(readyRows, uploaded, sourceKeysBeforeUpload);
       if (resolvedUploads.length > 0) {
         addSourcesToWorkspace(requestWorkspaceId, sourceIdsForWorkspace(resolvedUploads));
@@ -723,6 +745,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       id: crypto.randomUUID(),
       role: "assistant",
       content: requestSelectedDocIds.length > 0 ? "RAG 调用链启动中..." : "大模型正在思考...",
+      requestId: crypto.randomUUID(),
       status: "sending",
       created_at: Date.now(),
       ragProgress: initialRagProgress(requestSelectedDocIds.length > 0 || Boolean(imageDataUrl)),
@@ -754,6 +777,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       try {
         const response = await queryRagStream(settings, {
           query,
+          requestId: pending.requestId!,
           docIds: requestSelectedDocIds,
           history: requestHistory,
           imageDataUrl,
@@ -840,6 +864,10 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     if (userIndex < 0) return;
     const pending = conversation.messages[pendingIndex];
     const userMessage = conversation.messages[userIndex];
+    const recoveryRequestId = pending.requestId || crypto.randomUUID();
+    const recoveryMessages = conversation.messages.map((message, index) =>
+      index === pendingIndex ? { ...message, requestId: recoveryRequestId } : message,
+    );
     setBusy(true);
     setTypingMessageId(null);
     let latestRagProgress = initialRagProgress(conversation.source_doc_ids.length > 0 || Boolean(userMessage.imageDataUrl)) || [];
@@ -868,8 +896,9 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       try {
         const response = await queryRagStream(nextSettings, {
           query: userMessage.content,
+          requestId: recoveryRequestId,
           docIds: conversation.source_doc_ids,
-          history: conversation.messages
+          history: recoveryMessages
             .slice(0, userIndex)
             .map((message) => `${message.role}: ${message.content}`)
             .slice(-8),
@@ -882,7 +911,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         });
         progressUpdater.cancel();
         if (!isCurrentSession()) return;
-        const nextMessages: ChatMessage[] = conversation.messages.map((item, index) =>
+        const nextMessages: ChatMessage[] = recoveryMessages.map((item, index) =>
           index === pendingIndex
             ? {
                 ...item,
@@ -906,7 +935,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       if (!isCurrentSession()) return;
       if (isFetchInterrupted(error)) {
         const interruptedMessages = markPendingAnswerInterrupted(
-          conversation.messages,
+          recoveryMessages,
           pending.id,
           latestRagProgress,
         );
@@ -927,7 +956,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         }
         return;
       }
-      const failedMessages: ChatMessage[] = conversation.messages.map((item, index) =>
+      const failedMessages: ChatMessage[] = recoveryMessages.map((item, index) =>
         index === pendingIndex
           ? {
               ...item,
@@ -1885,6 +1914,18 @@ function AdminPage({
               <small>{userTotal === null ? "加载中" : `${userTotal} 个账号`}</small>
             </span>
           </button>
+          <button
+            type="button"
+            className={activeSection === "ingestion" ? "is-active" : ""}
+            title="摄取运维"
+            onClick={() => setActiveSection("ingestion")}
+          >
+            <DatabaseZap size={17} />
+            <span>
+              <strong>摄取运维</strong>
+              <small>死信与审计</small>
+            </span>
+          </button>
         </aside>
         <section className="admin-console-content">
           {activeSection === "settings" ? (
@@ -1974,9 +2015,236 @@ function AdminPage({
           {activeSection === "users" ? (
             <AdminUsersPanel settings={settings} currentUser={currentUser} />
           ) : null}
+          {activeSection === "ingestion" ? (
+            <AdminIngestionPanel settings={settings} />
+          ) : null}
         </section>
       </section>
     </main>
+  );
+}
+
+function AdminIngestionPanel({ settings }: { settings: Settings }) {
+  const pageSize = 20;
+  const [tasks, setTasks] = useState<AdminDeadLetterTask[]>([]);
+  const [auditEvents, setAuditEvents] = useState<AdminIngestionAuditEvent[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [auditError, setAuditError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    listAdminDeadLetters(settings, { limit: pageSize, offset })
+      .then((deadLetters) => {
+        if (cancelled) return;
+        setTasks(deadLetters.tasks);
+        setTotal(deadLetters.total);
+        const maxOffset = deadLetters.total > 0
+          ? Math.floor((deadLetters.total - 1) / pageSize) * pageSize
+          : 0;
+        if (offset > maxOffset) {
+          setOffset(maxOffset);
+        }
+        const visibleKeys = new Set(deadLetters.tasks.map(adminIngestionTaskKey));
+        setSelectedKeys((current) => current.filter((key) => visibleKeys.has(key)));
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "加载摄取运维数据失败");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [offset, refreshVersion, settings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAuditError("");
+    listAdminIngestionAudit(settings, { limit: 20 })
+      .then((audit) => {
+        if (!cancelled) setAuditEvents(audit.events);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setAuditError(err instanceof Error ? err.message : "加载操作审计失败");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshVersion, settings]);
+
+  const selectedTasks = tasks.filter((task) =>
+    selectedKeys.includes(adminIngestionTaskKey(task)),
+  );
+  const allPageSelected = tasks.length > 0 && selectedTasks.length === tasks.length;
+
+  function toggleTask(task: AdminDeadLetterTask) {
+    const key = adminIngestionTaskKey(task);
+    setSelectedKeys((current) =>
+      current.includes(key)
+        ? current.filter((item) => item !== key)
+        : [...current, key],
+    );
+  }
+
+  async function redriveSelected() {
+    if (!selectedTasks.length) return;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await redriveAdminDeadLetters(
+        settings,
+        selectedTasks.map((task) => ({
+          tenant_id: task.tenant_id,
+          task_id: task.task_id,
+        })),
+      );
+      setNotice(
+        response.rejected
+          ? `已重新排队 ${response.queued} 个，${response.rejected} 个未处理。`
+          : `已重新排队 ${response.queued} 个任务。`,
+      );
+      setSelectedKeys([]);
+      setRefreshVersion((version) => version + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "批量重新处理失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="admin-ingestion-panel">
+      <div className="admin-section-heading">
+        <div>
+          <h2>摄取运维</h2>
+          <p>查看终止重试的摄取任务，批量重新排队，并核对管理员操作记录。</p>
+        </div>
+        <button
+          type="button"
+          className="inline-action"
+          disabled={loading || busy}
+          onClick={() => setRefreshVersion((version) => version + 1)}
+        >
+          <RefreshCw size={15} />
+          刷新
+        </button>
+      </div>
+
+      <div className="admin-ingestion-toolbar">
+        <label>
+          <input
+            type="checkbox"
+            checked={allPageSelected}
+            disabled={!tasks.length || busy}
+            aria-label="选择当前页全部死信任务"
+            onChange={() =>
+              setSelectedKeys(
+                allPageSelected ? [] : tasks.map(adminIngestionTaskKey),
+              )
+            }
+          />
+          当前页 {tasks.length} 个，共 {total} 个死信任务
+        </label>
+        <button
+          type="button"
+          className="inline-action"
+          disabled={!selectedTasks.length || busy}
+          onClick={redriveSelected}
+        >
+          <RefreshCw size={15} />
+          {busy ? "正在重新排队…" : `重新处理所选（${selectedTasks.length}）`}
+        </button>
+      </div>
+
+      {loading ? <p className="muted-text">正在加载死信任务…</p> : null}
+      {!loading && !tasks.length ? (
+        <div className="admin-ingestion-empty">
+          <CheckCircle2 size={20} />
+          <span>当前没有死信任务</span>
+        </div>
+      ) : null}
+      <div className="admin-ingestion-task-list" aria-label="摄取死信任务">
+        {tasks.map((task) => {
+          const key = adminIngestionTaskKey(task);
+          return (
+            <article className="admin-ingestion-task" key={key}>
+              <label className="admin-ingestion-task-select">
+                <input
+                  type="checkbox"
+                  checked={selectedKeys.includes(key)}
+                  disabled={busy}
+                  aria-label={`选择死信任务 ${task.title}`}
+                  onChange={() => toggleTask(task)}
+                />
+              </label>
+              <div className="admin-ingestion-task-main">
+                <strong>{task.title}</strong>
+                <span>{task.tenant_id} · {task.source_type.toUpperCase()}</span>
+                <small>{task.error || "未记录错误详情"}</small>
+              </div>
+              <div className="admin-ingestion-task-meta">
+                <span>尝试 {task.attempt_count} 次</span>
+                <span>{formatDateTime(task.dead_lettered_at)}</span>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
+      <div className="admin-pagination">
+        <button
+          type="button"
+          className="inline-action"
+          disabled={offset === 0 || loading}
+          onClick={() => setOffset((value) => Math.max(0, value - pageSize))}
+        >
+          上一页
+        </button>
+        <button
+          type="button"
+          className="inline-action"
+          disabled={offset + pageSize >= total || loading}
+          onClick={() => setOffset((value) => value + pageSize)}
+        >
+          下一页
+        </button>
+      </div>
+
+      <section className="admin-ingestion-audit">
+        <div>
+          <h3>最近操作审计</h3>
+          <span>保留最近的批量重新处理结果</span>
+        </div>
+        {!auditEvents.length ? <p className="muted-text">暂无操作记录</p> : null}
+        <div className="admin-ingestion-audit-list">
+          {auditEvents.map((event) => (
+            <article key={event.id}>
+              <strong>{adminIngestionOutcomeLabel(event.outcome)}</strong>
+              <span>{event.tenant_id} · {event.task_id}</span>
+              <small>{formatDateTime(event.created_at)} · 操作人 {event.actor_user_id}</small>
+            </article>
+          ))}
+        </div>
+        {auditError ? <p className="error-text" role="alert">{auditError}</p> : null}
+      </section>
+      {notice ? <p className="success-text" role="status">{notice}</p> : null}
+      {error ? <p className="error-text" role="alert">{error}</p> : null}
+    </section>
   );
 }
 
@@ -2245,6 +2513,24 @@ function AdminUsersPanel({
   );
 }
 
+function adminIngestionTaskKey(task: Pick<AdminDeadLetterTask, "tenant_id" | "task_id">) {
+  return `${task.tenant_id}\u0000${task.task_id}`;
+}
+
+function adminIngestionOutcomeLabel(outcome: string) {
+  const labels: Record<string, string> = {
+    queued: "已重新排队",
+    not_found: "任务不存在",
+    not_retryable: "状态不可重试",
+    admission_rejected_global: "全局队列已满",
+    admission_rejected_tenant: "租户队列已满",
+    admission_unavailable: "准入服务不可用",
+    reservation_lost: "准入预留已失效",
+    retry_unavailable: "重试服务不可用",
+  };
+  return labels[outcome] || "未知结果";
+}
+
 function normalizeMessage(message: ChatMessage): ChatMessage {
   return {
     ...message,
@@ -2391,6 +2677,7 @@ async function waitForSourcesReady(
   settings: Settings,
   pendingSources: SourceItem[],
   sourceKeysBeforeUpload: Set<string>,
+  onProgress?: (rows: SourceItem[]) => void,
 ): Promise<SourceItem[]> {
   const pendingIds = new Set(pendingSources.map((source) => source.doc_id));
   const pendingUris = new Set(pendingSources.map((source) => source.source_uri));
@@ -2411,6 +2698,7 @@ async function waitForSourcesReady(
     if (pendingRows.some((source) => source.status === "failed") || newReadyRows.length > 0) {
       return rows;
     }
+    onProgress?.(rows);
   }
   return listSourcesCoalesced(settings);
 }

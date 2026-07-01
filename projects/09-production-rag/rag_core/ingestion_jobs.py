@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from rag_core.config import load_config
+from rag_core.model_usage import model_usage_context
 from rag_core.sources import claim_source_task_for_processing
 from rag_core.sources import SourceSummary
 from rag_core.sources import delete_source_task
@@ -184,15 +185,21 @@ class IngestionJobRunner:
                     lease_valid.clear()
                     raise RuntimeError("Source task lease was lost during ingestion")
 
-            summary = ingest_uploaded_path(
+            with model_usage_context(
                 config=config,
-                path=Path(source.source_uri),
                 tenant_id=tenant_id,
-                acl_groups=source.acl_groups,
-                doc_version=requested_doc_version,
-                language=language,
-                progress_callback=report_progress,
-            )
+                principal_key="",
+                workload="ingestion",
+            ):
+                summary = ingest_uploaded_path(
+                    config=config,
+                    path=Path(source.source_uri),
+                    tenant_id=tenant_id,
+                    acl_groups=source.acl_groups,
+                    doc_version=requested_doc_version,
+                    language=language,
+                    progress_callback=report_progress,
+                )
             if lease_valid.is_set():
                 resolved_sources = list(getattr(summary, "sources", []) or [])
                 if resolved_sources:

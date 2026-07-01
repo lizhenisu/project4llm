@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rag_core.config import RagConfig
 from rag_core.jsonl_store import object_exists, read_object_jsonl, write_object_jsonl
-from rag_core.model_api_retry import call_model_api_with_retries
+from rag_core.model_api_retry import chat_completion_with_fallback
 from rag_core.prompts import SOURCE_GUIDE_SYSTEM_PROMPT
 from rag_core.prompts import build_source_guide_prompt as prompt_source_guide
 from rag_core.text_utils import now_ms
@@ -107,26 +107,22 @@ def build_fast_path_source_guide(*, title: str, docs: list[SourceDocument]) -> S
 
 
 def generate_source_guide_text(*, config: RagConfig, title: str, source_text: str) -> str:
-    from openai import OpenAI
-
-    client = OpenAI(base_url=config.llm_base_url, api_key=config.llm_api_key)
-    response = call_model_api_with_retries(
-        "source_guide_generation",
-        lambda: client.chat.completions.create(
-            model=config.llm_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": SOURCE_GUIDE_SYSTEM_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": build_source_guide_prompt(title=title, source_text=source_text),
-                },
-            ],
-            temperature=0.2,
-        ),
+    completion = chat_completion_with_fallback(
+        config=config,
+        operation="source_guide_generation",
+        messages=[
+            {
+                "role": "system",
+                "content": SOURCE_GUIDE_SYSTEM_PROMPT,
+            },
+            {
+                "role": "user",
+                "content": build_source_guide_prompt(title=title, source_text=source_text),
+            },
+        ],
+        temperature=0.2,
     )
+    response = completion.response
     guide = (response.choices[0].message.content or "").strip()
     if not guide:
         raise RuntimeError("LLM source guide generation returned empty content.")

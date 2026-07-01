@@ -16,7 +16,7 @@ from rag_core.types import SourceDocument
 class FakeOpenAI:
     calls: list[dict] = []
 
-    def __init__(self, *, base_url: str, api_key: str) -> None:
+    def __init__(self, *, base_url: str, api_key: str, **_kwargs) -> None:
         assert base_url == "https://llm.example/v1"
         assert api_key == "test-key"
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))

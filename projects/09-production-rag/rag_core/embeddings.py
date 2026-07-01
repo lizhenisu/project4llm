@@ -441,9 +441,18 @@ def siliconflow_url(base_url: str, path: str) -> str:
 
 
 def post_json(url: str, *, api_key: str, payload: dict) -> dict:
+    normalized_url = url.rstrip("/")
+    if normalized_url.endswith("/rerank"):
+        operation = "siliconflow_rerank"
+    elif normalized_url.endswith("/chat/completions"):
+        operation = "siliconflow_chat_completion"
+    else:
+        operation = "siliconflow_embeddings"
     return call_model_api_with_retries(
-        "siliconflow_post_json",
+        operation,
         lambda: post_json_once(url, api_key=api_key, payload=payload),
+        usage_provider="siliconflow",
+        usage_model=str(payload.get("model") or "unknown"),
     )
 
 

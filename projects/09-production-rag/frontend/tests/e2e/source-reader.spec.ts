@@ -1570,6 +1570,7 @@ test("shows marquee feedback for active source and studio tasks", async ({ page 
             ingestion_stage: "text_embedding",
             progress_percent: 62,
             progress_detail: "36/80 个文本片段",
+            eta_seconds: 75,
           },
         ],
       },
@@ -1602,7 +1603,7 @@ test("shows marquee feedback for active source and studio tasks", async ({ page 
   const artifactRow = page.locator(".artifact-row.is-active-task");
   await expect(sourceRow).toBeVisible();
   await expect(artifactRow).toBeVisible();
-  await expect(sourceRow.getByText("正在生成文本向量 · 62% · 36/80 个文本片段")).toBeVisible();
+  await expect(sourceRow.getByText("正在生成文本向量 · 62% · 36/80 个文本片段 · 预计剩余约 1 分钟")).toBeVisible();
   await expect(sourceRow.getByRole("progressbar", { name: "正在解析.pdf 处理进度" })).toHaveAttribute(
     "aria-valuenow",
     "62",
@@ -2297,7 +2298,7 @@ test("registers an admin user from the avatar menu and publishes an announcement
   await page.route("**/auth/password", async (route) => {
     await route.fulfill({ json: { status: "ok" } });
   });
-  await page.route("**/admin/users", async (route) => {
+  await page.route("**/admin/users?**", async (route) => {
     await route.fulfill({
       json: {
         users: [
@@ -2324,6 +2325,10 @@ test("registers an admin user from the avatar menu and publishes an announcement
             last_login_at: null,
           },
         ],
+        total: 2,
+        limit: 50,
+        offset: 0,
+        query: "",
       },
     });
   });
@@ -2424,16 +2429,20 @@ test("registers an admin user from the avatar menu and publishes an announcement
   await page.getByRole("menuitem", { name: /管理员控制台/ }).click();
   await expect(page.getByRole("heading", { name: "管理员控制台" })).toBeVisible();
   await expect(page.getByText("当前允许新用户自行注册。")).toBeVisible();
+  await page.getByRole("button", { name: "公告管理" }).click();
   await expect(page.getByText("上一条公告")).toBeVisible();
   await expect(page.getByText("这是管理员上一次发布的公告。")).toBeVisible();
+  await page.getByRole("button", { name: "系统设置" }).click();
   await expect(page.getByRole("switch", { name: "允许注册" })).toHaveAttribute("aria-checked", "true");
   await page.getByRole("switch", { name: "允许注册" }).click();
   await expect(page.getByText("当前已关闭新用户注册。")).toBeVisible();
   await expect(page.getByRole("switch", { name: "关闭注册" })).toHaveAttribute("aria-checked", "false");
+  await page.getByRole("button", { name: "用户管理" }).click();
   await expect(page.getByText("tenant-reader")).toBeVisible();
-  await page.getByRole("button", { name: "封禁" }).click();
+  await page.getByRole("button", { name: "封禁", exact: true }).click();
   await expect(page.getByText("已封禁")).toBeVisible();
 
+  await page.getByRole("button", { name: "公告管理" }).click();
   await page.getByLabel("公告标题").fill("系统维护");
   await page.getByLabel("公告内容").fill("今晚 23:00 进行例行维护。");
   await page.getByRole("button", { name: "发布公告" }).click();
@@ -2443,6 +2452,208 @@ test("registers an admin user from the avatar menu and publishes an announcement
   await expect(announcementDialog.getByText("今晚 23:00 进行例行维护。")).toBeVisible();
   await page.getByRole("button", { name: "关闭公告" }).click();
   await expect(announcementDialog).toBeHidden();
+});
+
+test("bulk redrives selected ingestion dead letters from the admin console", async ({ page }) => {
+  const now = Date.now();
+  let redrivePayload: unknown = null;
+  let redriven = false;
+  const adminUser = {
+    id: "user-ingestion-admin",
+    username: "ingestion-admin",
+    display_name: "摄取管理员",
+    role: "admin",
+    tenant_id: "tenant-ingestion-admin",
+    avatar_url: "",
+    status: "active",
+    created_at: now,
+    last_login_at: now,
+  };
+  const deadLetters = [
+    {
+      tenant_id: "tenant-doc-a",
+      task_id: "task-dead-a",
+      title: "失败文档 A.pdf",
+      source_type: "pdf",
+      error: "模型服务连续失败",
+      attempt_count: 3,
+      dead_lettered_at: now - 20_000,
+      updated_at: now - 20_000,
+    },
+    {
+      tenant_id: "tenant-doc-b",
+      task_id: "task-dead-b",
+      title: "失败文档 B.txt",
+      source_type: "txt",
+      error: "向量服务不可用",
+      attempt_count: 4,
+      dead_lettered_at: now - 10_000,
+      updated_at: now - 10_000,
+    },
+  ];
+
+  await page.addInitScript(({ user, timestamp }) => {
+    localStorage.setItem(
+      "production-rag-auth-session",
+      JSON.stringify({
+        user,
+        token: "session-ingestion-admin",
+        expires_at: timestamp + 86_400_000,
+      }),
+    );
+  }, { user: adminUser, timestamp: now });
+  await page.route("**/health", async (route) => {
+    await route.fulfill({ json: { status: "ok" } });
+  });
+  await page.route("**/auth/me", async (route) => {
+    await route.fulfill({ json: adminUser });
+  });
+  await page.route("**/sources?**", async (route) => {
+    await route.fulfill({ json: { sources: [] } });
+  });
+  await page.route("**/artifacts?**", async (route) => {
+    await route.fulfill({ json: { artifacts: [] } });
+  });
+  await page.route("**/conversations?**", async (route) => {
+    await route.fulfill({ json: { conversations: [] } });
+  });
+  await page.route("**/announcements?**", async (route) => {
+    await route.fulfill({ json: { announcements: [] } });
+  });
+  await page.route("**/admin/settings", async (route) => {
+    await route.fulfill({
+      json: {
+        registration_enabled: true,
+        latest_announcement: null,
+      },
+    });
+  });
+  await page.route("**/admin/users?**", async (route) => {
+    await route.fulfill({
+      json: {
+        users: [adminUser],
+        total: 1,
+        limit: 1,
+        offset: 0,
+        query: "",
+      },
+    });
+  });
+  await page.route("**/admin/ingestion/audit?**", async (route) => {
+    await route.fulfill({
+      json: {
+        events: redriven
+          ? [
+              {
+                id: "audit-queued",
+                actor_user_id: adminUser.id,
+                tenant_id: "tenant-doc-a",
+                task_id: "task-dead-a",
+                operation: "bulk_redrive",
+                outcome: "queued",
+                detail: "",
+                created_at: now,
+              },
+              {
+                id: "audit-not-retryable",
+                actor_user_id: adminUser.id,
+                tenant_id: "tenant-doc-b",
+                task_id: "task-dead-b",
+                operation: "bulk_redrive",
+                outcome: "not_retryable",
+                detail: "",
+                created_at: now,
+              },
+            ]
+          : [],
+        total: redriven ? 2 : 0,
+        limit: 20,
+        offset: 0,
+      },
+    });
+  });
+  await page.route("**/admin/ingestion/dead-letters?**", async (route) => {
+    const offset = Number(new URL(route.request().url()).searchParams.get("offset") || "0");
+    const tasks = redriven
+      ? [deadLetters[1]]
+      : offset >= 20
+        ? [
+            {
+              ...deadLetters[1],
+              tenant_id: "tenant-doc-page-2",
+              task_id: "task-page-2",
+              title: "第二页死信文档.pdf",
+            },
+          ]
+        : deadLetters;
+    await route.fulfill({
+      json: {
+        tasks,
+        total: redriven ? 1 : 21,
+        limit: 20,
+        offset,
+      },
+    });
+  });
+  await page.route("**/admin/ingestion/dead-letters/redrive", async (route) => {
+    redrivePayload = route.request().postDataJSON();
+    redriven = true;
+    await route.fulfill({
+      json: {
+        results: [
+          {
+            tenant_id: "tenant-doc-a",
+            task_id: "task-dead-a",
+            outcome: "queued",
+          },
+          {
+            tenant_id: "tenant-doc-b",
+            task_id: "task-dead-b",
+            outcome: "not_retryable",
+          },
+        ],
+        queued: 1,
+        rejected: 1,
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "用户头像" }).click();
+  await page.getByRole("menuitem", { name: /管理员控制台/ }).click();
+  await page.getByRole("button", { name: "摄取运维" }).click();
+
+  await expect(page.getByRole("heading", { name: "摄取运维" })).toBeVisible();
+  await expect(page.getByText("失败文档 A.pdf")).toBeVisible();
+  await expect(page.getByText("失败文档 B.txt")).toBeVisible();
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page.getByText("第二页死信文档.pdf")).toBeVisible();
+  await page.getByRole("button", { name: "上一页" }).click();
+  await expect(page.getByText("失败文档 A.pdf")).toBeVisible();
+
+  const selectPage = page.getByRole("checkbox", { name: "选择当前页全部死信任务" });
+  await selectPage.check();
+  await expect(page.getByRole("button", { name: "重新处理所选（2）" })).toBeEnabled();
+  await page.getByRole("button", { name: "重新处理所选（2）" }).click();
+
+  await expect(page.getByRole("status")).toHaveText("已重新排队 1 个，1 个未处理。");
+  expect(redrivePayload).toEqual({
+    tasks: [
+      { tenant_id: "tenant-doc-a", task_id: "task-dead-a" },
+      { tenant_id: "tenant-doc-b", task_id: "task-dead-b" },
+    ],
+  });
+  await expect(page.getByText("失败文档 A.pdf")).toBeHidden();
+  await expect(page.getByText("失败文档 B.txt")).toBeVisible();
+  await expect(page.getByText("已重新排队", { exact: true })).toBeVisible();
+  await expect(page.getByText("状态不可重试", { exact: true })).toBeVisible();
+  await expect(selectPage).not.toBeChecked();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const panelBox = await page.locator(".admin-ingestion-panel").boundingBox();
+  expect(panelBox).not.toBeNull();
+  expect(panelBox!.x).toBeGreaterThanOrEqual(0);
+  expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(390);
 });
 
 test("clears the saved session after an authenticated request returns 401", async ({ page }) => {

@@ -52,6 +52,7 @@ def main() -> None:
         )
         observations: list[tuple[str, int, str]] = []
         indexed_entities: list[dict] = []
+        section_summary_calls: list[str] = []
 
         with (
             patch("rag_core.sources.connect", return_value=object()),
@@ -60,7 +61,16 @@ def main() -> None:
                 "rag_core.sources.build_embedding_model",
                 return_value=FakeEmbeddingModel(config.embedding_dim),
             ),
-            patch("rag_core.sources.generate_ingested_source_guides"),
+            patch(
+                "rag_core.sources.get_or_create_source_guide",
+                side_effect=RuntimeError("synthetic source guide outage"),
+            ),
+            patch(
+                "rag_core.sources.save_source_section_summaries",
+                side_effect=lambda _root, **kwargs: section_summary_calls.append(
+                    str(kwargs["source_doc_id"])
+                ),
+            ),
             patch(
                 "rag_core.sources.upsert_entities",
                 side_effect=lambda _client, *, collection_name, entities: indexed_entities.extend(entities),
@@ -77,6 +87,7 @@ def main() -> None:
     assert summary.document_count == 1
     assert summary.chunk_count == 1
     assert len(indexed_entities) == 1
+    assert section_summary_calls == ["progress"]
     assert observations == [
         ("preparing", 32, ""),
         ("chunking", 40, "0/1 个文档"),

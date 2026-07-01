@@ -23,6 +23,7 @@ export type SourceItem = {
   ingestion_stage?: string;
   progress_percent?: number;
   progress_detail?: string;
+  eta_seconds?: number | null;
 };
 
 export type SourceContent = {
@@ -204,4 +205,50 @@ export type Announcement = {
 export type AdminSettings = {
   registration_enabled: boolean;
   latest_announcement?: Announcement | null;
+};
+
+export type AdminDeadLetterTask = {
+  tenant_id: string;
+  task_id: string;
+  title: string;
+  source_type: string;
+  error: string;
+  attempt_count: number;
+  dead_lettered_at: number;
+  updated_at: number;
+};
+
+export type AdminDeadLetterList = {
+  tasks: AdminDeadLetterTask[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AdminIngestionAuditEvent = {
+  id: string;
+  actor_user_id: string;
+  tenant_id: string;
+  task_id: string;
+  operation: string;
+  outcome: string;
+  detail: string;
+  created_at: number;
+};
+
+export type AdminIngestionAuditList = {
+  events: AdminIngestionAuditEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AdminIngestionRedriveResponse = {
+  results: Array<{
+    tenant_id: string;
+    task_id: string;
+    outcome: string;
+  }>;
+  queued: number;
+  rejected: number;
 };

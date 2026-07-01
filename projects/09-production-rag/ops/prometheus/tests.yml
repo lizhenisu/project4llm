@@ -1,0 +1,45 @@
+evaluation_interval: 1m
+
+tests:
+  - name: shared database gauges are deduplicated across API replicas
+    interval: 1m
+    input_series:
+      - series: rag_ingestion_tasks{instance="api-a",status="queued"}
+        values: "600"
+      - series: rag_ingestion_tasks{instance="api-b",status="queued"}
+        values: "600"
+      - series: rag_ingestion_tasks{instance="api-a",status="processing"}
+        values: "300"
+      - series: rag_ingestion_tasks{instance="api-b",status="processing"}
+        values: "300"
+      - series: rag_query_result_stale_processing_entries{instance="api-a"}
+        values: "1"
+      - series: rag_query_result_stale_processing_entries{instance="api-b"}
+        values: "1"
+      - series: rag_query_rate_limit_requests{instance="api-a",scope="global"}
+        values: "42"
+      - series: rag_query_rate_limit_requests{instance="api-b",scope="global"}
+        values: "42"
+      - series: rag_model_usage_daily{instance="api-a",workload="query",kind="total_tokens"}
+        values: "100"
+      - series: rag_model_usage_daily{instance="api-b",workload="query",kind="total_tokens"}
+        values: "100"
+    promql_expr_test:
+      - expr: sum(max by (status) (rag_ingestion_tasks{status=~"queued|processing"}))
+        eval_time: 0m
+        exp_samples:
+          - value: 900
+      - expr: max(rag_query_result_stale_processing_entries)
+        eval_time: 0m
+        exp_samples:
+          - value: 1
+      - expr: max by (scope) (rag_query_rate_limit_requests)
+        eval_time: 0m
+        exp_samples:
+          - labels: '{scope="global"}'
+            value: 42
+      - expr: max by (workload) (rag_model_usage_daily{kind="total_tokens"})
+        eval_time: 0m
+        exp_samples:
+          - labels: '{workload="query"}'
+            value: 100

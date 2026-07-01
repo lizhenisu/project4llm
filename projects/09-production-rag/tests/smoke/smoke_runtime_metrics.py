@@ -17,6 +17,7 @@ from answer import AnswerResult
 from rag_core.auth import AuthContext
 from rag_core.answering import AnswerGeneration
 from rag_core.config import load_config
+from rag_core.database import connect_metadata_db
 from rag_core.model_api_retry import model_api_slot
 from rag_core.sources import SourceSummary, save_source_task_for_tenant
 from rag_core.text_utils import now_ms
@@ -53,6 +54,7 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
             child_doc_ids=[],
         ),
     )
+    seed_ingestion_stage_stats(config)
 
     api = TestClient(serve.create_app())
     with model_api_slot("runtime-metrics-smoke"):
@@ -71,6 +73,15 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["query_shared_admission"]["tenant_slots"] >= 0
     assert body["query_shared_admission"]["user_slots"] >= 0
     assert body["query_shared_admission"]["expired_slots"] >= 0
+    assert body["query_result_cache"]["lease_ms"] >= 1000
+    assert body["query_result_cache"]["ttl_ms"] >= 1000
+    assert body["query_result_cache"]["wait_seconds"] >= 1
+    assert body["query_result_cache"]["processing"] >= 0
+    assert body["query_result_cache"]["completed"] >= 0
+    assert body["query_result_cache"]["failed"] >= 0
+    assert body["query_result_cache"]["expired"] >= 0
+    assert body["query_result_cache"]["stale_processing"] >= 0
+    assert body["query_result_cache"]["events"] >= 0
     assert body["query"]["max_query_image_bytes"] >= 1
     assert body["query"]["max_query_request_bytes"] >= body["query"]["max_query_image_bytes"]
     assert body["query"]["image_payloads"]["accepted_total"] >= 0
@@ -92,6 +103,15 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["model_api"]["active"] >= 1
     assert body["model_api"]["acquired_total"] >= 1
     assert isinstance(body["model_api"]["operations"], dict)
+    assert set(body["model_usage"]["workloads"]) == {
+        "query",
+        "search",
+        "ingestion",
+        "studio_mindmap",
+        "studio_table",
+    }
+    assert body["model_usage"]["recording"]["recorded_total"] >= 0
+    assert body["model_usage"]["recording"]["write_failures_total"] >= 0
     assert body["milvus_client"]["created_total"] >= 0
     assert body["milvus_client"]["reused_total"] >= 0
     assert body["milvus_client"]["thread_cached_clients"] >= 0
@@ -120,6 +140,24 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
         "dead_lettered": 0,
         "retries_recorded": 0,
     }
+    assert body["ingestion"]["operator_operations"]["audit_retention_days"] >= 1
+    assert body["ingestion"]["operator_operations"]["audit_events"] >= 0
+    assert set(
+        body["ingestion"]["operator_operations"]["bulk_redrive_outcomes"]
+    ) == {
+        "queued",
+        "not_found",
+        "not_retryable",
+        "admission_rejected_global",
+        "admission_rejected_tenant",
+        "admission_unavailable",
+        "reservation_lost",
+        "retry_unavailable",
+    }
+    assert body["ingestion"]["stage_stats"]["txt"]["text_embedding"] == {
+        "sample_count": 2,
+        "average_seconds": 4.0,
+    }
     assert body["ingestion"]["upload_admission"] == {
         "reservation_ms": 900000,
         "global_reservations": 0,
@@ -131,6 +169,23 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["ingestion"]["backlog_limit"] >= 1
     assert body["ingestion"]["tenant_backlog_limit"] >= 1
     assert body["ingestion"]["max_upload_bytes"] >= 1
+
+
+def seed_ingestion_stage_stats(config) -> None:
+    with connect_metadata_db(config) as conn:
+        conn.execute(
+            """
+            INSERT INTO ingestion_stage_stats(
+                source_type, stage, sample_count, total_duration_ms, updated_at
+            )
+            VALUES ('txt', 'text_embedding', 2, 8000, ?)
+            ON CONFLICT(source_type, stage) DO UPDATE SET
+                sample_count = excluded.sample_count,
+                total_duration_ms = excluded.total_duration_ms,
+                updated_at = excluded.updated_at
+            """,
+            (now_ms(),),
+        )
 
 
 def test_runtime_metrics_records_http_route_counts() -> None:
@@ -189,6 +244,8 @@ def test_runtime_metrics_records_query_stream_acceptance_and_completion() -> Non
         assert shared_after["global_slots"] == 0
         assert shared_after["tenant_slots"] == 0
         assert shared_after["user_slots"] == 0
+        result_cache_after = api.get("/runtime-metrics").json()["query_result_cache"]
+        assert result_cache_after["completed"] >= 1
     finally:
         restore_env("RAG_QUERY_STREAM_EVENT_QUEUE_LIMIT", old_event_queue_limit)
 
