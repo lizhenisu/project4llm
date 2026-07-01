@@ -34,7 +34,13 @@ class ChatCompletionResult:
     client: Any
 
 
-def call_model_api_with_retries(operation: str, func: Callable[[], T]) -> T:
+def call_model_api_with_retries(
+    operation: str,
+    func: Callable[[], T],
+    *,
+    usage_provider: str = "",
+    usage_model: str = "",
+) -> T:
     operation_key = normalize_operation(operation)
     started = time.perf_counter()
     succeeded = False
@@ -48,6 +54,15 @@ def call_model_api_with_retries(operation: str, func: Callable[[], T]) -> T:
                 record_operation_attempt(operation_key)
                 try:
                     result = func()
+                    if usage_provider and usage_model:
+                        from rag_core.model_usage import record_response_model_usage
+
+                        record_response_model_usage(
+                            response=result,
+                            provider=usage_provider,
+                            model=usage_model,
+                            operation=operation_key,
+                        )
                     succeeded = True
                     return result
                 except Exception as exc:
@@ -98,6 +113,8 @@ def chat_completion_with_fallback(
                 messages=messages,
                 **kwargs,
             ),
+            usage_provider="newapi",
+            usage_model=config.llm_model,
         )
     except Exception as exc:
         if fallback is None or not is_transient_model_api_error(exc):
@@ -140,6 +157,8 @@ def call_fallback_completion(
             messages=messages,
             **kwargs,
         ),
+        usage_provider=fallback_backend,
+        usage_model=fallback_model,
     )
     return ChatCompletionResult(
         response=response,

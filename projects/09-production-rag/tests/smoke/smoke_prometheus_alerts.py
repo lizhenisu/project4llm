@@ -16,6 +16,7 @@ EXPECTED_ALERTS = {
     "ProductionRagQueryRateLimitRejections",
     "ProductionRagQueryRecoveryStaleProcessing",
     "ProductionRagModelApiFailureRateHigh",
+    "ProductionRagModelUsageRecordingFailure",
     "ProductionRagMetadataPoolTimeout",
     "ProductionRagIngestionBacklogHigh",
 }
@@ -28,6 +29,7 @@ EXPORTED_METRICS = {
     "rag_query_rate_limit_events_total",
     "rag_query_result_stale_processing_entries",
     "rag_model_api_operation_calls_total",
+    "rag_model_usage_recording_events_total",
     "rag_metadata_pool_timeouts_total",
     "rag_ingestion_tasks",
 }

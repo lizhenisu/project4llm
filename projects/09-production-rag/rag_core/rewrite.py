@@ -81,6 +81,7 @@ def llm_rewrite(query: str, history: list[str], source_summaries: list[str], con
                 query=query,
                 config=config,
                 model=completion.model,
+                backend=completion.backend,
             )
         except Exception:
             expansion = ""
@@ -125,6 +126,7 @@ def llm_cross_lingual_expansion(
     query: str,
     config: RagConfig,
     model: str | None = None,
+    backend: str = "newapi",
 ) -> str:
     selected_model = model or config.llm_model
     cache_key = (str(config.llm_base_url or ""), selected_model, query)
@@ -151,6 +153,8 @@ def llm_cross_lingual_expansion(
                         ],
                         max_tokens=1024,
                     ),
+                    usage_provider=backend,
+                    usage_model=selected_model,
                 )
                 message = response.choices[0].message
                 content = message.content or getattr(message, "reasoning_content", None) or ""

@@ -103,6 +103,15 @@ def test_runtime_metrics_exposes_runtime_counters_and_ingestion_counts() -> None
     assert body["model_api"]["active"] >= 1
     assert body["model_api"]["acquired_total"] >= 1
     assert isinstance(body["model_api"]["operations"], dict)
+    assert set(body["model_usage"]["workloads"]) == {
+        "query",
+        "search",
+        "ingestion",
+        "studio_mindmap",
+        "studio_table",
+    }
+    assert body["model_usage"]["recording"]["recorded_total"] >= 0
+    assert body["model_usage"]["recording"]["write_failures_total"] >= 0
     assert body["milvus_client"]["created_total"] >= 0
     assert body["milvus_client"]["reused_total"] >= 0
     assert body["milvus_client"]["thread_cached_clients"] >= 0

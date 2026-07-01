@@ -20,6 +20,7 @@ from rag_core.config import load_config  # noqa: E402
 from rag_core.database import connect_metadata_db  # noqa: E402
 from rag_core.ingestion_operations import append_ingestion_operation_audit  # noqa: E402
 from rag_core.model_api_retry import call_model_api_with_retries  # noqa: E402
+from rag_core.model_usage import record_model_usage  # noqa: E402
 from rag_core.query_rate_limits import acquire_query_rate_limit  # noqa: E402
 
 
@@ -29,6 +30,7 @@ def main() -> None:
         seed_query_result_cache()
         seed_query_rate_limit()
         seed_ingestion_operator_audit()
+        seed_model_usage()
         api = TestClient(serve.create_app())
         assert call_model_api_with_retries("metrics_smoke", lambda: "ok") == "ok"
         serve.record_query_image_size(64 * 1024, accepted=True)
@@ -77,6 +79,9 @@ def main() -> None:
         in text
     )
     assert 'rag_model_api_operation_retries_total{operation="metrics_smoke"} 0' in text
+    assert 'rag_model_usage_daily{workload="query",kind="total_tokens"} 17' in text
+    assert 'rag_model_usage_recording_events_total{outcome="write_failure"}' in text
+    assert "metrics-private-model-tenant" not in text
     assert "rag_metadata_pool_timeouts_total" in text
     assert 'rag_ingestion_tasks{status="queued"}' in text
     assert 'rag_ingestion_task_leases{state="active"}' in text
@@ -192,6 +197,23 @@ def seed_ingestion_operator_audit() -> None:
         task_id="metrics-private-operator-task",
         operation="bulk_redrive",
         outcome="queued",
+    )
+
+
+def seed_model_usage() -> None:
+    record_model_usage(
+        config=load_config(),
+        tenant_id="metrics-private-model-tenant",
+        principal_key="user:metrics-private-model-user",
+        workload="query",
+        provider="synthetic-provider",
+        model="synthetic-model",
+        operation="answer_generation",
+        usage={
+            "prompt_tokens": 12,
+            "completion_tokens": 5,
+            "total_tokens": 17,
+        },
     )
 
 

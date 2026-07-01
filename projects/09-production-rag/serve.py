@@ -63,6 +63,15 @@ from rag_core.jsonl_store import (
     unquote_object_uri,
 )
 from rag_core.model_api_retry import model_api_metrics_snapshot, public_model_api_error
+from rag_core.model_usage import (
+    count_model_usage_rows,
+    list_model_usage,
+    model_usage_context,
+    model_usage_daily_metrics_snapshot,
+    model_usage_totals,
+    usage_date,
+    validate_usage_date,
+)
 from rag_core.milvus_store import milvus_client_metrics_snapshot
 from rag_core.pipeline import retrieve_and_rerank
 from rag_core.query_admission import (
@@ -334,6 +343,11 @@ def ingest_operation_audit_retention_days() -> int:
     return env_int("RAG_INGEST_OPERATION_AUDIT_RETENTION_DAYS", 90)
 
 
+def default_model_usage_date_range() -> tuple[str, str]:
+    timestamp = int(time.time() * 1000)
+    return usage_date(timestamp - 30 * 24 * 60 * 60 * 1000), usage_date(timestamp)
+
+
 def max_upload_request_bytes(config) -> int:
     # Multipart adds a small amount of framing around the file bytes.
     return int(config.max_upload_bytes) + 1024 * 1024
@@ -420,6 +434,16 @@ def query_stream_user_key(auth_context) -> str:
     credential_id = str(getattr(auth_context, "credential_id", "") or "").strip()
     if credential_id:
         return f"{auth_context.tenant_id}:api_token:{credential_id}"
+    return ""
+
+
+def model_usage_principal_key(auth_context) -> str:
+    user_id = str(getattr(auth_context, "user_id", "") or "").strip()
+    if user_id:
+        return f"user:{user_id}"
+    credential_id = str(getattr(auth_context, "credential_id", "") or "").strip()
+    if credential_id:
+        return f"api_token:{credential_id}"
     return ""
 
 
@@ -592,6 +616,7 @@ def prometheus_metrics_text(config) -> str:
     query_results = query_result_cache_snapshot(config=config)
     query_images = query_image_metrics_snapshot()
     model_api = model_api_metrics_snapshot()
+    model_usage = model_usage_daily_metrics_snapshot(config=config)
     metadata = metadata_pool_metrics_snapshot()
     ingestion = count_source_tasks_by_status(config=config, tenant_id=None)
     ingestion_leases = source_task_lease_metrics_snapshot(config=config, tenant_id=None)
@@ -851,6 +876,37 @@ def prometheus_metrics_text(config) -> str:
             f'rag_model_api_operation_latency_seconds_max{{operation="{operation_label}"}} '
             f'{float(metrics["latency_max_ms"]) / 1000.0:.6f}'
         )
+    lines.extend(
+        [
+            "# HELP rag_model_usage_daily Current UTC-day model usage by bounded workload.",
+            "# TYPE rag_model_usage_daily gauge",
+        ]
+    )
+    for workload, usage in model_usage["workloads"].items():
+        for kind in (
+            "request_count",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+        ):
+            lines.append(
+                f'rag_model_usage_daily{{workload="{workload}",kind="{kind}"}} '
+                f'{int(usage[kind])}'
+            )
+    lines.extend(
+        [
+            "# HELP rag_model_usage_recording_events_total Model usage ledger recording outcomes.",
+            "# TYPE rag_model_usage_recording_events_total counter",
+            (
+                'rag_model_usage_recording_events_total{outcome="recorded"} '
+                f'{int(model_usage["recording"]["recorded_total"])}'
+            ),
+            (
+                'rag_model_usage_recording_events_total{outcome="write_failure"} '
+                f'{int(model_usage["recording"]["write_failures_total"])}'
+            ),
+        ]
+    )
 
     pool_fields = {
         "total": "rag_metadata_pool_connections",
@@ -1153,6 +1209,39 @@ class AdminIngestionAuditListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class AdminModelUsageRowResponse(BaseModel):
+    usage_date: str
+    tenant_id: str
+    principal_key: str
+    workload: str
+    provider: str
+    model: str
+    operation: str
+    request_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    updated_at: int
+
+
+class AdminModelUsageTotalsResponse(BaseModel):
+    request_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class AdminModelUsageListResponse(BaseModel):
+    rows: list[AdminModelUsageRowResponse]
+    totals: AdminModelUsageTotalsResponse
+    total: int
+    limit: int
+    offset: int
+    tenant_id: str
+    start_date: str
+    end_date: str
 
 
 class SourceContentResponse(BaseModel):
@@ -1490,6 +1579,7 @@ def create_app():
                 "max_conversation_image_bytes": max_conversation_image_bytes(config),
             },
             "model_api": model_api_metrics_snapshot(),
+            "model_usage": model_usage_daily_metrics_snapshot(config=config),
             "milvus_client": milvus_client_metrics_snapshot(),
             "metadata_db": metadata_pool_metrics_snapshot(),
             "auth_token_cache": auth_token_cache_metrics_snapshot(),
@@ -1757,6 +1847,59 @@ def create_app():
             results=results,
             queued=queued,
             rejected=len(results) - queued,
+        )
+
+    @app.get("/admin/model-usage", response_model=AdminModelUsageListResponse)
+    def admin_model_usage(
+        authorization: str | None = Header(default=None),
+        tenant_id: str = Query(default="", max_length=200),
+        start_date: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+        end_date: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> AdminModelUsageListResponse:
+        config = load_config()
+        require_admin(config=config, authorization=authorization)
+        default_start, default_end = default_model_usage_date_range()
+        try:
+            selected_start = validate_usage_date(start_date or default_start)
+            selected_end = validate_usage_date(end_date or default_end)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if selected_start > selected_end:
+            raise HTTPException(
+                status_code=400,
+                detail="开始日期不能晚于结束日期",
+            )
+        selected_tenant = tenant_id.strip()
+        rows = list_model_usage(
+            config=config,
+            tenant_id=selected_tenant or None,
+            start_date=selected_start,
+            end_date=selected_end,
+            limit=limit,
+            offset=offset,
+        )
+        totals = model_usage_totals(
+            config=config,
+            tenant_id=selected_tenant or None,
+            start_date=selected_start,
+            end_date=selected_end,
+        )
+        return AdminModelUsageListResponse(
+            rows=[AdminModelUsageRowResponse(**row.__dict__) for row in rows],
+            totals=AdminModelUsageTotalsResponse(**totals),
+            total=count_model_usage_rows(
+                config=config,
+                tenant_id=selected_tenant or None,
+                start_date=selected_start,
+                end_date=selected_end,
+            ),
+            limit=limit,
+            offset=offset,
+            tenant_id=selected_tenant,
+            start_date=selected_start,
+            end_date=selected_end,
         )
 
     @app.get("/admin/settings", response_model=AdminSettingsResponse)
@@ -2165,7 +2308,13 @@ def create_app():
             x_rag_acl_groups=x_rag_acl_groups,
             request=request,
         )
-        result = resolve_search_result(request, auth_context)
+        with model_usage_context(
+            config=config,
+            tenant_id=auth_context.tenant_id,
+            principal_key=model_usage_principal_key(auth_context),
+            workload="search",
+        ):
+            result = resolve_search_result(request, auth_context)
         response = SearchResponse(
             request_id=result.request_id,
             hits=[hit_to_response(hit, config=config, tenant_id=auth_context.tenant_id) for hit in result.hits],
@@ -2207,7 +2356,13 @@ def create_app():
             x_rag_acl_groups=x_rag_acl_groups,
             request=request,
         )
-        result = resolve_answer_result(request, auth_context)
+        with model_usage_context(
+            config=config,
+            tenant_id=auth_context.tenant_id,
+            principal_key=model_usage_principal_key(auth_context),
+            workload="query",
+        ):
+            result = resolve_answer_result(request, auth_context)
         response = QueryResponse(
             request_id=result.request_id,
             answer=result.answer,
@@ -2507,7 +2662,17 @@ def create_app():
                             event["sequence"] = sequence
                         enqueue_event(event)
 
-                    result = resolve_answer_result(request, auth_context, stage_callback=emit_owned_stage)
+                    with model_usage_context(
+                        config=config,
+                        tenant_id=auth_context.tenant_id,
+                        principal_key=model_usage_principal_key(auth_context),
+                        workload="query",
+                    ):
+                        result = resolve_answer_result(
+                            request,
+                            auth_context,
+                            stage_callback=emit_owned_stage,
+                        )
                     if shared_guard is not None and not shared_guard.valid.is_set():
                         raise RuntimeError("Query admission lease was lost before completion")
                     if result_guard is not None and not result_guard.valid.is_set():
@@ -2804,6 +2969,7 @@ def create_app():
             build_mindmap_background,
             artifact,
             request.context_limit,
+            model_usage_principal_key(auth_context),
         )
         return artifact_to_response(artifact)
 
@@ -2835,7 +3001,11 @@ def create_app():
             save_metadata_artifact(config, artifact)
         except ArtifactTenantConflictError as exc:
             raise HTTPException(status_code=409, detail="Artifact ID is unavailable") from exc
-        background_tasks.add_task(build_table_background, artifact)
+        background_tasks.add_task(
+            build_table_background,
+            artifact,
+            model_usage_principal_key(auth_context),
+        )
         return artifact_to_response(artifact)
 
     @app.get("/artifacts/{artifact_id}", response_model=MindMapArtifactResponse)
@@ -3009,16 +3179,26 @@ def pending_artifact(
     )
 
 
-def build_mindmap_background(artifact: MindMapArtifact, context_limit: int) -> None:
+def build_mindmap_background(
+    artifact: MindMapArtifact,
+    context_limit: int,
+    principal_key: str = "",
+) -> None:
     config = load_config()
     try:
-        root = build_mindmap_root(
-            title=artifact.title,
+        with model_usage_context(
             config=config,
             tenant_id=artifact.tenant_id,
-            source_doc_ids=artifact.source_doc_ids,
-            batch_chunk_count=context_limit,
-        )
+            principal_key=principal_key,
+            workload="studio_mindmap",
+        ):
+            root = build_mindmap_root(
+                title=artifact.title,
+                config=config,
+                tenant_id=artifact.tenant_id,
+                source_doc_ids=artifact.source_doc_ids,
+                batch_chunk_count=context_limit,
+            )
         save_metadata_artifact(
             config,
             replace(artifact, status="ready", root=root, updated_at=int(time.time() * 1000)),
@@ -3027,15 +3207,24 @@ def build_mindmap_background(artifact: MindMapArtifact, context_limit: int) -> N
         fail_metadata_artifact(config, artifact, public_model_api_error(exc))
 
 
-def build_table_background(artifact: MindMapArtifact) -> None:
+def build_table_background(
+    artifact: MindMapArtifact,
+    principal_key: str = "",
+) -> None:
     config = load_config()
     try:
-        table = build_llm_table(
-            title=artifact.title,
+        with model_usage_context(
             config=config,
             tenant_id=artifact.tenant_id,
-            source_doc_ids=artifact.source_doc_ids,
-        )
+            principal_key=principal_key,
+            workload="studio_table",
+        ):
+            table = build_llm_table(
+                title=artifact.title,
+                config=config,
+                tenant_id=artifact.tenant_id,
+                source_doc_ids=artifact.source_doc_ids,
+            )
         save_metadata_artifact(
             config,
             replace(artifact, status="ready", table=table, updated_at=int(time.time() * 1000)),

@@ -67,6 +67,7 @@ def main() -> None:
         'sum(max by (status) (rag_ingestion_tasks{status=~"queued|processing"}))': 900,
         "max(rag_query_result_stale_processing_entries)": 1,
         "max by (scope) (rag_query_rate_limit_requests)": 42,
+        'max by (workload) (rag_model_usage_daily{kind="total_tokens"})': 100,
     }
 
     configured_source = datasource["datasources"][0]
@@ -88,6 +89,8 @@ def main() -> None:
     assert any("rag_query_stream_events_total" in expression for expression in expressions)
     assert any("rag_query_rate_limit_events_total" in expression for expression in expressions)
     assert any("rag_model_api_operation_calls_total" in expression for expression in expressions)
+    assert any("rag_model_usage_daily" in expression for expression in expressions)
+    assert any("rag_model_usage_recording_events_total" in expression for expression in expressions)
     assert any("rag_ingestion_tasks" in expression for expression in expressions)
     assert any("rag_ingestion_operator_audit_events" in expression for expression in expressions)
     assert any("rag_ingestion_stage_duration_seconds_average" in expression for expression in expressions)
@@ -97,6 +100,16 @@ def main() -> None:
         in expressions
     )
     assert "max by (status) (rag_ingestion_tasks)" in expressions
+    model_panel = next(
+        panel for panel in dashboard["panels"]
+        if panel["title"] == "External Model Calls and Retries"
+    )
+    assert [target["expr"] for target in model_panel["targets"]] == [
+        "sum by (operation, outcome) (rate(rag_model_api_operation_calls_total[$__rate_interval]))",
+        "sum by (operation) (rate(rag_model_api_operation_retries_total[$__rate_interval]))",
+        'max by (workload) (rag_model_usage_daily{kind="total_tokens"})',
+        'sum(rate(rag_model_usage_recording_events_total{outcome="write_failure"}[$__rate_interval]))',
+    ]
     pressure_panel = next(
         panel for panel in dashboard["panels"]
         if panel["title"] == "Ingestion and Metadata Pressure"

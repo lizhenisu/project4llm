@@ -461,6 +461,26 @@ ON ingestion_operation_audit(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ingestion_operation_audit_task
 ON ingestion_operation_audit(tenant_id, task_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS model_usage_daily (
+    usage_date TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    principal_key TEXT NOT NULL DEFAULT '',
+    workload TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(
+        usage_date, tenant_id, principal_key, workload, provider, model, operation
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_model_usage_daily_date_tenant
+ON model_usage_daily(usage_date DESC, tenant_id);
+
 CREATE TABLE IF NOT EXISTS ingestion_stage_stats (
     source_type TEXT NOT NULL,
     stage TEXT NOT NULL,

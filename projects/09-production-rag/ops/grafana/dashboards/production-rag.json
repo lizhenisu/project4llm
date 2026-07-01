@@ -343,6 +343,16 @@
           "expr": "sum by (operation) (rate(rag_model_api_operation_retries_total[$__rate_interval]))",
           "legendFormat": "{{operation}} retries",
           "refId": "B"
+        },
+        {
+          "expr": "max by (workload) (rag_model_usage_daily{kind=\"total_tokens\"})",
+          "legendFormat": "{{workload}} UTC-day tokens",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(rag_model_usage_recording_events_total{outcome=\"write_failure\"}[$__rate_interval]))",
+          "legendFormat": "usage ledger write failures",
+          "refId": "D"
         }
       ],
       "title": "External Model Calls and Retries",

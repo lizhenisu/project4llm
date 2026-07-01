@@ -79,6 +79,15 @@ groups:
           summary: External model API failure rate is above 10%
           description: Inspect per-operation retries and latency before raising provider concurrency.
 
+      - alert: ProductionRagModelUsageRecordingFailure
+        expr: increase(rag_model_usage_recording_events_total{outcome="write_failure"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Model usage ledger writes are failing
+          description: Provider calls are succeeding but tenant usage accounting is incomplete.
+
       - alert: ProductionRagMetadataPoolTimeout
         expr: increase(rag_metadata_pool_timeouts_total[5m]) > 0
         for: 1m
