@@ -66,11 +66,10 @@ def test_admin_lists_and_redrives_dead_letters(*, mocked_admin: bool) -> None:
         admin_headers = {"Authorization": "Bearer synthetic-postgres-admin"}
     else:
         admin = api.post(
-            "/auth/register",
+            "/auth/login",
             json={
-                "username": "redrive_admin",
-                "password": "strong-password",
-                "display_name": "Redrive Admin",
+                "username": "admin",
+                "password": "admin",
             },
         )
         assert admin.status_code == 200, admin.text

@@ -26,6 +26,13 @@ TEST_ACCOUNT_TENANT_ID = "tenant-fixed-test"
 TEST_ACCOUNT_SALT = "0123456789abcdeffedcba9876543210"
 LEGACY_TEST_ACCOUNT_CREATED_AT = 1704067200000
 TEST_ACCOUNT_TOKEN_EXPIRES_AT = 4102444800000
+DEFAULT_ADMIN_ID = "user-default-admin"
+DEFAULT_ADMIN_USERNAME = "admin"
+DEFAULT_ADMIN_PASSWORD = "admin"
+DEFAULT_ADMIN_DISPLAY_NAME = "管理员"
+DEFAULT_ADMIN_TENANT_ID = "tenant-default-admin"
+DEFAULT_ADMIN_SALT = "fedcba98765432100123456789abcdef"
+DEFAULT_ADMIN_INITIALIZED_KEY = "default_admin_initialized_user_id"
 _ANNOUNCEMENT_CACHE_LOCK = threading.Lock()
 _ANNOUNCEMENT_CACHE: dict[tuple[str, int], tuple[float, list[dict[str, Any]]]] = {}
 _AUTH_TOKEN_CACHE_LOCK = threading.Lock()
@@ -283,6 +290,82 @@ def ensure_default_test_account(config: RagConfig) -> User:
                 "INSERT OR REPLACE INTO sessions(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
                 (config.fixed_test_login_token, row["id"], TEST_ACCOUNT_TOKEN_EXPIRES_AT, timestamp),
             )
+        invalidate_auth_token_cache(config)
+        return user_from_row(row)
+
+
+def ensure_default_admin_account(config: RagConfig) -> User:
+    password_hash = hash_password(DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_SALT)
+    timestamp = now_ms()
+    with connect_metadata_db(config) as conn:
+        marker = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?",
+            (DEFAULT_ADMIN_INITIALIZED_KEY,),
+        ).fetchone()
+        row = None
+        if marker is not None:
+            row = conn.execute(
+                "SELECT * FROM users WHERE id = ?",
+                (str(marker["value"]),),
+            ).fetchone()
+            if row is not None:
+                return user_from_row(row)
+        row = conn.execute(
+            "SELECT * FROM users WHERE username = ?",
+            (DEFAULT_ADMIN_USERNAME,),
+        ).fetchone()
+        if row is None:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO users(
+                        id, username, display_name, password_hash, salt,
+                        role, tenant_id, avatar_url, status,
+                        profile_name_edit_allowed, avatar_edit_allowed,
+                        created_at, last_login_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, 'admin', ?, '', 'active', 1, 1, ?, NULL)
+                    """,
+                    (
+                        DEFAULT_ADMIN_ID,
+                        DEFAULT_ADMIN_USERNAME,
+                        DEFAULT_ADMIN_DISPLAY_NAME,
+                        password_hash,
+                        DEFAULT_ADMIN_SALT,
+                        DEFAULT_ADMIN_TENANT_ID,
+                        timestamp,
+                    ),
+                )
+            except Exception:
+                row = conn.execute(
+                    "SELECT * FROM users WHERE username = ?",
+                    (DEFAULT_ADMIN_USERNAME,),
+                ).fetchone()
+                if row is None:
+                    raise
+            else:
+                row = conn.execute(
+                    "SELECT * FROM users WHERE id = ?",
+                    (DEFAULT_ADMIN_ID,),
+                ).fetchone()
+        else:
+            conn.execute(
+                """
+                UPDATE users
+                SET password_hash = ?, salt = ?, role = 'admin', status = 'active'
+                WHERE id = ?
+                """,
+                (password_hash, DEFAULT_ADMIN_SALT, row["id"]),
+            )
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
+            row = conn.execute(
+                "SELECT * FROM users WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
+            (DEFAULT_ADMIN_INITIALIZED_KEY, row["id"]),
+        )
         invalidate_auth_token_cache(config)
         return user_from_row(row)
 

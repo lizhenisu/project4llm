@@ -49,15 +49,32 @@ def run_smoke() -> None:
     assert fixed_refresh.status_code == 400, fixed_refresh.text
     assert "固定" in fixed_refresh.json()["detail"]
 
+    default_admin = api.post(
+        "/auth/login",
+        json={"username": "admin", "password": "admin"},
+    )
+    assert default_admin.status_code == 200, default_admin.text
+    default_admin_body = default_admin.json()
+    assert default_admin_body["user"]["role"] == "admin"
+    assert default_admin_body["token"] != "production-rag-fixed-test-login-token"
+    original_admin_headers = {"Authorization": f"Bearer {default_admin_body['token']}"}
+    refreshed_admin = api.post("/auth/token/refresh", headers=original_admin_headers)
+    assert refreshed_admin.status_code == 200, refreshed_admin.text
+    assert refreshed_admin.json()["user"]["username"] == "admin"
+    assert refreshed_admin.json()["user"]["role"] == "admin"
+    assert refreshed_admin.json()["token"] != default_admin_body["token"]
+    assert api.get("/auth/me", headers=original_admin_headers).status_code == 401
+    admin_headers = {"Authorization": f"Bearer {refreshed_admin.json()['token']}"}
+    assert api.get("/admin/settings", headers=admin_headers).status_code == 200
+
     first = api.post(
         "/auth/register",
         json={"username": "admin_user", "password": "strong-password", "display_name": "管理员"},
     )
     assert first.status_code == 200, first.text
     first_body = first.json()
-    assert first_body["user"]["role"] == "admin"
+    assert first_body["user"]["role"] == "user"
     assert first_body["token"]
-    admin_headers = {"Authorization": f"Bearer {first_body['token']}"}
 
     anonymous_sources = api.get("/sources?tenant_id=team_a")
     assert anonymous_sources.status_code == 401, anonymous_sources.text
@@ -160,8 +177,13 @@ def run_smoke() -> None:
 
     users = api.get("/admin/users", headers=admin_headers)
     assert users.status_code == 200, users.text
-    assert [row["username"] for row in users.json()["users"]] == ["renamed_user", "admin_user", "test_user"]
-    assert users.json()["total"] == 3
+    assert {row["username"] for row in users.json()["users"]} == {
+        "renamed_user",
+        "admin_user",
+        "admin",
+        "test_user",
+    }
+    assert users.json()["total"] == 4
     assert users.json()["limit"] == 50
 
     banned = api.patch(

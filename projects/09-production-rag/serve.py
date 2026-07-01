@@ -137,6 +137,7 @@ from rag_core.user_auth import (
     create_announcement,
     delete_announcement,
     ensure_default_test_account,
+    ensure_default_admin_account,
     is_registration_enabled,
     list_announcements,
     list_public_users,
@@ -1486,7 +1487,9 @@ class UserListResponse(BaseModel):
 
 def create_app():
     app = FastAPI(title="Production RAG", version=app_version())
-    ensure_default_test_account(load_config())
+    config = load_config()
+    ensure_default_test_account(config)
+    ensure_default_admin_account(config)
 
     @app.middleware("http")
     async def record_http_metrics(request, call_next):
