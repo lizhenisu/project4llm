@@ -2,6 +2,9 @@ import type {
   ChatMessage,
   AdminUserList,
   AdminSettings,
+  AdminDeadLetterList,
+  AdminIngestionAuditList,
+  AdminIngestionRedriveResponse,
   Announcement,
   AuthResponse,
   AuthUser,
@@ -645,6 +648,46 @@ export function getAdminSettings(settings: Settings): Promise<AdminSettings> {
   return request<AdminSettings>("/admin/settings", {
     settings,
   });
+}
+
+export function listAdminDeadLetters(
+  settings: Settings,
+  params: { limit?: number; offset?: number } = {},
+): Promise<AdminDeadLetterList> {
+  const query = new URLSearchParams();
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.offset) query.set("offset", String(params.offset));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<AdminDeadLetterList>(`/admin/ingestion/dead-letters${suffix}`, {
+    settings,
+  });
+}
+
+export function listAdminIngestionAudit(
+  settings: Settings,
+  params: { limit?: number; offset?: number } = {},
+): Promise<AdminIngestionAuditList> {
+  const query = new URLSearchParams();
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.offset) query.set("offset", String(params.offset));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<AdminIngestionAuditList>(`/admin/ingestion/audit${suffix}`, {
+    settings,
+  });
+}
+
+export function redriveAdminDeadLetters(
+  settings: Settings,
+  tasks: Array<{ tenant_id: string; task_id: string }>,
+): Promise<AdminIngestionRedriveResponse> {
+  return request<AdminIngestionRedriveResponse>(
+    "/admin/ingestion/dead-letters/redrive",
+    {
+      method: "POST",
+      settings,
+      json: { tasks },
+    },
+  );
 }
 
 export function updateRegistrationEnabled(settings: Settings, registrationEnabled: boolean): Promise<AdminSettings> {

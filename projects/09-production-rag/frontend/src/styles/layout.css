@@ -2851,6 +2851,122 @@ button.jump-latest-button:active:not(:disabled) {
   gap: 8px;
 }
 
+.admin-ingestion-panel {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 8px 20px rgb(15 23 42 / 8%);
+  padding: 16px;
+}
+
+.admin-ingestion-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.admin-ingestion-toolbar label,
+.admin-ingestion-task-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.admin-ingestion-task-list,
+.admin-ingestion-audit-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-ingestion-task {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(150px, auto);
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+.admin-ingestion-task-main,
+.admin-ingestion-task-meta,
+.admin-ingestion-audit-list article {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.admin-ingestion-task-main strong,
+.admin-ingestion-task-main span,
+.admin-ingestion-task-main small,
+.admin-ingestion-audit-list span,
+.admin-ingestion-audit-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-ingestion-task-main span,
+.admin-ingestion-task-main small,
+.admin-ingestion-task-meta,
+.admin-ingestion-audit > div > span,
+.admin-ingestion-audit-list span,
+.admin-ingestion-audit-list small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.admin-ingestion-task-main small {
+  color: var(--danger);
+}
+
+.admin-ingestion-task-meta {
+  text-align: right;
+}
+
+.admin-ingestion-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 96px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--green);
+}
+
+.admin-ingestion-audit {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.admin-ingestion-audit > div:first-child {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-ingestion-audit h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.admin-ingestion-audit-list article {
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  padding: 10px 12px;
+}
+
 .inline-action {
   display: inline-flex;
   align-items: center;
@@ -2977,11 +3093,11 @@ button.jump-latest-button:active:not(:disabled) {
 
   .admin-console-nav {
     position: static;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .admin-console-layout.is-nav-collapsed .admin-console-nav {
-    grid-template-columns: repeat(4, auto);
+    grid-template-columns: repeat(5, auto);
     justify-content: start;
   }
 
@@ -2990,8 +3106,13 @@ button.jump-latest-button:active:not(:disabled) {
   }
 
   .admin-user-search,
-  .admin-user-row {
+  .admin-user-row,
+  .admin-ingestion-task {
     grid-template-columns: 1fr;
+  }
+
+  .admin-ingestion-task-meta {
+    text-align: left;
   }
 
   .admin-user-select {
