@@ -552,12 +552,10 @@
 }
 
 .conversation-history-popover {
-  position: absolute;
-  top: 30px;
-  right: 0;
-  z-index: 25;
+  position: fixed;
+  z-index: 200;
   display: grid;
-  width: 116px;
+  width: 132px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--surface);

@@ -1,5 +1,6 @@
 import { ArrowDown, ArrowRight, Bot, Check, ChevronRight, Circle, Copy, History, ImagePlus, Loader2, MoreHorizontal, PencilLine, ThumbsDown, ThumbsUp, Trash2, X } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
@@ -60,6 +61,7 @@ export function ChatPanel({
   const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [conversationMenuId, setConversationMenuId] = useState<string | null>(null);
+  const [conversationMenuPosition, setConversationMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const [editingConversationId, setEditingConversationId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [historyBusyId, setHistoryBusyId] = useState<string | null>(null);
@@ -90,10 +92,25 @@ export function ChatPanel({
   useEffect(() => {
     function handleClickOutside() {
       setConversationMenuId(null);
+      setConversationMenuPosition(null);
     }
     document.addEventListener("click", handleClickOutside);
     return () => document.removeEventListener("click", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!conversationMenuId) return;
+    const closeFloatingMenu = () => {
+      setConversationMenuId(null);
+      setConversationMenuPosition(null);
+    };
+    window.addEventListener("resize", closeFloatingMenu);
+    document.addEventListener("scroll", closeFloatingMenu, true);
+    return () => {
+      window.removeEventListener("resize", closeFloatingMenu);
+      document.removeEventListener("scroll", closeFloatingMenu, true);
+    };
+  }, [conversationMenuId]);
 
   useEffect(() => {
     return () => {
@@ -206,12 +223,37 @@ export function ChatPanel({
     try {
       await onDeleteConversation(conversationId);
       setConversationMenuId(null);
+      setConversationMenuPosition(null);
       setEditingConversationId(null);
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : "删除对话失败");
     } finally {
       setHistoryBusyId(null);
     }
+  }
+
+  function toggleConversationMenu(event: React.MouseEvent<HTMLButtonElement>, conversationId: string) {
+    event.stopPropagation();
+    if (conversationMenuId === conversationId) {
+      setConversationMenuId(null);
+      setConversationMenuPosition(null);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 132;
+    const menuHeight = 78;
+    const viewportGap = 8;
+    const itemGap = 5;
+    const left = Math.min(
+      window.innerWidth - menuWidth - viewportGap,
+      Math.max(viewportGap, rect.right - menuWidth),
+    );
+    const opensDownward = rect.bottom + itemGap + menuHeight <= window.innerHeight - viewportGap;
+    const top = opensDownward
+      ? rect.bottom + itemGap
+      : Math.max(viewportGap, rect.top - menuHeight - itemGap);
+    setConversationMenuPosition({ left, top });
+    setConversationMenuId(conversationId);
   }
 
   async function attachImage(file: File | undefined) {
@@ -262,7 +304,11 @@ export function ChatPanel({
             aria-label={historyOpen ? "关闭历史对话" : "打开历史对话"}
             title={historyOpen ? "关闭历史对话" : "历史对话"}
             aria-expanded={historyOpen}
-            onClick={() => setHistoryOpen((open) => !open)}
+            onClick={() => {
+              setConversationMenuId(null);
+              setConversationMenuPosition(null);
+              setHistoryOpen((open) => !open);
+            }}
           >
             <History size={18} />
           </button>
@@ -273,7 +319,11 @@ export function ChatPanel({
         className={`conversation-history-backdrop ${historyOpen ? "open" : ""}`}
         aria-label="关闭历史对话"
         tabIndex={historyOpen ? 0 : -1}
-        onClick={() => setHistoryOpen(false)}
+        onClick={() => {
+          setConversationMenuId(null);
+          setConversationMenuPosition(null);
+          setHistoryOpen(false);
+        }}
       />
       <aside className={`conversation-history-drawer ${historyOpen ? "open" : ""}`} aria-label="历史对话">
         <div className="conversation-history-header">
@@ -281,7 +331,16 @@ export function ChatPanel({
             <strong>历史对话</strong>
             <small>{conversations.length} 条记录</small>
           </div>
-          <button className="icon-button" type="button" aria-label="关闭历史对话" onClick={() => setHistoryOpen(false)}>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="关闭历史对话"
+            onClick={() => {
+              setConversationMenuId(null);
+              setConversationMenuPosition(null);
+              setHistoryOpen(false);
+            }}
+          >
             <X size={18} />
           </button>
         </div>
@@ -339,38 +398,44 @@ export function ChatPanel({
                       type="button"
                       aria-label={`管理对话：${conversation.title}`}
                       disabled={itemBusy}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setConversationMenuId((current) => current === conversation.id ? null : conversation.id);
-                      }}
+                      onClick={(event) => toggleConversationMenu(event, conversation.id)}
                     >
                       {itemBusy ? <Loader2 className="spin" size={16} /> : <MoreHorizontal size={17} />}
                     </button>
-                    {conversationMenuId === conversation.id ? (
-                      <div className="conversation-history-popover" role="menu" onClick={(event) => event.stopPropagation()}>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          onClick={() => {
-                            setEditingConversationId(conversation.id);
-                            setEditTitle(conversation.title);
-                            setConversationMenuId(null);
-                          }}
-                        >
-                          <PencilLine size={15} />
-                          重命名
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="danger"
-                          onClick={() => void removeConversation(conversation.id)}
-                        >
-                          <Trash2 size={15} />
-                          删除
-                        </button>
-                      </div>
-                    ) : null}
+                    {conversationMenuId === conversation.id && conversationMenuPosition && typeof document !== "undefined"
+                      ? createPortal(
+                          <div
+                            className="conversation-history-popover"
+                            role="menu"
+                            style={conversationMenuPosition}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                setEditingConversationId(conversation.id);
+                                setEditTitle(conversation.title);
+                                setConversationMenuId(null);
+                                setConversationMenuPosition(null);
+                              }}
+                            >
+                              <PencilLine size={15} />
+                              重命名
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="danger"
+                              onClick={() => void removeConversation(conversation.id)}
+                            >
+                              <Trash2 size={15} />
+                              删除
+                            </button>
+                          </div>,
+                          document.body,
+                        )
+                      : null}
                   </div>
                 </article>
               );

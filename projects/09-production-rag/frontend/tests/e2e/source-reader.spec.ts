@@ -241,7 +241,18 @@ test("manages historical conversations from the sliding chat drawer", async ({ p
 
   await chatHeader.getByRole("button", { name: "打开历史对话" }).click();
   await drawer.getByRole("button", { name: "管理对话：旧对话" }).click();
-  await drawer.getByRole("menuitem", { name: "重命名" }).click();
+  const floatingMenu = page.getByRole("menu");
+  await expect(floatingMenu).toBeVisible();
+  expect(await floatingMenu.evaluate((element) => element.closest("aside"))).toBeNull();
+  const menuBox = await floatingMenu.boundingBox();
+  const viewport = page.viewportSize();
+  expect(menuBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(menuBox!.x).toBeGreaterThanOrEqual(0);
+  expect(menuBox!.y).toBeGreaterThanOrEqual(0);
+  expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(viewport!.width);
+  expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(viewport!.height);
+  await floatingMenu.getByRole("menuitem", { name: "重命名" }).click();
   const renameInput = drawer.getByRole("textbox", { name: "重命名旧对话" });
   await renameInput.fill("项目复盘");
   await drawer.getByRole("button", { name: "保存" }).click();
@@ -249,7 +260,7 @@ test("manages historical conversations from the sliding chat drawer", async ({ p
   expect(renamedTitle).toBe("项目复盘");
 
   await drawer.getByRole("button", { name: "管理对话：项目复盘" }).click();
-  await drawer.getByRole("menuitem", { name: "删除" }).click();
+  await page.getByRole("menu").getByRole("menuitem", { name: "删除" }).click();
   await expect(drawer.getByText("项目复盘", { exact: true })).toHaveCount(0);
   expect(deletedConversationId).toBe("conv-old");
   await expect(page.getByText("直接开始对话")).toBeVisible();
