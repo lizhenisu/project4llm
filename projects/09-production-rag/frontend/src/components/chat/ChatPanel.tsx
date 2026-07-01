@@ -236,8 +236,8 @@ export function ChatPanel({
           selectedSources.length === 0 ? (
             <EmptyState
               icon={<Bot size={34} />}
-              title="让我们开始构建知识库..."
-              text="添加来源后，你可以基于资料提问、生成摘要和创建思维导图。"
+              title="直接开始对话"
+              text="无需选择文档也可以提问；选择来源后，回答会结合知识库内容。"
             />
           ) : (
             <Overview sources={selectedSources} onAsk={onAsk} />

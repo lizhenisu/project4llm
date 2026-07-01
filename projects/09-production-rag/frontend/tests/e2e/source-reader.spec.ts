@@ -57,6 +57,91 @@ async function mockSourceAssetRoute(page: Page) {
   });
 }
 
+test("sends a normal chat request when no documents are selected", async ({ page }) => {
+  await mockWorkspaceShell(page);
+  let queryPayload: Record<string, unknown> | null = null;
+
+  await page.route("**/conversations**", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON();
+      await route.fulfill({
+        json: {
+          ...body,
+          id: body.id || "conversation-without-sources",
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      });
+      return;
+    }
+    await route.fulfill({ json: { conversations: [] } });
+  });
+  await page.route("**/query/stream", async (route) => {
+    queryPayload = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: "application/x-ndjson",
+      body: `${JSON.stringify({
+        type: "result",
+        request_id: "query-without-sources",
+        answer: "这是不依赖知识库的普通对话回答。",
+        citations: [],
+        trace: {},
+      })}\n`,
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("无需选择文档也可以提问")).toBeVisible();
+  await expect(page.getByText("0 个来源")).toBeVisible();
+  const input = page.getByPlaceholder("提问或创作内容");
+  const sendButton = page.getByRole("button", { name: "发送消息" });
+  await expect(sendButton).toBeDisabled();
+
+  await input.fill("没有文档时也能聊天吗？");
+  await expect(sendButton).toBeEnabled();
+  await input.press("Enter");
+
+  await expect(page.getByText("这是不依赖知识库的普通对话回答。")).toBeVisible();
+  expect(queryPayload).toMatchObject({
+    query: "没有文档时也能聊天吗？",
+    doc_ids: [],
+    query_mode: "text",
+  });
+});
+
+test("collapses and restores the top bar and status bar", async ({ page }) => {
+  await mockWorkspaceShell(page);
+  await page.goto("/");
+
+  const shell = page.locator(".workspace-shell");
+  const topbar = page.locator(".topbar");
+  const statusbar = page.locator(".statusbar");
+  const workspace = page.locator(".workspace-grid");
+  const collapseButton = page.getByRole("button", { name: "折叠顶部栏和状态栏" });
+  const expandedWorkspaceHeight = await workspace.evaluate((element) => element.getBoundingClientRect().height);
+
+  await expect(topbar).toBeVisible();
+  await expect(statusbar).toBeVisible();
+  await expect(collapseButton).toHaveAttribute("aria-expanded", "true");
+  await collapseButton.click();
+
+  const expandButton = page.getByRole("button", { name: "展开顶部栏和状态栏" });
+  await expect(shell).toHaveClass(/chrome-collapsed/);
+  await expect(expandButton).toBeVisible();
+  await expect(expandButton).toHaveAttribute("aria-expanded", "false");
+  await expect.poll(() => topbar.evaluate((element) => element.getBoundingClientRect().height)).toBe(0);
+  await expect.poll(() => statusbar.evaluate((element) => element.getBoundingClientRect().height)).toBe(0);
+  await expect.poll(() => workspace.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(
+    expandedWorkspaceHeight + 70,
+  );
+
+  await expandButton.click();
+  await expect(shell).not.toHaveClass(/chrome-collapsed/);
+  await expect(page.getByRole("button", { name: "折叠顶部栏和状态栏" })).toBeVisible();
+  await expect.poll(() => topbar.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(50);
+  await expect.poll(() => statusbar.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(20);
+});
+
 test("hides database create/rename controls when not authenticated", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.removeItem("production-rag-auth-session");

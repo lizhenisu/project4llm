@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PencilLine, RefreshCw, Search, Settings as SettingsIcon, Shield, Trash2, UserRound, Users, X } from "lucide-react";
+import { ArrowLeft, Ban, Check, CheckCircle2, ChevronDown, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PencilLine, RefreshCw, Search, Settings as SettingsIcon, Shield, Trash2, UserRound, Users, X } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -180,6 +180,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   const [artifactGenerationReadyAt, setArtifactGenerationReadyAt] = useState(0);
   const [, setCooldownTick] = useState(0);
   const [panelLayout, setPanelLayout] = useState<PanelLayout>(DEFAULT_LAYOUT);
+  const [chromeCollapsed, setChromeCollapsed] = useState(false);
   const [typingMessageId, setTypingMessageId] = useState<string | null>(null);
   const gridRef = useRef<HTMLElement | null>(null);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1292,7 +1293,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }
 
   return (
-    <div className="workspace-shell">
+    <div className={`workspace-shell ${chromeCollapsed ? "chrome-collapsed" : ""}`}>
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark">
@@ -1354,6 +1355,16 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             ) : null}
           </div>
         </div>
+        <button
+          type="button"
+          className="chrome-toggle"
+          aria-label={chromeCollapsed ? "展开顶部栏和状态栏" : "折叠顶部栏和状态栏"}
+          title={chromeCollapsed ? "展开顶部栏和状态栏" : "折叠顶部栏和状态栏"}
+          aria-expanded={!chromeCollapsed}
+          onClick={() => setChromeCollapsed((collapsed) => !collapsed)}
+        >
+          <ChevronDown size={18} aria-hidden="true" />
+        </button>
       </header>
       {activeView === "profile" && auth.user ? (
         <ProfilePage user={auth.user} settings={settings} onBack={() => setActiveView("workspace")} />
