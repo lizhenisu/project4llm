@@ -43,6 +43,7 @@ from rag_core.conversations import (
     delete_conversation,
     list_conversation_items,
     load_conversation,
+    rename_conversation,
     save_conversation,
 )
 from rag_core.events import append_event, event_log_limits_snapshot, hit_event_summaries
@@ -1371,6 +1372,25 @@ class ConversationListResponse(BaseModel):
 class DeleteConversationResponse(BaseModel):
     status: str
     conversation_id: str
+
+
+class RenameConversationRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("title must not be blank")
+        return normalized
+
+
+class RenameConversationResponse(BaseModel):
+    status: str
+    conversation_id: str
+    title: str
+    updated_at: int
 
 
 class UserResponse(BaseModel):
@@ -2906,6 +2926,39 @@ def create_app():
         return DeleteConversationResponse(
             status="deleted" if removed else "not_found",
             conversation_id=conversation_id,
+        )
+
+    @app.patch("/conversations/{conversation_id}", response_model=RenameConversationResponse)
+    def update_conversation_title(
+        conversation_id: str,
+        request: RenameConversationRequest,
+        tenant_id: str = "team_a",
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> RenameConversationResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=tenant_id,
+            acl_groups=[],
+        )
+        renamed = rename_conversation(
+            config,
+            tenant_id=auth_context.tenant_id,
+            conversation_id=conversation_id,
+            title=request.title,
+        )
+        if renamed is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return RenameConversationResponse(
+            status="renamed",
+            conversation_id=renamed.id,
+            title=renamed.title,
+            updated_at=renamed.updated_at,
         )
 
     @app.get("/artifacts", response_model=ArtifactListResponse)

@@ -243,6 +243,44 @@ def delete_conversation(
     return cursor.rowcount > 0
 
 
+def rename_conversation(
+    config: RagConfig,
+    *,
+    tenant_id: str,
+    conversation_id: str,
+    title: str,
+) -> ConversationListItem | None:
+    existing = load_conversation_metadata(
+        config,
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+    )
+    if existing is None:
+        return None
+    updated_at = now_ms()
+    normalized_title = title.strip()
+    with connect_metadata_db(config) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE conversations
+            SET title = ?, updated_at = ?
+            WHERE tenant_id = ? AND id = ?
+            """,
+            (normalized_title, updated_at, tenant_id, conversation_id),
+        )
+    if cursor.rowcount == 0:
+        return None
+    return ConversationListItem(
+        id=existing.id,
+        tenant_id=existing.tenant_id,
+        title=normalized_title,
+        message_count=existing.message_count,
+        source_doc_ids=existing.source_doc_ids,
+        created_at=existing.created_at,
+        updated_at=updated_at,
+    )
+
+
 def save_conversation_row(config: RagConfig, conversation: Conversation) -> None:
     with connect_metadata_db(config) as conn:
         existing = conn.execute(

@@ -142,6 +142,122 @@ test("collapses and restores the top bar and status bar", async ({ page }) => {
   await expect.poll(() => statusbar.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(20);
 });
 
+test("manages historical conversations from the sliding chat drawer", async ({ page }) => {
+  await mockWorkspaceShell(page);
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "production-rag-workspace-conversations:default-workspace",
+      JSON.stringify(["conv-new", "conv-old"]),
+    );
+  });
+  const now = Date.now();
+  let conversations = [
+    {
+      id: "conv-new",
+      tenant_id: "team_a",
+      title: "最新对话",
+      message_count: 2,
+      source_doc_ids: [],
+      created_at: now - 2_000,
+      updated_at: now,
+    },
+    {
+      id: "conv-old",
+      tenant_id: "team_a",
+      title: "旧对话",
+      message_count: 2,
+      source_doc_ids: [],
+      created_at: now - 10_000,
+      updated_at: now - 5_000,
+    },
+    {
+      id: "conv-other-workspace",
+      tenant_id: "team_a",
+      title: "其他知识库对话",
+      message_count: 2,
+      source_doc_ids: [],
+      created_at: now - 20_000,
+      updated_at: now + 10_000,
+    },
+  ];
+  let renamedTitle = "";
+  let deletedConversationId = "";
+
+  await page.route("**/conversations**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const conversationId = url.pathname.match(/\/conversations\/([^/]+)$/)?.[1];
+    if (!conversationId) {
+      await route.fulfill({ json: { conversations } });
+      return;
+    }
+    if (request.method() === "PATCH") {
+      renamedTitle = request.postDataJSON().title;
+      conversations = conversations.map((item) =>
+        item.id === conversationId ? { ...item, title: renamedTitle, updated_at: now + 1_000 } : item,
+      );
+      await route.fulfill({
+        json: {
+          status: "renamed",
+          conversation_id: conversationId,
+          title: renamedTitle,
+          updated_at: now + 1_000,
+        },
+      });
+      return;
+    }
+    if (request.method() === "DELETE") {
+      deletedConversationId = conversationId;
+      conversations = conversations.filter((item) => item.id !== conversationId);
+      await route.fulfill({ json: { status: "deleted", conversation_id: conversationId } });
+      return;
+    }
+    const item = conversations.find((conversation) => conversation.id === conversationId);
+    await route.fulfill({
+      json: {
+        ...item,
+        messages: [
+          { id: `${conversationId}-user`, role: "user", content: `${item?.title}问题`, status: "done" },
+          { id: `${conversationId}-assistant`, role: "assistant", content: `${item?.title}回答`, status: "done" },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("最新对话回答")).toBeVisible();
+  const chatHeader = page.locator(".chat-panel > .panel-header");
+  await expect(chatHeader.getByRole("button", { name: "更多" })).toHaveCount(0);
+  await chatHeader.getByRole("button", { name: "打开历史对话" }).click();
+
+  const drawer = page.getByRole("complementary", { name: "历史对话" });
+  await expect(drawer).toBeVisible();
+  await expect(drawer).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
+  await expect(drawer.getByText("2 条记录")).toBeVisible();
+  await expect(drawer.getByText("其他知识库对话")).toHaveCount(0);
+  await drawer.getByRole("button", { name: /旧对话.*2 条消息/ }).click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByText("旧对话回答")).toBeVisible();
+
+  await chatHeader.getByRole("button", { name: "打开历史对话" }).click();
+  await drawer.getByRole("button", { name: "管理对话：旧对话" }).click();
+  await drawer.getByRole("menuitem", { name: "重命名" }).click();
+  const renameInput = drawer.getByRole("textbox", { name: "重命名旧对话" });
+  await renameInput.fill("项目复盘");
+  await drawer.getByRole("button", { name: "保存" }).click();
+  await expect(drawer.getByText("项目复盘", { exact: true })).toBeVisible();
+  expect(renamedTitle).toBe("项目复盘");
+
+  await drawer.getByRole("button", { name: "管理对话：项目复盘" }).click();
+  await drawer.getByRole("menuitem", { name: "删除" }).click();
+  await expect(drawer.getByText("项目复盘", { exact: true })).toHaveCount(0);
+  expect(deletedConversationId).toBe("conv-old");
+  await expect(page.getByText("直接开始对话")).toBeVisible();
+
+  await drawer.getByRole("button", { name: "关闭历史对话" }).click();
+  await expect(drawer).toBeHidden();
+});
+
 test("hides database create/rename controls when not authenticated", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.removeItem("production-rag-auth-session");

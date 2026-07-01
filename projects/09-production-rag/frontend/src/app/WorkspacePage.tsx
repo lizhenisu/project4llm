@@ -31,6 +31,7 @@ import {
   publishAnnouncement,
   redriveAdminDeadLetters,
   queryRagStream,
+  renameConversation,
   changeCurrentPassword,
   refreshLoginToken,
   saveConversation,
@@ -61,6 +62,7 @@ import {
   loadWorkspaceConversations,
   loadWorkspaceSourceTitles,
   loadWorkspaceSources,
+  removeConversationFromWorkspace,
   removeSourcesFromWorkspace,
   saveActiveWorkspaceId,
   saveSettings,
@@ -167,6 +169,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [sources, setSources] = useState<SourceItem[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [conversations, setConversations] = useState<ConversationListItem[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversationTitle, setConversationTitle] = useState("未命名对话");
   const [artifacts, setArtifacts] = useState<MindMapArtifact[]>([]);
@@ -328,6 +331,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     setActiveWorkspaceId(loadActiveWorkspaceId(userWorkspaces, userId));
     setSources([]);
     setMessages([]);
+    setConversations([]);
     setConversationId(null);
     setConversationTitle("未命名对话");
     setArtifacts([]);
@@ -392,6 +396,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         if (!isCurrentRefresh()) return;
         setSources([]);
         setArtifacts([]);
+        setConversations([]);
         setAnnouncements(announcementRows);
         setStatus("请先登录后使用知识库服务");
         return;
@@ -419,9 +424,14 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       const visibleArtifacts = hasWorkspaceArtifacts(workspaceId)
         ? artifactRows.filter((a) => wArtifacts.includes(a.id))
         : artifactRows;
+      const workspaceConversationIds = loadWorkspaceConversations(workspaceId);
+      const visibleConversations = hasWorkspaceConversations(workspaceId)
+        ? conversationRows.filter((row) => workspaceConversationIds.includes(row.id))
+        : conversationRows;
       setArtifacts(visibleArtifacts);
+      setConversations(visibleConversations);
       setAnnouncements(announcementRows);
-      await loadLatestConversation(nextSettings, visibleRows, conversationRows, isCurrentRefresh, workspaceId);
+      await loadLatestConversation(nextSettings, visibleRows, visibleConversations, isCurrentRefresh, workspaceId);
     } catch (error) {
       if (!isCurrentRefresh()) return;
       setStatus(error instanceof Error ? error.message : "连接失败");
@@ -439,14 +449,10 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       return;
     }
     if (!isCurrentRefresh()) return;
-    const workspaceConversations = loadWorkspaceConversations(workspaceId);
-    const visibleConversations = hasWorkspaceConversations(workspaceId)
-      ? conversationRows.filter((row) => workspaceConversations.includes(row.id))
-      : conversationRows;
-    if (conversationId || visibleConversations.length === 0 || messages.length > 0) {
+    if (conversationId || conversationRows.length === 0 || messages.length > 0) {
       return;
     }
-    const latest = await getConversation(nextSettings, visibleConversations[0].id);
+    const latest = await getConversation(nextSettings, conversationRows[0].id);
     if (!isCurrentRefresh()) return;
     setConversationId(latest.id);
     setConversationTitle(latest.title);
@@ -987,7 +993,10 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     workspaceId = activeWorkspaceId,
   ) {
     if (nextMessages.length === 0) return null;
-    const title = inferConversationTitle(nextMessages);
+    const title =
+      targetConversationId && targetConversationId === conversationId
+        ? conversationTitle
+        : inferConversationTitle(nextMessages);
     const saved = await saveConversation(targetSettings, {
       id: targetConversationId,
       title,
@@ -997,19 +1006,75 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     if (activeWorkspaceIdRef.current === workspaceId) {
       setConversationId(saved.id);
       setConversationTitle(saved.title);
+      setConversations((current) => [
+        {
+          id: saved.id,
+          tenant_id: saved.tenant_id,
+          title: saved.title,
+          message_count: saved.messages.length,
+          source_doc_ids: saved.source_doc_ids,
+          created_at: saved.created_at,
+          updated_at: saved.updated_at,
+        },
+        ...current.filter((item) => item.id !== saved.id),
+      ]);
     }
     addConversationToWorkspace(workspaceId, saved.id);
     return saved;
   }
 
-  async function handleDeleteConversation() {
-    if (conversationId) {
-      await deleteConversation(settings, conversationId);
+  async function handleOpenConversation(targetConversationId: string) {
+    const requestWorkspaceId = activeWorkspaceId;
+    const loaded = await getConversation(settings, targetConversationId);
+    if (activeWorkspaceIdRef.current !== requestWorkspaceId) return;
+    suppressAutoConversationLoadRef.current = false;
+    setConversationId(loaded.id);
+    setConversationTitle(loaded.title);
+    setTypingMessageId(null);
+    const loadedMessages = loaded.messages.map(normalizeMessage);
+    setMessages(loadedMessages);
+    const selectedIds = new Set(loaded.source_doc_ids);
+    setSources((current) =>
+      current.map((source) => ({
+        ...source,
+        selected:
+          source.status === "ready" &&
+          (selectedIds.has(source.doc_id) || Boolean(source.child_doc_ids?.some((docId) => selectedIds.has(docId)))),
+      })),
+    );
+    if (hasPendingAssistant(loadedMessages)) {
+      void resumePendingAnswer({ ...loaded, messages: loadedMessages }, settings, requestWorkspaceId);
     }
-    suppressAutoConversationLoadRef.current = true;
-    setConversationId(null);
-    setConversationTitle("未命名对话");
-    setMessages([]);
+  }
+
+  async function handleRenameConversation(targetConversationId: string, title: string) {
+    const renamed = await renameConversation(settings, targetConversationId, title);
+    setConversations((current) => {
+      const existing = current.find((item) => item.id === targetConversationId);
+      if (!existing) return current;
+      const next = {
+        ...existing,
+        title: renamed.title,
+        updated_at: renamed.updated_at,
+      };
+      return [next, ...current.filter((item) => item.id !== targetConversationId)];
+    });
+    if (conversationId === targetConversationId) {
+      setConversationTitle(renamed.title);
+    }
+  }
+
+  async function handleDeleteConversation(targetConversationId: string) {
+    await deleteConversation(settings, targetConversationId);
+    removeConversationFromWorkspace(activeWorkspaceId, targetConversationId);
+    setConversations((current) => current.filter((item) => item.id !== targetConversationId));
+    if (conversationId === targetConversationId) {
+      suppressAutoConversationLoadRef.current = true;
+      setConversationId(null);
+      setConversationTitle("未命名对话");
+      setMessages([]);
+      setTypingMessageId(null);
+    }
   }
 
   async function handleFeedback(message: ChatMessage, rating: 1 | -1) {
@@ -1221,6 +1286,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     setActiveWorkspaceId(nextWorkspace.id);
     setSources([]);
     setMessages([]);
+    setConversations([]);
     setConversationId(null);
     setConversationTitle("未命名对话");
     setArtifacts([]);
@@ -1258,6 +1324,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     setActiveWorkspaceId(id);
     setSources([]);
     setMessages([]);
+    setConversations([]);
     setConversationId(null);
     setConversationTitle("未命名对话");
     setArtifacts([]);
@@ -1410,6 +1477,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
           />
           <ChatPanel
             messages={messages}
+            conversations={conversations}
+            activeConversationId={conversationId}
             selectedSources={selectedSources}
             authenticated={isAuthenticated}
             busy={busy}
@@ -1420,6 +1489,8 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             onTypingComplete={() => setTypingMessageId(null)}
             onAsk={handleAsk}
             onFeedback={handleFeedback}
+            onOpenConversation={handleOpenConversation}
+            onRenameConversation={handleRenameConversation}
             onDeleteConversation={handleDeleteConversation}
           />
           <ResizeDivider

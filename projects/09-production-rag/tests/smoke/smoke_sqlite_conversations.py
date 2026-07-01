@@ -10,7 +10,14 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from rag_core.config import load_config
-from rag_core.conversations import ConversationMessage, delete_conversation, list_conversations, load_conversation, save_conversation
+from rag_core.conversations import (
+    ConversationMessage,
+    delete_conversation,
+    list_conversations,
+    load_conversation,
+    rename_conversation,
+    save_conversation,
+)
 
 
 def main() -> None:
@@ -43,6 +50,22 @@ def run_smoke() -> None:
     assert [message.content for message in loaded.messages] == ["问题", "回答"]
     assert loaded.messages[1].feedback_rating == 1
     assert loaded.source_doc_ids == ["doc-1"]
+    renamed = rename_conversation(
+        config,
+        tenant_id="tenant-a",
+        conversation_id=saved.id,
+        title="重命名后的会话",
+    )
+    assert renamed is not None
+    assert renamed.title == "重命名后的会话"
+    assert load_conversation(config, tenant_id="tenant-a", conversation_id=saved.id).title == "重命名后的会话"
+    assert rename_conversation(
+        config,
+        tenant_id="tenant-b",
+        conversation_id=saved.id,
+        title="越权重命名",
+    ) is None
+    assert load_conversation(config, tenant_id="tenant-a", conversation_id=saved.id).title == "重命名后的会话"
     assert delete_conversation(config, tenant_id="tenant-a", conversation_id=saved.id)
     assert list_conversations(config, tenant_id="tenant-a") == []
     print("sqlite conversations smoke passed")

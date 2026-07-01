@@ -195,6 +195,13 @@ export function addConversationToWorkspace(workspaceId: string, conversationId: 
   saveWorkspaceConversations(workspaceId, dedupeIds([...existing, conversationId]));
 }
 
+export function removeConversationFromWorkspace(workspaceId: string, conversationId: string) {
+  saveWorkspaceConversations(
+    workspaceId,
+    loadWorkspaceConversations(workspaceId).filter((id) => id !== conversationId),
+  );
+}
+
 function saveWorkspaceConversations(workspaceId: string, ids: string[]) {
   localStorage.setItem(`${WORKSPACE_CONVERSATIONS_PREFIX}:${workspaceId}`, JSON.stringify(ids));
 }

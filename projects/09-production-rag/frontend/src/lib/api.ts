@@ -389,6 +389,21 @@ export function deleteConversation(settings: Settings, conversationId: string) {
   );
 }
 
+export function renameConversation(
+  settings: Settings,
+  conversationId: string,
+  title: string,
+): Promise<{ status: string; conversation_id: string; title: string; updated_at: number }> {
+  return request<{ status: string; conversation_id: string; title: string; updated_at: number }>(
+    `/conversations/${encodeURIComponent(conversationId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    {
+      method: "PATCH",
+      settings,
+      json: { title },
+    },
+  );
+}
+
 function normalizeConversation(settings: Settings, conversation: ApiConversation): Conversation {
   return {
     ...conversation,

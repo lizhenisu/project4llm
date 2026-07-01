@@ -58,6 +58,7 @@ def main() -> None:
     assert "GET" in methods_by_route["/conversations"]
     assert "POST" in methods_by_route["/conversations"]
     assert "GET" in methods_by_route["/conversations/{conversation_id}"]
+    assert "PATCH" in methods_by_route["/conversations/{conversation_id}"]
     assert "DELETE" in methods_by_route["/conversations/{conversation_id}"]
     assert "GET" in methods_by_route["/artifacts"]
     assert "POST" in methods_by_route["/artifacts/mindmap"]
@@ -213,6 +214,13 @@ def main() -> None:
                 get_response = client.get(f"/conversations/{conversation_id}?tenant_id=team_a")
                 assert get_response.status_code == 200, get_response.text
                 assert get_response.json()["messages"][1]["citations"][0]["doc_id"] == "runbook"
+                rename_response = client.patch(
+                    f"/conversations/{conversation_id}?tenant_id=team_a",
+                    json={"title": "Renamed conversation"},
+                )
+                assert rename_response.status_code == 200, rename_response.text
+                assert rename_response.json()["title"] == "Renamed conversation"
+                assert client.get(f"/conversations/{conversation_id}?tenant_id=team_a").json()["title"] == "Renamed conversation"
                 delete_response = client.delete(f"/conversations/{conversation_id}?tenant_id=team_a")
                 assert delete_response.status_code == 200, delete_response.text
                 assert delete_response.json()["status"] == "deleted"

@@ -407,6 +407,212 @@
   gap: 8px;
 }
 
+.chat-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.conversation-history-backdrop {
+  position: absolute;
+  inset: 49px 0 0;
+  z-index: 14;
+  visibility: hidden;
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--text) 16%, transparent);
+  opacity: 0;
+  cursor: default;
+  transition:
+    opacity 220ms ease,
+    visibility 0s linear 220ms;
+}
+
+.conversation-history-backdrop.open {
+  visibility: visible;
+  opacity: 1;
+  transition-delay: 0s;
+}
+
+.conversation-history-drawer {
+  position: absolute;
+  top: 49px;
+  bottom: 0;
+  left: 0;
+  z-index: 15;
+  display: flex;
+  visibility: hidden;
+  flex-direction: column;
+  width: min(300px, calc(100% - 24px));
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  transform: translateX(-100%);
+  transition:
+    transform 240ms ease,
+    visibility 0s linear 240ms;
+}
+
+.conversation-history-drawer.open {
+  visibility: visible;
+  transform: translateX(0);
+  transition-delay: 0s;
+}
+
+.conversation-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 58px;
+  border-bottom: 1px solid var(--line);
+  padding: 0 12px 0 16px;
+}
+
+.conversation-history-header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.conversation-history-header small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.conversation-history-error {
+  margin: 10px 12px 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  padding: 8px 10px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.conversation-history-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.conversation-history-empty {
+  padding: 36px 12px;
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 13px;
+}
+
+.conversation-history-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 4px;
+  min-height: 58px;
+  border-radius: 9px;
+  padding: 4px;
+}
+
+.conversation-history-item:hover {
+  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
+}
+
+.conversation-history-item.active {
+  background: var(--accent-soft);
+}
+
+.conversation-history-main {
+  display: grid;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 7px 8px;
+  color: inherit;
+  text-align: left;
+}
+
+.conversation-history-main strong,
+.conversation-history-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-history-main strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.conversation-history-main span {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.conversation-history-menu {
+  position: relative;
+}
+
+.conversation-history-popover {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  z-index: 25;
+  display: grid;
+  width: 116px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 5px;
+}
+
+.conversation-history-popover button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  padding: 0 8px;
+  color: var(--text);
+  text-align: left;
+}
+
+.conversation-history-popover button:hover {
+  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
+}
+
+.conversation-history-popover button.danger {
+  color: var(--danger);
+}
+
+.conversation-history-rename {
+  display: flex;
+  min-width: 0;
+  gap: 4px;
+  padding: 4px;
+}
+
+.conversation-history-rename input {
+  min-width: 0;
+  width: 100%;
+  height: 32px;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 0 7px;
+  color: var(--text);
+}
+
+.conversation-history-rename button {
+  min-width: 44px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--accent);
+  color: white;
+  font-size: 12px;
+}
+
 .chat-menu {
   position: relative;
 }
