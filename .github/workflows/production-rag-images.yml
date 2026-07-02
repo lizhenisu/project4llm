@@ -24,13 +24,17 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: rag-api
+            context: .
             dockerfile: projects/09-production-rag/Dockerfile
           - name: pgbouncer
+            context: projects/09-production-rag/ops/pgbouncer
             dockerfile: projects/09-production-rag/ops/pgbouncer/Dockerfile
           - name: rag-web
+            context: .
             dockerfile: projects/09-production-rag/frontend/Dockerfile
     steps:
       - name: Checkout
@@ -59,7 +63,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
