@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowRight, Bot, Check, ChevronRight, Circle, Copy, History, ImagePlus, Loader2, MoreHorizontal, PencilLine, ThumbsDown, ThumbsUp, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowRight, Bot, Check, ChevronRight, Circle, Copy, History, ImagePlus, Loader2, Maximize, MoreHorizontal, PencilLine, Plus, ThumbsDown, ThumbsUp, Trash2, X } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
@@ -21,6 +21,7 @@ type Props = {
   messages: ChatMessage[];
   conversations: ConversationListItem[];
   activeConversationId: string | null;
+  chromeCollapsed: boolean;
   selectedSources: SourceItem[];
   authenticated: boolean;
   busy: boolean;
@@ -31,15 +32,18 @@ type Props = {
   onTypingComplete: () => void;
   onAsk: (query: string, imageDataUrl?: string | null) => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
+  onNewConversation: () => void;
   onOpenConversation: (conversationId: string) => Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => Promise<void>;
   onDeleteConversation: (conversationId: string) => Promise<void>;
+  onToggleChrome: () => void;
 };
 
 export function ChatPanel({
   messages,
   conversations,
   activeConversationId,
+  chromeCollapsed,
   selectedSources,
   authenticated,
   busy,
@@ -50,9 +54,11 @@ export function ChatPanel({
   onTypingComplete,
   onAsk,
   onFeedback,
+  onNewConversation,
   onOpenConversation,
   onRenameConversation,
   onDeleteConversation,
+  onToggleChrome,
 }: Props) {
   const [draft, setDraft] = useState("");
   const [attachedImage, setAttachedImage] = useState<string | null>(null);
@@ -77,6 +83,8 @@ export function ChatPanel({
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const renameSubmittingRef = useRef<string | null>(null);
+  const renameCancelledRef = useRef<string | null>(null);
   const onTypingCompleteRef = useLatestRef(onTypingComplete);
   const onFeedbackRef = useLatestRef(onFeedback);
   const canSend = (draft.trim().length > 0 || Boolean(attachedImage)) && !busy && !imageProcessing;
@@ -201,9 +209,15 @@ export function ChatPanel({
     }
   }
 
-  async function submitConversationRename(conversationId: string) {
+  async function submitConversationRename(conversationId: string, currentTitle: string) {
+    if (renameSubmittingRef.current === conversationId) return;
     const normalizedTitle = editTitle.trim();
-    if (!normalizedTitle) return;
+    if (!normalizedTitle || normalizedTitle === currentTitle) {
+      setEditingConversationId(null);
+      setEditTitle("");
+      return;
+    }
+    renameSubmittingRef.current = conversationId;
     setHistoryError("");
     setHistoryBusyId(conversationId);
     try {
@@ -213,6 +227,7 @@ export function ChatPanel({
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : "重命名对话失败");
     } finally {
+      renameSubmittingRef.current = null;
       setHistoryBusyId(null);
     }
   }
@@ -313,6 +328,16 @@ export function ChatPanel({
             <History size={18} />
           </button>
         </div>
+        <button
+          className="icon-button chat-chrome-toggle"
+          type="button"
+          aria-label={chromeCollapsed ? "展开顶部栏和状态栏" : "折叠顶部栏和状态栏"}
+          title={chromeCollapsed ? "展开顶部栏和状态栏" : "折叠顶部栏和状态栏"}
+          aria-expanded={!chromeCollapsed}
+          onClick={onToggleChrome}
+        >
+          <Maximize size={18} aria-hidden="true" />
+        </button>
       </div>
       <button
         type="button"
@@ -345,6 +370,19 @@ export function ChatPanel({
           </button>
         </div>
         {historyError ? <p className="conversation-history-error" role="alert">{historyError}</p> : null}
+        <div className="conversation-history-create">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              onNewConversation();
+              setHistoryOpen(false);
+            }}
+          >
+            <Plus size={16} />
+            开启新对话
+          </button>
+        </div>
         <div className="conversation-history-list">
           {conversations.length === 0 ? (
             <div className="conversation-history-empty">还没有历史对话</div>
@@ -362,7 +400,7 @@ export function ChatPanel({
                       className="conversation-history-rename"
                       onSubmit={(event) => {
                         event.preventDefault();
-                        void submitConversationRename(conversation.id);
+                        void submitConversationRename(conversation.id, conversation.title);
                       }}
                     >
                       <input
@@ -372,14 +410,21 @@ export function ChatPanel({
                         autoFocus
                         disabled={itemBusy}
                         onChange={(event) => setEditTitle(event.target.value)}
+                        onBlur={() => {
+                          if (renameCancelledRef.current === conversation.id) {
+                            renameCancelledRef.current = null;
+                            return;
+                          }
+                          void submitConversationRename(conversation.id, conversation.title);
+                        }}
                         onKeyDown={(event) => {
                           if (event.key === "Escape") {
+                            renameCancelledRef.current = conversation.id;
                             setEditingConversationId(null);
                             setEditTitle("");
                           }
                         }}
                       />
-                      <button type="submit" disabled={itemBusy || !editTitle.trim()}>保存</button>
                     </form>
                   ) : (
                     <button
@@ -414,6 +459,7 @@ export function ChatPanel({
                               type="button"
                               role="menuitem"
                               onClick={() => {
+                                renameCancelledRef.current = null;
                                 setEditingConversationId(conversation.id);
                                 setEditTitle(conversation.title);
                                 setConversationMenuId(null);

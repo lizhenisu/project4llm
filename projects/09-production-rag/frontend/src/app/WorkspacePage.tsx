@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { ArrowLeft, Ban, Check, CheckCircle2, ChevronDown, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PencilLine, RefreshCw, Search, Settings as SettingsIcon, Shield, Trash2, UserRound, Users, X } from "lucide-react";
+import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PencilLine, RefreshCw, Search, Settings as SettingsIcon, Shield, Trash2, UserRound, Users, X } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -1047,6 +1047,14 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     }
   }
 
+  function handleNewConversation() {
+    suppressAutoConversationLoadRef.current = true;
+    setConversationId(null);
+    setConversationTitle("未命名对话");
+    setMessages([]);
+    setTypingMessageId(null);
+  }
+
   async function handleRenameConversation(targetConversationId: string, title: string) {
     const renamed = await renameConversation(settings, targetConversationId, title);
     setConversations((current) => {
@@ -1422,16 +1430,6 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             ) : null}
           </div>
         </div>
-        <button
-          type="button"
-          className="chrome-toggle"
-          aria-label={chromeCollapsed ? "展开顶部栏和状态栏" : "折叠顶部栏和状态栏"}
-          title={chromeCollapsed ? "展开顶部栏和状态栏" : "折叠顶部栏和状态栏"}
-          aria-expanded={!chromeCollapsed}
-          onClick={() => setChromeCollapsed((collapsed) => !collapsed)}
-        >
-          <ChevronDown size={18} aria-hidden="true" />
-        </button>
       </header>
       {activeView === "profile" && auth.user ? (
         <ProfilePage user={auth.user} settings={settings} onBack={() => setActiveView("workspace")} />
@@ -1479,6 +1477,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             messages={messages}
             conversations={conversations}
             activeConversationId={conversationId}
+            chromeCollapsed={chromeCollapsed}
             selectedSources={selectedSources}
             authenticated={isAuthenticated}
             busy={busy}
@@ -1489,9 +1488,11 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
             onTypingComplete={() => setTypingMessageId(null)}
             onAsk={handleAsk}
             onFeedback={handleFeedback}
+            onNewConversation={handleNewConversation}
             onOpenConversation={handleOpenConversation}
             onRenameConversation={handleRenameConversation}
             onDeleteConversation={handleDeleteConversation}
+            onToggleChrome={() => setChromeCollapsed((collapsed) => !collapsed)}
           />
           <ResizeDivider
             label="调整对话和 Studio 宽度"

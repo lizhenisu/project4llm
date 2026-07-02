@@ -26,40 +26,6 @@
     opacity 180ms ease;
 }
 
-.chrome-toggle {
-  position: absolute;
-  right: 12px;
-  bottom: -15px;
-  z-index: 90;
-  display: grid;
-  place-items: center;
-  width: 31px;
-  height: 31px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
-  color: var(--text-muted);
-  box-shadow: var(--shadow);
-  cursor: pointer;
-}
-
-.chrome-toggle svg {
-  transform: rotate(180deg);
-  transition: transform 180ms ease;
-}
-
-.chrome-toggle:hover,
-.chrome-toggle:focus-visible {
-  border-color: var(--line-strong);
-  background: var(--surface-hover, rgba(0, 0, 0, 0.05));
-  color: var(--text);
-}
-
-.chrome-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
 .chrome-collapsed .topbar {
   border-bottom-color: transparent;
   border-bottom-width: 0;
@@ -67,14 +33,10 @@
   backdrop-filter: none;
 }
 
-.chrome-collapsed .topbar > :not(.chrome-toggle) {
+.chrome-collapsed .topbar > * {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
-}
-
-.chrome-collapsed .chrome-toggle svg {
-  transform: rotate(0);
 }
 
 .chrome-collapsed .statusbar {
@@ -487,6 +449,29 @@
   font-size: 12px;
 }
 
+.conversation-history-create {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+}
+
+.conversation-history-create button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 36px;
+  gap: 7px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.conversation-history-create button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+}
+
 .conversation-history-list {
   min-height: 0;
   overflow-y: auto;
@@ -587,7 +572,6 @@
 .conversation-history-rename {
   display: flex;
   min-width: 0;
-  gap: 4px;
   padding: 4px;
 }
 
@@ -600,15 +584,6 @@
   background: var(--surface);
   padding: 0 7px;
   color: var(--text);
-}
-
-.conversation-history-rename button {
-  min-width: 44px;
-  border: 0;
-  border-radius: 7px;
-  background: var(--accent);
-  color: white;
-  font-size: 12px;
 }
 
 .chat-menu {

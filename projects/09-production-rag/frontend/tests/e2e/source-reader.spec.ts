@@ -117,15 +117,18 @@ test("collapses and restores the top bar and status bar", async ({ page }) => {
   const topbar = page.locator(".topbar");
   const statusbar = page.locator(".statusbar");
   const workspace = page.locator(".workspace-grid");
-  const collapseButton = page.getByRole("button", { name: "折叠顶部栏和状态栏" });
+  const chatHeader = page.locator(".chat-panel > .panel-header");
+  const collapseButton = chatHeader.getByRole("button", { name: "折叠顶部栏和状态栏" });
   const expandedWorkspaceHeight = await workspace.evaluate((element) => element.getBoundingClientRect().height);
 
   await expect(topbar).toBeVisible();
   await expect(statusbar).toBeVisible();
+  await expect(topbar.getByRole("button", { name: "折叠顶部栏和状态栏" })).toHaveCount(0);
+  await expect(collapseButton.locator("svg")).toHaveClass(/lucide-maximize/);
   await expect(collapseButton).toHaveAttribute("aria-expanded", "true");
   await collapseButton.click();
 
-  const expandButton = page.getByRole("button", { name: "展开顶部栏和状态栏" });
+  const expandButton = chatHeader.getByRole("button", { name: "展开顶部栏和状态栏" });
   await expect(shell).toHaveClass(/chrome-collapsed/);
   await expect(expandButton).toBeVisible();
   await expect(expandButton).toHaveAttribute("aria-expanded", "false");
@@ -235,6 +238,19 @@ test("manages historical conversations from the sliding chat drawer", async ({ p
   await expect(drawer).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
   await expect(drawer.getByText("2 条记录")).toBeVisible();
   await expect(drawer.getByText("其他知识库对话")).toHaveCount(0);
+  const newConversationButton = drawer.getByRole("button", { name: "开启新对话" });
+  await expect(newConversationButton).toBeVisible();
+  expect(
+    await newConversationButton.evaluate((element) =>
+      element.parentElement?.nextElementSibling?.classList.contains("conversation-history-list"),
+    ),
+  ).toBe(true);
+  await newConversationButton.click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByText("最新对话回答")).toHaveCount(0);
+  await expect(page.getByText("直接开始对话")).toBeVisible();
+
+  await chatHeader.getByRole("button", { name: "打开历史对话" }).click();
   await drawer.getByRole("button", { name: /旧对话.*2 条消息/ }).click();
   await expect(drawer).toBeHidden();
   await expect(page.getByText("旧对话回答")).toBeVisible();
@@ -255,13 +271,22 @@ test("manages historical conversations from the sliding chat drawer", async ({ p
   await floatingMenu.getByRole("menuitem", { name: "重命名" }).click();
   const renameInput = drawer.getByRole("textbox", { name: "重命名旧对话" });
   await renameInput.fill("项目复盘");
-  await drawer.getByRole("button", { name: "保存" }).click();
+  await expect(drawer.getByRole("button", { name: "保存" })).toHaveCount(0);
+  await renameInput.press("Enter");
   await expect(drawer.getByText("项目复盘", { exact: true })).toBeVisible();
   expect(renamedTitle).toBe("项目复盘");
 
   await drawer.getByRole("button", { name: "管理对话：项目复盘" }).click();
+  await page.getByRole("menu").getByRole("menuitem", { name: "重命名" }).click();
+  const blurRenameInput = drawer.getByRole("textbox", { name: "重命名项目复盘" });
+  await blurRenameInput.fill("失焦复盘");
+  await drawer.getByText("历史对话", { exact: true }).click();
+  await expect(drawer.getByText("失焦复盘", { exact: true })).toBeVisible();
+  expect(renamedTitle).toBe("失焦复盘");
+
+  await drawer.getByRole("button", { name: "管理对话：失焦复盘" }).click();
   await page.getByRole("menu").getByRole("menuitem", { name: "删除" }).click();
-  await expect(drawer.getByText("项目复盘", { exact: true })).toHaveCount(0);
+  await expect(drawer.getByText("失焦复盘", { exact: true })).toHaveCount(0);
   expect(deletedConversationId).toBe("conv-old");
   await expect(page.getByText("直接开始对话")).toBeVisible();
 
