@@ -147,17 +147,12 @@ test("collapses and restores the top bar and status bar", async ({ page }) => {
 
 test("manages historical conversations from the sliding chat drawer", async ({ page }) => {
   await mockWorkspaceShell(page);
-  await page.addInitScript(() => {
-    localStorage.setItem(
-      "production-rag-workspace-conversations:default-workspace",
-      JSON.stringify(["conv-new", "conv-old"]),
-    );
-  });
   const now = Date.now();
   let conversations = [
     {
       id: "conv-new",
       tenant_id: "team_a",
+      workspace_id: "default-workspace",
       title: "最新对话",
       message_count: 2,
       source_doc_ids: [],
@@ -167,6 +162,7 @@ test("manages historical conversations from the sliding chat drawer", async ({ p
     {
       id: "conv-old",
       tenant_id: "team_a",
+      workspace_id: "default-workspace",
       title: "旧对话",
       message_count: 2,
       source_doc_ids: [],
@@ -176,6 +172,7 @@ test("manages historical conversations from the sliding chat drawer", async ({ p
     {
       id: "conv-other-workspace",
       tenant_id: "team_a",
+      workspace_id: "workspace-other",
       title: "其他知识库对话",
       message_count: 2,
       source_doc_ids: [],
@@ -191,9 +188,17 @@ test("manages historical conversations from the sliding chat drawer", async ({ p
     const url = new URL(request.url());
     const conversationId = url.pathname.match(/\/conversations\/([^/]+)$/)?.[1];
     if (!conversationId) {
-      await route.fulfill({ json: { conversations } });
+      expect(url.searchParams.get("workspace_id")).toBe("default-workspace");
+      await route.fulfill({
+        json: {
+          conversations: conversations.filter(
+            (conversation) => conversation.workspace_id === url.searchParams.get("workspace_id"),
+          ),
+        },
+      });
       return;
     }
+    expect(url.searchParams.get("workspace_id")).toBe("default-workspace");
     if (request.method() === "PATCH") {
       renamedTitle = request.postDataJSON().title;
       conversations = conversations.map((item) =>

@@ -130,6 +130,7 @@ export type MindMapArtifact = {
 export type ConversationListItem = {
   id: string;
   tenant_id: string;
+  workspace_id: string;
   title: string;
   message_count: number;
   source_doc_ids: string[];
@@ -140,6 +141,7 @@ export type ConversationListItem = {
 export type Conversation = {
   id: string;
   tenant_id: string;
+  workspace_id: string;
   title: string;
   messages: ChatMessage[];
   source_doc_ids: string[];

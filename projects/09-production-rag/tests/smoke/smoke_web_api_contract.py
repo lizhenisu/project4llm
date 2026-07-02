@@ -119,6 +119,7 @@ def main() -> None:
     conversation = ConversationResponse(
         id="conv-1",
         tenant_id="team_a",
+        workspace_id="workspace-a",
         title="Runbook chat",
         messages=[
             ConversationMessageRequest(
@@ -193,6 +194,7 @@ def main() -> None:
                     "/conversations",
                     json={
                         "tenant_id": "team_a",
+                        "workspace_id": "workspace-a",
                         "title": "Runbook chat",
                         "source_doc_ids": ["runbook"],
                         "messages": [
@@ -208,20 +210,39 @@ def main() -> None:
                 )
                 assert save_response.status_code == 200, save_response.text
                 conversation_id = save_response.json()["id"]
-                list_response = client.get("/conversations?tenant_id=team_a")
+                list_response = client.get("/conversations?tenant_id=team_a&workspace_id=workspace-a")
                 assert list_response.status_code == 200, list_response.text
                 assert list_response.json()["conversations"][0]["id"] == conversation_id
-                get_response = client.get(f"/conversations/{conversation_id}?tenant_id=team_a")
+                assert client.get("/conversations?tenant_id=team_a").json()["conversations"] == []
+                assert (
+                    client.get("/conversations?tenant_id=team_a&workspace_id=workspace-b").json()[
+                        "conversations"
+                    ]
+                    == []
+                )
+                assert (
+                    client.get(
+                        f"/conversations/{conversation_id}?tenant_id=team_a&workspace_id=workspace-b"
+                    ).status_code
+                    == 404
+                )
+                get_response = client.get(
+                    f"/conversations/{conversation_id}?tenant_id=team_a&workspace_id=workspace-a"
+                )
                 assert get_response.status_code == 200, get_response.text
                 assert get_response.json()["messages"][1]["citations"][0]["doc_id"] == "runbook"
                 rename_response = client.patch(
-                    f"/conversations/{conversation_id}?tenant_id=team_a",
+                    f"/conversations/{conversation_id}?tenant_id=team_a&workspace_id=workspace-a",
                     json={"title": "Renamed conversation"},
                 )
                 assert rename_response.status_code == 200, rename_response.text
                 assert rename_response.json()["title"] == "Renamed conversation"
-                assert client.get(f"/conversations/{conversation_id}?tenant_id=team_a").json()["title"] == "Renamed conversation"
-                delete_response = client.delete(f"/conversations/{conversation_id}?tenant_id=team_a")
+                assert client.get(
+                    f"/conversations/{conversation_id}?tenant_id=team_a&workspace_id=workspace-a"
+                ).json()["title"] == "Renamed conversation"
+                delete_response = client.delete(
+                    f"/conversations/{conversation_id}?tenant_id=team_a&workspace_id=workspace-a"
+                )
                 assert delete_response.status_code == 200, delete_response.text
                 assert delete_response.json()["status"] == "deleted"
         finally:

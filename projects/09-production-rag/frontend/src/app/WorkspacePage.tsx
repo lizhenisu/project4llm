@@ -53,14 +53,12 @@ import {
   defaultSettings,
   deleteWorkspace,
   hasWorkspaceArtifacts,
-  hasWorkspaceConversations,
   hasWorkspaceSources,
   initializeEmptyWorkspaceData,
   loadActiveWorkspaceId,
   loadSettings,
   loadUserWorkspaces,
   loadWorkspaceArtifacts,
-  loadWorkspaceConversations,
   loadWorkspaceSourceTitles,
   loadWorkspaceSources,
   removeConversationFromWorkspace,
@@ -408,7 +406,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         listSourcesCoalesced(nextSettings),
         listArtifacts(nextSettings, workspaceId),
         listAnnouncements(nextSettings),
-        listConversations(nextSettings),
+        listConversations(nextSettings, workspaceId),
       ]);
       if (!isCurrentRefresh()) return;
       const wSources = loadWorkspaceSources(workspaceId);
@@ -425,14 +423,10 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       const visibleArtifacts = hasWorkspaceArtifacts(workspaceId)
         ? artifactRows.filter((a) => wArtifacts.includes(a.id))
         : artifactRows;
-      const workspaceConversationIds = loadWorkspaceConversations(workspaceId);
-      const visibleConversations = hasWorkspaceConversations(workspaceId)
-        ? conversationRows.filter((row) => workspaceConversationIds.includes(row.id))
-        : conversationRows;
       setArtifacts(visibleArtifacts);
-      setConversations(visibleConversations);
+      setConversations(conversationRows);
       setAnnouncements(announcementRows);
-      await loadLatestConversation(nextSettings, visibleRows, visibleConversations, isCurrentRefresh, workspaceId);
+      await loadLatestConversation(nextSettings, visibleRows, conversationRows, isCurrentRefresh, workspaceId);
     } catch (error) {
       if (!isCurrentRefresh()) return;
       setStatus(error instanceof Error ? error.message : "连接失败");
@@ -453,7 +447,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
     if (conversationId || conversationRows.length === 0 || messages.length > 0) {
       return;
     }
-    const latest = await getConversation(nextSettings, conversationRows[0].id);
+    const latest = await getConversation(nextSettings, conversationRows[0].id, workspaceId);
     if (!isCurrentRefresh()) return;
     setConversationId(latest.id);
     setConversationTitle(latest.title);
@@ -1003,6 +997,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
       title,
       messages: nextMessages,
       sourceDocIds,
+      workspaceId,
     });
     if (activeWorkspaceIdRef.current === workspaceId) {
       setConversationId(saved.id);
@@ -1011,6 +1006,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
         {
           id: saved.id,
           tenant_id: saved.tenant_id,
+          workspace_id: saved.workspace_id,
           title: saved.title,
           message_count: saved.messages.length,
           source_doc_ids: saved.source_doc_ids,
@@ -1026,7 +1022,7 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
 
   async function handleOpenConversation(targetConversationId: string) {
     const requestWorkspaceId = activeWorkspaceId;
-    const loaded = await getConversation(settings, targetConversationId);
+    const loaded = await getConversation(settings, targetConversationId, requestWorkspaceId);
     if (activeWorkspaceIdRef.current !== requestWorkspaceId) return;
     suppressAutoConversationLoadRef.current = false;
     setConversationId(loaded.id);
@@ -1057,7 +1053,9 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }
 
   async function handleRenameConversation(targetConversationId: string, title: string) {
-    const renamed = await renameConversation(settings, targetConversationId, title);
+    const requestWorkspaceId = activeWorkspaceId;
+    const renamed = await renameConversation(settings, targetConversationId, title, requestWorkspaceId);
+    if (activeWorkspaceIdRef.current !== requestWorkspaceId) return;
     setConversations((current) => {
       const existing = current.find((item) => item.id === targetConversationId);
       if (!existing) return current;
@@ -1074,8 +1072,10 @@ export function WorkspacePage({ onNavigate }: { onNavigate: (path: string) => vo
   }
 
   async function handleDeleteConversation(targetConversationId: string) {
-    await deleteConversation(settings, targetConversationId);
-    removeConversationFromWorkspace(activeWorkspaceId, targetConversationId);
+    const requestWorkspaceId = activeWorkspaceId;
+    await deleteConversation(settings, targetConversationId, requestWorkspaceId);
+    removeConversationFromWorkspace(requestWorkspaceId, targetConversationId);
+    if (activeWorkspaceIdRef.current !== requestWorkspaceId) return;
     setConversations((current) => current.filter((item) => item.id !== targetConversationId));
     if (conversationId === targetConversationId) {
       suppressAutoConversationLoadRef.current = true;
@@ -3152,7 +3152,7 @@ function applyWorkspaceSourceTitles(rows: SourceItem[], workspaceId: string) {
 async function deleteWorkspaceRemoteData(workspaceId: string, settings: Settings, workspaces: WorkspaceRecord[]) {
   const [sourceRows, conversationRows, artifactRows] = await Promise.all([
     listSourcesCoalesced(settings),
-    listConversations(settings),
+    listConversations(settings, workspaceId),
     listArtifacts(settings, workspaceId),
   ]);
   const workspaceSourceIds = loadWorkspaceSources(workspaceId);
@@ -3164,16 +3164,16 @@ async function deleteWorkspaceRemoteData(workspaceId: string, settings: Settings
       .filter((source) => !sourceReferencedByOtherWorkspace(workspaceId, sourceIdsForWorkspace([source]), workspaces))
       .map((source) => source.doc_id),
   );
-  const conversationIds = hasWorkspaceConversations(workspaceId)
-    ? loadWorkspaceConversations(workspaceId)
-    : conversationRows.map((conversation) => conversation.id);
+  const conversationIds = conversationRows.map((conversation) => conversation.id);
   const artifactIds = hasWorkspaceArtifacts(workspaceId)
     ? loadWorkspaceArtifacts(workspaceId)
     : artifactRows.map((artifact) => artifact.id);
 
   await Promise.all([
     ...sourceDocIds.map((docId) => deleteSource(settings, docId)),
-    ...dedupeStrings(conversationIds).map((conversationId) => deleteConversation(settings, conversationId)),
+    ...dedupeStrings(conversationIds).map((conversationId) =>
+      deleteConversation(settings, conversationId, workspaceId),
+    ),
     ...dedupeStrings(artifactIds).map((artifactId) => deleteArtifact(settings, artifactId, workspaceId)),
   ]);
 }

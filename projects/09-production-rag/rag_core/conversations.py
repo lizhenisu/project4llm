@@ -36,6 +36,7 @@ class ConversationMessage:
 class Conversation:
     id: str
     tenant_id: str
+    workspace_id: str
     title: str
     messages: list[ConversationMessage]
     source_doc_ids: list[str]
@@ -47,6 +48,7 @@ class Conversation:
 class ConversationListItem:
     id: str
     tenant_id: str
+    workspace_id: str
     title: str
     message_count: int
     source_doc_ids: list[str]
@@ -54,40 +56,67 @@ class ConversationListItem:
     updated_at: int
 
 
-def list_conversations(config: RagConfig, *, tenant_id: str) -> list[Conversation]:
+def list_conversations(
+    config: RagConfig,
+    *,
+    tenant_id: str,
+    workspace_id: str | None = None,
+) -> list[Conversation]:
     migrate_legacy_conversations(config, tenant_id=tenant_id)
     with connect_metadata_db(config) as conn:
+        workspace_clause = "" if workspace_id is None else " AND workspace_id = ?"
+        params = (tenant_id,) if workspace_id is None else (tenant_id, workspace_id)
         rows = conn.execute(
-            """
-            SELECT id, tenant_id, title, source_doc_ids, created_at, updated_at
+            f"""
+            SELECT id, tenant_id, workspace_id, title, source_doc_ids, created_at, updated_at
             FROM conversations
-            WHERE tenant_id = ?
+            WHERE tenant_id = ?{workspace_clause}
             ORDER BY updated_at DESC
             """,
-            (tenant_id,),
+            params,
         ).fetchall()
-    return [load_conversation(config, tenant_id=tenant_id, conversation_id=str(row["id"])) for row in rows if row]
+    return [
+        conversation
+        for row in rows
+        if row
+        and (
+            conversation := load_conversation(
+                config,
+                tenant_id=tenant_id,
+                conversation_id=str(row["id"]),
+                workspace_id=workspace_id,
+            )
+        )
+    ]
 
 
-def list_conversation_items(config: RagConfig, *, tenant_id: str) -> list[ConversationListItem]:
+def list_conversation_items(
+    config: RagConfig,
+    *,
+    tenant_id: str,
+    workspace_id: str | None = None,
+) -> list[ConversationListItem]:
     migrate_legacy_conversations(config, tenant_id=tenant_id)
     with connect_metadata_db(config) as conn:
+        workspace_clause = "" if workspace_id is None else " AND c.workspace_id = ?"
+        params = (tenant_id,) if workspace_id is None else (tenant_id, workspace_id)
         rows = conn.execute(
-            """
-            SELECT c.id, c.tenant_id, c.title, c.source_doc_ids, c.created_at, c.updated_at,
+            f"""
+            SELECT c.id, c.tenant_id, c.workspace_id, c.title, c.source_doc_ids, c.created_at, c.updated_at,
                    COUNT(m.id) AS message_count
             FROM conversations c
             LEFT JOIN messages m ON m.conversation_id = c.id
-            WHERE c.tenant_id = ?
-            GROUP BY c.id, c.tenant_id, c.title, c.source_doc_ids, c.created_at, c.updated_at
+            WHERE c.tenant_id = ?{workspace_clause}
+            GROUP BY c.id, c.tenant_id, c.workspace_id, c.title, c.source_doc_ids, c.created_at, c.updated_at
             ORDER BY c.updated_at DESC
             """,
-            (tenant_id,),
+            params,
         ).fetchall()
     return [
         ConversationListItem(
             id=str(row["id"]),
             tenant_id=str(row["tenant_id"]),
+            workspace_id=str(row["workspace_id"]),
             title=str(row["title"] or "未命名对话"),
             message_count=int(row["message_count"] or 0),
             source_doc_ids=json.loads(row["source_doc_ids"] or "[]"),
@@ -103,20 +132,29 @@ def load_conversation_metadata(
     *,
     tenant_id: str,
     conversation_id: str,
+    workspace_id: str | None = None,
 ) -> ConversationListItem | None:
     with connect_metadata_db(config) as conn:
+        workspace_clause = "" if workspace_id is None else " AND c.workspace_id = ?"
+        params = (
+            (tenant_id, conversation_id)
+            if workspace_id is None
+            else (tenant_id, conversation_id, workspace_id)
+        )
         row = conn.execute(
-            """
-            SELECT c.id, c.tenant_id, c.title, c.source_doc_ids, c.created_at, c.updated_at,
+            f"""
+            SELECT c.id, c.tenant_id, c.workspace_id, c.title, c.source_doc_ids, c.created_at, c.updated_at,
                    COUNT(m.id) AS message_count
             FROM conversations c
             LEFT JOIN messages m ON m.conversation_id = c.id
-            WHERE c.tenant_id = ? AND c.id = ?
-            GROUP BY c.id, c.tenant_id, c.title, c.source_doc_ids, c.created_at, c.updated_at
+            WHERE c.tenant_id = ? AND c.id = ?{workspace_clause}
+            GROUP BY c.id, c.tenant_id, c.workspace_id, c.title, c.source_doc_ids, c.created_at, c.updated_at
             """,
-            (tenant_id, conversation_id),
+            params,
         ).fetchone()
     if row is None:
+        if workspace_id not in (None, "default-workspace"):
+            return None
         legacy = load_legacy_conversation(config, tenant_id=tenant_id, conversation_id=conversation_id)
         if legacy is None:
             return None
@@ -124,6 +162,7 @@ def load_conversation_metadata(
         return ConversationListItem(
             id=legacy.id,
             tenant_id=legacy.tenant_id,
+            workspace_id=legacy.workspace_id,
             title=legacy.title,
             message_count=len(legacy.messages),
             source_doc_ids=legacy.source_doc_ids,
@@ -133,6 +172,7 @@ def load_conversation_metadata(
     return ConversationListItem(
         id=str(row["id"]),
         tenant_id=str(row["tenant_id"]),
+        workspace_id=str(row["workspace_id"]),
         title=str(row["title"] or "未命名对话"),
         message_count=int(row["message_count"] or 0),
         source_doc_ids=json.loads(row["source_doc_ids"] or "[]"),
@@ -146,19 +186,30 @@ def load_conversation(
     *,
     tenant_id: str,
     conversation_id: str,
+    workspace_id: str | None = None,
 ) -> Conversation | None:
     legacy: Conversation | None = None
     with connect_metadata_db(config) as conn:
+        workspace_clause = "" if workspace_id is None else " AND workspace_id = ?"
+        params = (
+            (tenant_id, conversation_id)
+            if workspace_id is None
+            else (tenant_id, conversation_id, workspace_id)
+        )
         row = conn.execute(
-            """
-            SELECT id, tenant_id, title, source_doc_ids, created_at, updated_at
+            f"""
+            SELECT id, tenant_id, workspace_id, title, source_doc_ids, created_at, updated_at
             FROM conversations
-            WHERE tenant_id = ? AND id = ?
+            WHERE tenant_id = ? AND id = ?{workspace_clause}
             """,
-            (tenant_id, conversation_id),
+            params,
         ).fetchone()
         if row is None:
-            legacy = load_legacy_conversation(config, tenant_id=tenant_id, conversation_id=conversation_id)
+            legacy = (
+                load_legacy_conversation(config, tenant_id=tenant_id, conversation_id=conversation_id)
+                if workspace_id in (None, "default-workspace")
+                else None
+            )
             message_rows = []
         else:
             message_rows = conn.execute(
@@ -178,6 +229,7 @@ def load_conversation(
     return Conversation(
         id=str(row["id"]),
         tenant_id=str(row["tenant_id"]),
+        workspace_id=str(row["workspace_id"]),
         title=str(row["title"] or "未命名对话"),
         messages=[
             ConversationMessage(
@@ -208,13 +260,17 @@ def save_conversation(
     messages: list[ConversationMessage],
     source_doc_ids: list[str],
     conversation_id: str | None = None,
+    workspace_id: str = "default-workspace",
 ) -> Conversation:
     timestamp = now_ms()
     resolved_id = conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
     existing = load_conversation_metadata(config, tenant_id=tenant_id, conversation_id=resolved_id)
+    if existing is not None and existing.workspace_id != workspace_id:
+        raise ConversationTenantConflictError("Conversation ID belongs to another workspace")
     conversation = Conversation(
         id=resolved_id,
         tenant_id=tenant_id,
+        workspace_id=workspace_id,
         title=title or infer_title(messages),
         messages=messages,
         source_doc_ids=source_doc_ids,
@@ -230,14 +286,21 @@ def delete_conversation(
     *,
     tenant_id: str,
     conversation_id: str,
+    workspace_id: str | None = None,
 ) -> bool:
     with connect_metadata_db(config) as conn:
+        workspace_clause = "" if workspace_id is None else " AND workspace_id = ?"
+        params = (
+            (tenant_id, conversation_id)
+            if workspace_id is None
+            else (tenant_id, conversation_id, workspace_id)
+        )
         cursor = conn.execute(
-            "DELETE FROM conversations WHERE tenant_id = ? AND id = ?",
-            (tenant_id, conversation_id),
+            f"DELETE FROM conversations WHERE tenant_id = ? AND id = ?{workspace_clause}",
+            params,
         )
     path = conversation_path(config, tenant_id=tenant_id, conversation_id=conversation_id)
-    if path.exists():
+    if path.exists() and (cursor.rowcount > 0 or workspace_id is None):
         path.unlink()
         return True
     return cursor.rowcount > 0
@@ -249,30 +312,39 @@ def rename_conversation(
     tenant_id: str,
     conversation_id: str,
     title: str,
+    workspace_id: str | None = None,
 ) -> ConversationListItem | None:
     existing = load_conversation_metadata(
         config,
         tenant_id=tenant_id,
         conversation_id=conversation_id,
+        workspace_id=workspace_id,
     )
     if existing is None:
         return None
     updated_at = now_ms()
     normalized_title = title.strip()
     with connect_metadata_db(config) as conn:
+        workspace_clause = "" if workspace_id is None else " AND workspace_id = ?"
+        params = (
+            (normalized_title, updated_at, tenant_id, conversation_id)
+            if workspace_id is None
+            else (normalized_title, updated_at, tenant_id, conversation_id, workspace_id)
+        )
         cursor = conn.execute(
-            """
+            f"""
             UPDATE conversations
             SET title = ?, updated_at = ?
-            WHERE tenant_id = ? AND id = ?
+            WHERE tenant_id = ? AND id = ?{workspace_clause}
             """,
-            (normalized_title, updated_at, tenant_id, conversation_id),
+            params,
         )
     if cursor.rowcount == 0:
         return None
     return ConversationListItem(
         id=existing.id,
         tenant_id=existing.tenant_id,
+        workspace_id=existing.workspace_id,
         title=normalized_title,
         message_count=existing.message_count,
         source_doc_ids=existing.source_doc_ids,
@@ -284,15 +356,17 @@ def rename_conversation(
 def save_conversation_row(config: RagConfig, conversation: Conversation) -> None:
     with connect_metadata_db(config) as conn:
         existing = conn.execute(
-            "SELECT tenant_id FROM conversations WHERE id = ?",
+            "SELECT tenant_id, workspace_id FROM conversations WHERE id = ?",
             (conversation.id,),
         ).fetchone()
         if existing is not None and str(existing["tenant_id"]) != conversation.tenant_id:
             raise ConversationTenantConflictError("Conversation ID belongs to another tenant")
+        if existing is not None and str(existing["workspace_id"]) != conversation.workspace_id:
+            raise ConversationTenantConflictError("Conversation ID belongs to another workspace")
         cursor = conn.execute(
             """
-            INSERT INTO conversations(id, tenant_id, title, source_doc_ids, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO conversations(id, tenant_id, workspace_id, title, source_doc_ids, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 source_doc_ids = excluded.source_doc_ids,
@@ -302,6 +376,7 @@ def save_conversation_row(config: RagConfig, conversation: Conversation) -> None
             (
                 conversation.id,
                 conversation.tenant_id,
+                conversation.workspace_id,
                 conversation.title,
                 json.dumps(conversation.source_doc_ids, ensure_ascii=False),
                 conversation.created_at,
@@ -377,6 +452,7 @@ def conversation_from_row(row: dict[str, Any]) -> Conversation:
     return Conversation(
         id=str(row["id"]),
         tenant_id=str(row["tenant_id"]),
+        workspace_id=str(row.get("workspace_id") or "default-workspace"),
         title=str(row.get("title") or "未命名对话"),
         messages=[
             ConversationMessage(
