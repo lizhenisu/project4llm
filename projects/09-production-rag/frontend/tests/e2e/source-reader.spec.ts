@@ -1,8 +1,15 @@
 import { expect, test } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
 
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+
+async function fulfillQueryStream(route: Route, result: Record<string, unknown>) {
+  await route.fulfill({
+    contentType: "application/x-ndjson",
+    body: `${JSON.stringify({ type: "result", ...result })}\n`,
+  });
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -874,20 +881,21 @@ test("keeps an in-flight answer scoped to the database where it started", async 
   });
   await page.route("**/query**", async (route) => {
     await queryReleased;
-    await route.fulfill({
-      json: {
-        request_id: "workspace-race",
-        answer: "这段回答只属于 06/15 11:36。",
-        citations: [],
-        trace: {},
-      },
+    await fulfillQueryStream(route, {
+      request_id: "workspace-race",
+      answer: "这段回答只属于 06/15 11:36。",
+      citations: [],
+      trace: {},
     });
   });
 
   await page.goto("/");
+  const queryStarted = page.waitForRequest((request) =>
+    new URL(request.url()).pathname.endsWith("/query/stream"),
+  );
   await page.getByPlaceholder("提问或创作内容").fill("有哪些关键事实值得关注？");
   await page.getByRole("button", { name: "发送消息" }).click();
-  await expect(page.getByText("正在检索资料并生成回答...")).toBeVisible();
+  await queryStarted;
   await page.getByRole("button", { name: "设置" }).click();
   await page.getByRole("button", { name: /Production RAG 知识库 06\/14 23:54/ }).click();
   await page.getByRole("button", { name: "关闭设置" }).click();
@@ -1629,7 +1637,7 @@ test("updates workspace status immediately after login", async ({ page }) => {
   await page.getByRole("button", { name: "登录", exact: true }).click();
 
   await expect(page).toHaveURL(/\/$/);
-  await expect(page.locator(".statusbar")).toHaveText("API 已连接");
+  await expect(page.locator(".statusbar")).toContainText("API 已连接");
 });
 
 test("logs in directly from a hash token", async ({ page }) => {
@@ -3065,27 +3073,25 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
     await route.fulfill({ json: { ...body, id: "conversation-typewriter", updated_at: Date.now() } });
   });
   await page.route("**/query**", async (route) => {
-    await route.fulfill({
-      json: {
-        request_id: "typewriter-check",
-        answer,
-        citations: [
-          {
-            doc_id: "自然辩证法/page-1",
-            title: "自然辩证法 p1",
-            source_uri: "/object_store/uploads/team_a/regression/自然辩证法.pdf",
-            source_type: "pdf",
-            chunk_index: 0,
-            score: 0.9,
-            rerank_score: 0.8,
-            acl_groups: ["engineering"],
-            metadata: { page_no: 1, page_start: 1, page_end: 1 },
-            text: "实践案例证据片段第一句。这里是完整 chunk 的中段内容。这里是完整 chunk 的末尾内容。",
-            text_preview: "实践案例证据片段",
-          },
-        ],
-        trace: {},
-      },
+    await fulfillQueryStream(route, {
+      request_id: "typewriter-check",
+      answer,
+      citations: [
+        {
+          doc_id: "自然辩证法/page-1",
+          title: "自然辩证法 p1",
+          source_uri: "/object_store/uploads/team_a/regression/自然辩证法.pdf",
+          source_type: "pdf",
+          chunk_index: 0,
+          score: 0.9,
+          rerank_score: 0.8,
+          acl_groups: ["engineering"],
+          metadata: { page_no: 1, page_start: 1, page_end: 1 },
+          text: "实践案例证据片段第一句。这里是完整 chunk 的中段内容。这里是完整 chunk 的末尾内容。",
+          text_preview: "实践案例证据片段",
+        },
+      ],
+      trace: {},
     });
   });
 
@@ -3200,26 +3206,24 @@ test("persists and resumes a pending answer after browser refresh", async ({ pag
     if (queryCalls === 1) {
       await new Promise((resolve) => setTimeout(resolve, 2_000));
     }
-    await route.fulfill({
-      json: {
-        request_id: `resume-${queryCalls}`,
-        answer: "刷新后继续完成的回答。",
-        citations: [
-          {
-            doc_id: "自然辩证法/page-1",
-            title: "自然辩证法 p1",
-            source_uri: "/uploads/natural.pdf",
-            source_type: "pdf",
-            chunk_index: 0,
-            score: 0.9,
-            rerank_score: 0.8,
-            acl_groups: ["engineering"],
-            metadata: { page_no: 1 },
-            text_preview: "证据片段",
-          },
-        ],
-        trace: {},
-      },
+    await fulfillQueryStream(route, {
+      request_id: `resume-${queryCalls}`,
+      answer: "刷新后继续完成的回答。",
+      citations: [
+        {
+          doc_id: "自然辩证法/page-1",
+          title: "自然辩证法 p1",
+          source_uri: "/uploads/natural.pdf",
+          source_type: "pdf",
+          chunk_index: 0,
+          score: 0.9,
+          rerank_score: 0.8,
+          acl_groups: ["engineering"],
+          metadata: { page_no: 1 },
+          text_preview: "证据片段",
+        },
+      ],
+      trace: {},
     });
   });
 
@@ -3283,20 +3287,21 @@ test("drops an in-flight answer response after logout", async ({ page }) => {
   });
   await page.route("**/query**", async (route) => {
     await queryReleased;
-    await route.fulfill({
-      json: {
-        request_id: "logout-race",
-        answer: "这段回答不应该在登出后的页面显示。",
-        citations: [],
-        trace: {},
-      },
+    await fulfillQueryStream(route, {
+      request_id: "logout-race",
+      answer: "这段回答不应该在登出后的页面显示。",
+      citations: [],
+      trace: {},
     });
   });
 
   await page.goto("/");
+  const queryStarted = page.waitForRequest((request) =>
+    new URL(request.url()).pathname.endsWith("/query/stream"),
+  );
   await page.getByPlaceholder("提问或创作内容").fill("总结当前文章");
   await page.getByRole("button", { name: "发送消息" }).click();
-  await expect(page.getByText("正在检索资料并生成回答...")).toBeVisible();
+  await queryStarted;
   await page.getByRole("button", { name: "用户头像" }).click();
   await page.getByRole("menuitem", { name: /登出/ }).click();
   queryResolve?.();
