@@ -6,7 +6,7 @@
 
 - `frontend-design/readme.md`
 - `frontend-design/1.png` ~ `frontend-design/8.png`
-- `PREPARE_ENV.md`
+- `README.md`
 - `../README.md`
 - `../ARCHITECTURE.md`
 
@@ -777,7 +777,7 @@ docker compose logs --tail=100 rag-web
 
 建议下一步直接执行 Phase 0：
 
-1. 先按 `PREPARE_ENV.md` 补齐 Node/npm/Docker 工具链。
+1. 先按 `README.md` 的环境与部署章节补齐 Node/npm/Docker 工具链。
 2. 创建 `projects/09-production-rag/frontend`。
 3. 初始化 Vite React TypeScript。
 4. 加入 `lucide-react` 和 `react-markdown`。

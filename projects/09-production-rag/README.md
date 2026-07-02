@@ -45,6 +45,26 @@ cd frontend && npm install && npm run dev -- --host 0.0.0.0
 
 前端通过 Vite Proxy 将 `/api/*` 代理到 `http://127.0.0.1:8008`。访问 `http://localhost:5173` 即可使用。
 
+开发环境要求：
+
+| 项目 | 最低版本 | 说明 |
+|------|---------|------|
+| Python | 3.14+ | |
+| uv | 0.11+ | Python 包管理器 |
+| Node.js | 20+ | 前端开发和构建 |
+| npm | 11+ | |
+| Docker | 24+ | 运行 Milvus 等基础设施容器 |
+| Docker Compose | v2 | |
+| git | 任意 | |
+
+环境诊断脚本：
+
+```bash
+bash scripts/prepare_user_env.sh
+```
+
+该脚本只输出诊断结果，不会安装任何包或调用 `sudo`。
+
 ### 生产环境（Docker Compose）
 
 ```bash
@@ -98,6 +118,77 @@ docker compose --profile ingest up rag-ingest
 > 而 `env_file` 在**容器运行时**注入变量。
 > 因此，不要依赖 `environment` 段做跨文件的变量重命名——相关变量（`NEW_API_URL`，
 > `NEW_API_KEY`，`LLM_MODEL`）必须直接写在 `.env` 中，由 `env_file` 带入容器。
+
+### 生产环境（GHCR 预构建镜像）
+
+如果不希望在服务器上本地构建镜像，可以直接拉取 GitHub Container Registry 中的预构建镜像：
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少填入 SILICONFLOW_API_KEY 和 NEW_API_KEY
+
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d --no-build
+
+curl http://localhost:8080/api/health
+```
+
+这条路径当前覆盖：
+- `rag-api`
+- `rag-worker`
+- `rag-web`
+- `rag-ingest`
+- `pgbouncer`
+
+### Playwright E2E
+
+```bash
+cd frontend
+npx playwright install chromium
+
+# Ubuntu 26.04 需要覆盖平台标识
+PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64 npx playwright install chromium
+sudo env "PATH=$PATH" PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64 npx playwright install-deps chromium
+
+# 运行测试
+npm run test:e2e
+npm run test:e2e:ubuntu26
+```
+
+如果 Node/npm 通过 `nvm` 安装，`sudo` 时需要保留当前 `PATH`，否则 root 环境里可能找不到 `npx`。
+
+### 轻量服务器说明
+
+2 核 2G 服务器可以承载默认部署，典型内存占用大致如下：
+
+| 容器 | 内存占用（约） | 说明 |
+|------|---------------|------|
+| `rag-milvus` | ~600 MB | Milvus Standalone |
+| `rag-etcd` | ~100 MB | Milvus 元数据 |
+| `rag-minio` | ~150 MB | Milvus 对象存储 |
+| `rag-api` | ~200 MB | FastAPI + Uvicorn |
+| `rag-web` | ~30 MB | Nginx 静态服务 |
+| 合计 | ~1.1 GB | 仍有余量给系统和突发负载 |
+
+默认 Docker 镜像不会打包 `torch`、`transformers`、`sentence-transformers` 等大型本地模型依赖；生产部署默认走 SiliconFlow API，所以轻量机器也能跑起来。
+
+轻量服务器优化建议：
+- 默认保留 `RAG_IMAGE_EMBEDDING_BACKEND=siliconflow`，避免本地模型占用资源；如不需要多模态可设为 `none`
+- 如需限制 Milvus 内存，可在 `docker-compose.yml` 的 `milvus` 服务上增加 `mem_limit`
+- 不建议在 2C2G 机器上长期跑 `--profile ingest` 批量摄入
+- `volumes/` 和 `object_store/` 会持续增长，建议挂数据盘
+
+### 常见问题
+
+Docker 权限报错时：
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+重新登录后生效。
+
+如果你在 WSL 中使用 Docker Desktop 集成，请确认当前发行版已在 Docker Desktop 的 WSL Integration 中启用，不建议同时混用 Docker Desktop 集成和 WSL 内独立 Docker Engine。
 
 ## 项目结构
 
@@ -175,7 +266,6 @@ docker compose --profile ingest up rag-ingest
 │   ├── ARCHITECTURE.md       # 系统架构详解（权威源文档）
 │   ├── LOAD_TESTING.md       # mock/real 外部 API 压测流程
 │   ├── RELEASE_CHECKLIST.md  # 发布检查清单
-│   ├── PREPARE_ENV.md        # 环境准备指南
 │   ├── frontend-design/      # 前端 UI 设计参考
 │   └── archive/              # 历史版本文档
 │
@@ -258,7 +348,6 @@ IMAGE_EMBEDDING_MODEL=Qwen/Qwen3-VL-Embedding-8B
 | [系统架构](docs/ARCHITECTURE.md) | 完整 RAG 系统架构详解（LLM、检索管道、多模态、Milvus Schema 等） |
 | [发布检查清单](docs/RELEASE_CHECKLIST.md) | 生产发布验收步骤 |
 | [历史执行计划](docs/archive/EXECUTION_PLAN.md) | 已归档的开发执行与重构计划 |
-| [环境准备](docs/PREPARE_ENV.md) | 开发环境搭建指南 |
 | [前端设计](docs/frontend-design/readme.md) | UI 设计规格与组件规划 |
 
 > `docs/ARCHITECTURE.md` 是权威源文档；`frontend/public/ARCHITECTURE.md` 是前端 `/architecture` 页面运行时读取的静态镜像。修改架构文档后需要同步两个文件并保持 `cmp docs/ARCHITECTURE.md frontend/public/ARCHITECTURE.md` 通过。
