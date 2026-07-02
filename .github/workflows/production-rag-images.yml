@@ -28,6 +28,8 @@ jobs:
         include:
           - name: rag-api
             dockerfile: projects/09-production-rag/Dockerfile
+          - name: pgbouncer
+            dockerfile: projects/09-production-rag/ops/pgbouncer/Dockerfile
           - name: rag-web
             dockerfile: projects/09-production-rag/frontend/Dockerfile
     steps:

@@ -1,12 +1,25 @@
 services:
   rag-api:
+    build: !reset null
     image: ghcr.io/lizhenisu/project4llm/rag-api:latest
-    build: null
+    pull_policy: always
+
+  rag-worker:
+    build: !reset null
+    image: ghcr.io/lizhenisu/project4llm/rag-api:latest
+    pull_policy: always
 
   rag-web:
+    build: !reset null
     image: ghcr.io/lizhenisu/project4llm/rag-web:latest
-    build: null
+    pull_policy: always
 
   rag-ingest:
+    build: !reset null
     image: ghcr.io/lizhenisu/project4llm/rag-api:latest
-    build: null
+    pull_policy: always
+
+  pgbouncer:
+    build: !reset null
+    image: ghcr.io/lizhenisu/project4llm/pgbouncer:latest
+    pull_policy: always

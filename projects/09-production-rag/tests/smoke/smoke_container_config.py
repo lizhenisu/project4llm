@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 import yaml
 
@@ -192,6 +193,29 @@ def main() -> None:
     start_worker = (PROJECT_DIR / "scripts" / "start_worker.sh").read_text(encoding="utf-8")
     assert "python ingestion_worker.py" in start_worker
 
+    ghcr_compose = load_compose_config(PROJECT_DIR / "docker-compose.yml", PROJECT_DIR / "docker-compose.ghcr.yml")
+    ghcr_services = ghcr_compose["services"]
+    for service_name, image_name in {
+        "pgbouncer": "ghcr.io/lizhenisu/project4llm/pgbouncer:latest",
+        "rag-api": "ghcr.io/lizhenisu/project4llm/rag-api:latest",
+        "rag-worker": "ghcr.io/lizhenisu/project4llm/rag-api:latest",
+        "rag-web": "ghcr.io/lizhenisu/project4llm/rag-web:latest",
+    }.items():
+        service = ghcr_services[service_name]
+        assert "build" not in service
+        assert service["image"] == image_name
+        assert service["pull_policy"] == "always"
+
+    ghcr_ingest_compose = load_compose_config(
+        PROJECT_DIR / "docker-compose.yml",
+        PROJECT_DIR / "docker-compose.ghcr.yml",
+        profile="ingest",
+    )
+    rag_ingest = ghcr_ingest_compose["services"]["rag-ingest"]
+    assert "build" not in rag_ingest
+    assert rag_ingest["image"] == "ghcr.io/lizhenisu/project4llm/rag-api:latest"
+    assert rag_ingest["pull_policy"] == "always"
+
     print("smoke_container_config=ok")
 
 
@@ -208,6 +232,22 @@ def parse_env_example(path: Path) -> dict[str, str]:
 
 def has_volume(volumes: list[str], container_path: str) -> bool:
     return any(volume.split(":")[1] == container_path for volume in volumes)
+
+
+def load_compose_config(*paths: Path, profile: str | None = None) -> dict:
+    cmd = ["docker", "compose"]
+    if profile is not None:
+        cmd.extend(["--profile", profile])
+    cmd.extend(sum((["-f", str(path)] for path in paths), []))
+    cmd.append("config")
+    result = subprocess.run(
+        cmd,
+        cwd=PROJECT_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return yaml.safe_load(result.stdout)
 
 
 if __name__ == "__main__":
