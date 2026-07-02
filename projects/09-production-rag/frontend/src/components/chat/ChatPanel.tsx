@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowRight, Bot, Check, ChevronRight, Circle, Copy, History, ImagePlus, Loader2, Maximize, MoreHorizontal, PencilLine, Plus, ThumbsDown, ThumbsUp, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowRight, Bot, Check, ChevronRight, Circle, Copy, History, ImagePlus, Loader2, Maximize, Minimize, MoreHorizontal, PencilLine, Plus, ThumbsDown, ThumbsUp, Trash2, X } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
@@ -336,7 +336,11 @@ export function ChatPanel({
           aria-expanded={!chromeCollapsed}
           onClick={onToggleChrome}
         >
-          <Maximize size={18} aria-hidden="true" />
+          {chromeCollapsed ? (
+            <Minimize size={18} aria-hidden="true" />
+          ) : (
+            <Maximize size={18} aria-hidden="true" />
+          )}
         </button>
       </div>
       <button

@@ -139,17 +139,52 @@ test("collapses and restores the top bar and status bar", async ({ page }) => {
   await expect(shell).toHaveClass(/chrome-collapsed/);
   await expect(expandButton).toBeVisible();
   await expect(expandButton).toHaveAttribute("aria-expanded", "false");
+  await expect(expandButton.locator("svg")).toHaveClass(/lucide-minimize/);
   await expect.poll(() => topbar.evaluate((element) => element.getBoundingClientRect().height)).toBe(0);
   await expect.poll(() => statusbar.evaluate((element) => element.getBoundingClientRect().height)).toBe(0);
   await expect.poll(() => workspace.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(
     expandedWorkspaceHeight + 70,
   );
 
+  const expansionFrames = page.evaluate(
+    () =>
+      new Promise<Array<{ clientHeight: number; clientWidth: number; scrollHeight: number }>>((resolve) => {
+        const frames: Array<{ clientHeight: number; clientWidth: number; scrollHeight: number }> = [];
+        const sample = () => {
+          frames.push({
+            clientHeight: document.documentElement.clientHeight,
+            clientWidth: document.documentElement.clientWidth,
+            scrollHeight: document.documentElement.scrollHeight,
+          });
+          if (frames.length < 20) {
+            requestAnimationFrame(sample);
+          } else {
+            resolve(frames);
+          }
+        };
+        requestAnimationFrame(sample);
+      }),
+  );
   await expandButton.click();
+  const frames = await expansionFrames;
   await expect(shell).not.toHaveClass(/chrome-collapsed/);
-  await expect(page.getByRole("button", { name: "折叠顶部栏和状态栏" })).toBeVisible();
+  const restoredCollapseButton = page.getByRole("button", { name: "折叠顶部栏和状态栏" });
+  await expect(restoredCollapseButton).toBeVisible();
+  await expect(restoredCollapseButton.locator("svg")).toHaveClass(/lucide-maximize/);
+  expect(frames.every((frame) => frame.scrollHeight <= frame.clientHeight)).toBe(true);
+  expect(new Set(frames.map((frame) => frame.clientWidth)).size).toBe(1);
   await expect.poll(() => topbar.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(50);
   await expect.poll(() => statusbar.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(20);
+
+  await page.setViewportSize({ width: 700, height: 720 });
+  await expect
+    .poll(() => shell.evaluate((element) => getComputedStyle(element).overflow))
+    .toBe("visible");
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.scrollHeight > document.documentElement.clientHeight),
+    )
+    .toBe(true);
 });
 
 test("manages historical conversations from the sliding chat drawer", async ({ page }) => {

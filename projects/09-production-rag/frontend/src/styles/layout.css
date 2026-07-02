@@ -3,6 +3,7 @@
   grid-template-rows: 58px minmax(0, 1fr) 26px;
   height: 100vh;
   min-height: 720px;
+  overflow: hidden;
   transition: grid-template-rows 180ms ease;
 }
 
@@ -3412,6 +3413,7 @@ button.jump-latest-button:active:not(:disabled) {
   .workspace-shell {
     height: auto;
     min-height: 100vh;
+    overflow: visible;
   }
 
   .workspace-grid {
