@@ -151,7 +151,7 @@ curl http://localhost:8080/api/health
 |------|---------|------|
 | `docker compose up -d` | 单机部署 | 全部服务在一台机器上 |
 | GHCR 镜像 | CI/CD 流水线 | 避免在生产服务器上构建镜像 |
-| `docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d` | 从 GitHub Container Registry 拉取预构建镜像 | 适合不想在服务器上安装 Node/npm 构建前端的场景 |
+| `docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d --no-build` | 从 GitHub Container Registry 拉取预构建镜像 | 适合不想在生产服务器上安装 Node/npm 或在服务器本地构建后端辅助镜像的场景 |
 
 ## 6. 环境诊断常见问题
 
