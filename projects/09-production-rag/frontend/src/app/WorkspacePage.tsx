@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, FormEvent, PointerEvent as ReactPointerEvent, RefObject, SetStateAction } from "react";
-import { ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PencilLine, RefreshCw, Search, Settings as SettingsIcon, Shield, Trash2, UserRound, Users, X } from "lucide-react";
+import { Activity, ArrowLeft, Ban, Check, CheckCircle2, Copy, DatabaseZap, ExternalLink, Eye, EyeOff, Github, LogIn, LogOut, Megaphone, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PencilLine, RefreshCw, Search, Settings as SettingsIcon, Shield, Trash2, UserRound, Users, X } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { SourcePanel } from "../components/sources/SourcePanel";
 import { StudioPanel } from "../components/studio/StudioPanel";
@@ -24,6 +24,7 @@ import {
   listAdminUsers,
   listAdminDeadLetters,
   listAdminIngestionAudit,
+  listAdminModelUsage,
   listAnnouncements,
   listArtifacts,
   listConversations,
@@ -70,7 +71,7 @@ import {
   saveWorkspaceName,
   saveWorkspaces,
 } from "../lib/storage";
-import type { AdminDeadLetterTask, AdminIngestionAuditEvent, AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, ConversationListItem, MindMapArtifact, RagProgressStage, Settings, SourceContent, SourceItem, WorkspaceRecord } from "../lib/types";
+import type { AdminDeadLetterTask, AdminIngestionAuditEvent, AdminModelUsageRow, AdminModelUsageTotals, AdminSettings, Announcement, AuthUser, ChatMessage, Conversation, ConversationListItem, MindMapArtifact, RagProgressStage, Settings, SourceContent, SourceItem, WorkspaceRecord } from "../lib/types";
 
 type PanelLayout = {
   source: number;
@@ -80,7 +81,7 @@ type PanelLayout = {
 
 type ResizeHandle = "source-chat" | "chat-studio";
 type AppView = "workspace" | "profile" | "admin";
-type AdminSection = "settings" | "announcements" | "users" | "ingestion";
+type AdminSection = "settings" | "announcements" | "users" | "ingestion" | "usage";
 type AdminUserDraft = {
   profileNameEditAllowed: boolean;
   avatarEditAllowed: boolean;
@@ -2009,6 +2010,18 @@ function AdminPage({
               <small>死信与审计</small>
             </span>
           </button>
+          <button
+            type="button"
+            className={activeSection === "usage" ? "is-active" : ""}
+            title="模型用量"
+            onClick={() => setActiveSection("usage")}
+          >
+            <Activity size={17} />
+            <span>
+              <strong>模型用量</strong>
+              <small>请求与 Token</small>
+            </span>
+          </button>
         </aside>
         <section className="admin-console-content">
           {activeSection === "settings" ? (
@@ -2100,6 +2113,9 @@ function AdminPage({
           ) : null}
           {activeSection === "ingestion" ? (
             <AdminIngestionPanel settings={settings} />
+          ) : null}
+          {activeSection === "usage" ? (
+            <AdminModelUsagePanel settings={settings} />
           ) : null}
         </section>
       </section>
@@ -2326,6 +2342,227 @@ function AdminIngestionPanel({ settings }: { settings: Settings }) {
         {auditError ? <p className="error-text" role="alert">{auditError}</p> : null}
       </section>
       {notice ? <p className="success-text" role="status">{notice}</p> : null}
+      {error ? <p className="error-text" role="alert">{error}</p> : null}
+    </section>
+  );
+}
+
+type AdminModelUsageFilters = {
+  tenantId: string;
+  startDate: string;
+  endDate: string;
+};
+
+const EMPTY_MODEL_USAGE_TOTALS: AdminModelUsageTotals = {
+  request_count: 0,
+  prompt_tokens: 0,
+  completion_tokens: 0,
+  total_tokens: 0,
+};
+
+function AdminModelUsagePanel({ settings }: { settings: Settings }) {
+  const pageSize = 25;
+  const [rows, setRows] = useState<AdminModelUsageRow[]>([]);
+  const [totals, setTotals] = useState<AdminModelUsageTotals>(EMPTY_MODEL_USAGE_TOTALS);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [filters, setFilters] = useState<AdminModelUsageFilters>(defaultAdminModelUsageFilters);
+  const [appliedFilters, setAppliedFilters] = useState<AdminModelUsageFilters>(defaultAdminModelUsageFilters);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    listAdminModelUsage(settings, {
+      tenantId: appliedFilters.tenantId,
+      startDate: appliedFilters.startDate,
+      endDate: appliedFilters.endDate,
+      limit: pageSize,
+      offset,
+    })
+      .then((page) => {
+        if (cancelled) return;
+        setRows(page.rows);
+        setTotals(page.totals);
+        setTotal(page.total);
+        const maxOffset = page.total > 0
+          ? Math.floor((page.total - 1) / pageSize) * pageSize
+          : 0;
+        if (offset > maxOffset) {
+          setOffset(maxOffset);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "加载模型用量失败");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [appliedFilters, offset, refreshVersion, settings]);
+
+  function applyFilters(event: FormEvent) {
+    event.preventDefault();
+    if (filters.startDate > filters.endDate) {
+      setError("开始日期不能晚于结束日期");
+      return;
+    }
+    setError("");
+    setOffset(0);
+    setAppliedFilters({
+      tenantId: filters.tenantId.trim(),
+      startDate: filters.startDate,
+      endDate: filters.endDate,
+    });
+  }
+
+  const firstVisible = total === 0 ? 0 : offset + 1;
+  const lastVisible = Math.min(total, offset + rows.length);
+
+  return (
+    <section className="admin-model-usage-panel">
+      <div className="admin-section-heading">
+        <div>
+          <h2>模型用量</h2>
+          <p>按租户和 UTC 日期核对模型请求及 Token 消耗；金额结算由外部价格表处理。</p>
+        </div>
+        <button
+          type="button"
+          className="inline-action"
+          disabled={loading}
+          onClick={() => setRefreshVersion((version) => version + 1)}
+        >
+          <RefreshCw size={15} />
+          刷新
+        </button>
+      </div>
+
+      <form className="admin-model-usage-filters" onSubmit={applyFilters}>
+        <label>
+          租户 ID
+          <input
+            value={filters.tenantId}
+            placeholder="全部租户"
+            maxLength={200}
+            onChange={(event) => setFilters((current) => ({ ...current, tenantId: event.target.value }))}
+          />
+        </label>
+        <label>
+          开始日期（UTC）
+          <input
+            type="date"
+            value={filters.startDate}
+            onChange={(event) => setFilters((current) => ({ ...current, startDate: event.target.value }))}
+          />
+        </label>
+        <label>
+          结束日期（UTC）
+          <input
+            type="date"
+            value={filters.endDate}
+            onChange={(event) => setFilters((current) => ({ ...current, endDate: event.target.value }))}
+          />
+        </label>
+        <button type="submit" className="inline-action" disabled={loading}>
+          <Search size={15} />
+          应用筛选
+        </button>
+      </form>
+
+      <div className="admin-model-usage-totals" aria-label="模型用量汇总">
+        <article>
+          <span>请求次数</span>
+          <strong>{formatInteger(totals.request_count)}</strong>
+        </article>
+        <article>
+          <span>输入 Token</span>
+          <strong>{formatInteger(totals.prompt_tokens)}</strong>
+        </article>
+        <article>
+          <span>输出 Token</span>
+          <strong>{formatInteger(totals.completion_tokens)}</strong>
+        </article>
+        <article>
+          <span>总 Token</span>
+          <strong>{formatInteger(totals.total_tokens)}</strong>
+        </article>
+      </div>
+
+      {loading ? <p className="muted-text">正在加载模型用量…</p> : null}
+      {!loading && !rows.length ? (
+        <div className="admin-ingestion-empty">
+          <Activity size={20} />
+          <span>当前筛选范围内暂无模型用量</span>
+        </div>
+      ) : null}
+      {rows.length ? (
+        <div className="admin-model-usage-table-wrap">
+          <table className="admin-model-usage-table">
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>租户 / 主体</th>
+                <th>工作负载 / 操作</th>
+                <th>Provider / Model</th>
+                <th>请求</th>
+                <th>输入</th>
+                <th>输出</th>
+                <th>总 Token</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={adminModelUsageRowKey(row)}>
+                  <td>{row.usage_date}</td>
+                  <td>
+                    <strong>{row.tenant_id}</strong>
+                    <small>{row.principal_key || "未归属主体"}</small>
+                  </td>
+                  <td>
+                    <strong>{adminModelUsageWorkloadLabel(row.workload)}</strong>
+                    <small>{row.operation}</small>
+                  </td>
+                  <td>
+                    <strong>{row.provider}</strong>
+                    <small>{row.model}</small>
+                  </td>
+                  <td>{formatInteger(row.request_count)}</td>
+                  <td>{formatInteger(row.prompt_tokens)}</td>
+                  <td>{formatInteger(row.completion_tokens)}</td>
+                  <td>{formatInteger(row.total_tokens)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      <div className="admin-pagination">
+        <span>{firstVisible}-{lastVisible} / {total} 条</span>
+        <button
+          type="button"
+          className="inline-action"
+          disabled={offset === 0 || loading}
+          onClick={() => setOffset((value) => Math.max(0, value - pageSize))}
+        >
+          上一页
+        </button>
+        <button
+          type="button"
+          className="inline-action"
+          disabled={offset + pageSize >= total || loading}
+          onClick={() => setOffset((value) => value + pageSize)}
+        >
+          下一页
+        </button>
+      </div>
       {error ? <p className="error-text" role="alert">{error}</p> : null}
     </section>
   );
@@ -2612,6 +2849,43 @@ function adminIngestionOutcomeLabel(outcome: string) {
     retry_unavailable: "重试服务不可用",
   };
   return labels[outcome] || "未知结果";
+}
+
+function defaultAdminModelUsageFilters(): AdminModelUsageFilters {
+  const end = new Date();
+  const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+  return {
+    tenantId: "",
+    startDate: start.toISOString().slice(0, 10),
+    endDate: end.toISOString().slice(0, 10),
+  };
+}
+
+function adminModelUsageRowKey(row: AdminModelUsageRow) {
+  return [
+    row.usage_date,
+    row.tenant_id,
+    row.principal_key,
+    row.workload,
+    row.provider,
+    row.model,
+    row.operation,
+  ].join("\u0000");
+}
+
+function adminModelUsageWorkloadLabel(workload: string) {
+  const labels: Record<string, string> = {
+    query: "问答",
+    search: "检索",
+    ingestion: "文档摄取",
+    studio_mindmap: "思维导图",
+    studio_table: "数据表格",
+  };
+  return labels[workload] || workload;
+}
+
+function formatInteger(value: number) {
+  return new Intl.NumberFormat("zh-CN").format(value);
 }
 
 function normalizeMessage(message: ChatMessage): ChatMessage {

@@ -3109,6 +3109,121 @@ button.jump-latest-button:active:not(:disabled) {
   padding: 16px;
 }
 
+.admin-model-usage-panel {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 8px 20px rgb(15 23 42 / 8%);
+  padding: 16px;
+}
+
+.admin-model-usage-filters {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) repeat(2, minmax(150px, 0.8fr)) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.admin-model-usage-filters label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.admin-model-usage-filters input {
+  min-width: 0;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 0 10px;
+  color: var(--text);
+}
+
+.admin-model-usage-filters button {
+  min-height: 36px;
+}
+
+.admin-model-usage-totals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.admin-model-usage-totals article {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  padding: 12px;
+}
+
+.admin-model-usage-totals span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.admin-model-usage-totals strong {
+  font-size: 20px;
+}
+
+.admin-model-usage-table-wrap {
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.admin-model-usage-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.admin-model-usage-table th,
+.admin-model-usage-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.admin-model-usage-table th {
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.admin-model-usage-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.admin-model-usage-table td:nth-last-child(-n + 4) {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.admin-model-usage-table td strong,
+.admin-model-usage-table td small {
+  display: block;
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-model-usage-table td small {
+  margin-top: 3px;
+  color: var(--text-muted);
+}
+
 .admin-ingestion-toolbar {
   display: flex;
   align-items: center;
@@ -3356,9 +3471,14 @@ button.jump-latest-button:active:not(:disabled) {
   }
 
   .admin-user-search,
+  .admin-model-usage-filters,
   .admin-user-row,
   .admin-ingestion-task {
     grid-template-columns: 1fr;
+  }
+
+  .admin-model-usage-totals {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .admin-ingestion-task-meta {

@@ -5,6 +5,7 @@ import type {
   AdminDeadLetterList,
   AdminIngestionAuditList,
   AdminIngestionRedriveResponse,
+  AdminModelUsageList,
   Announcement,
   AuthResponse,
   AuthUser,
@@ -687,6 +688,28 @@ export function listAdminIngestionAudit(
   if (params.offset) query.set("offset", String(params.offset));
   const suffix = query.toString() ? `?${query.toString()}` : "";
   return request<AdminIngestionAuditList>(`/admin/ingestion/audit${suffix}`, {
+    settings,
+  });
+}
+
+export function listAdminModelUsage(
+  settings: Settings,
+  params: {
+    tenantId?: string;
+    startDate?: string;
+    endDate?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<AdminModelUsageList> {
+  const query = new URLSearchParams();
+  if (params.tenantId?.trim()) query.set("tenant_id", params.tenantId.trim());
+  if (params.startDate) query.set("start_date", params.startDate);
+  if (params.endDate) query.set("end_date", params.endDate);
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.offset) query.set("offset", String(params.offset));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<AdminModelUsageList>(`/admin/model-usage${suffix}`, {
     settings,
   });
 }

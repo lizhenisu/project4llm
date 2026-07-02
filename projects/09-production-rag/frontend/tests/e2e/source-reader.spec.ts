@@ -2466,6 +2466,7 @@ test("rate limits studio artifact generation across mind map and data table tool
 test("registers an admin user from the avatar menu and publishes an announcement", async ({ page }) => {
   const now = Date.now();
   let registrationEnabled = true;
+  const usageRequests: URLSearchParams[] = [];
   await page.addInitScript(() => {
     localStorage.removeItem("production-rag-auth-session");
   });
@@ -2630,6 +2631,43 @@ test("registers an admin user from the avatar menu and publishes an announcement
       },
     });
   });
+  await page.route("**/admin/model-usage**", async (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    usageRequests.push(new URLSearchParams(params));
+    const offset = Number(params.get("offset") || 0);
+    const tenantId = params.get("tenant_id") || "";
+    const filtered = Boolean(tenantId);
+    const rowTenant = tenantId || (offset > 0 ? "tenant-page-2" : "tenant-reader");
+    await route.fulfill({
+      json: {
+        rows: [
+          {
+            usage_date: filtered ? "2026-06-15" : "2026-07-01",
+            tenant_id: rowTenant,
+            principal_key: filtered ? "user:filtered" : "user:reader",
+            workload: offset > 0 ? "studio_table" : "query",
+            provider: "openai-compatible",
+            model: offset > 0 ? "table-model" : "answer-model",
+            operation: offset > 0 ? "table_generation" : "answer_generation",
+            request_count: filtered ? 3 : offset > 0 ? 1 : 12,
+            prompt_tokens: filtered ? 120 : offset > 0 ? 50 : 1_200,
+            completion_tokens: filtered ? 30 : offset > 0 ? 20 : 300,
+            total_tokens: filtered ? 150 : offset > 0 ? 70 : 1_500,
+            updated_at: now,
+          },
+        ],
+        totals: filtered
+          ? { request_count: 3, prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 }
+          : { request_count: 44, prompt_tokens: 4_000, completion_tokens: 1_000, total_tokens: 5_000 },
+        total: filtered ? 1 : 26,
+        limit: 25,
+        offset,
+        tenant_id: tenantId,
+        start_date: params.get("start_date") || "2026-06-01",
+        end_date: params.get("end_date") || "2026-07-01",
+      },
+    });
+  });
 
   await page.goto("/");
   const guestAvatar = page.getByRole("button", { name: "用户头像" });
@@ -2678,6 +2716,27 @@ test("registers an admin user from the avatar menu and publishes an announcement
   await expect(page.getByText("tenant-reader")).toBeVisible();
   await page.getByRole("button", { name: "封禁", exact: true }).click();
   await expect(page.getByText("已封禁")).toBeVisible();
+
+  await page.getByRole("button", { name: "模型用量" }).click();
+  await expect(page.getByRole("heading", { name: "模型用量" })).toBeVisible();
+  const usageTotals = page.getByLabel("模型用量汇总");
+  await expect(usageTotals).toContainText("44");
+  await expect(usageTotals).toContainText("5,000");
+  await expect(page.getByText("tenant-reader", { exact: true })).toBeVisible();
+  await expect(page.getByText("answer-model", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page.getByText("tenant-page-2", { exact: true })).toBeVisible();
+  expect(usageRequests.at(-1)?.get("offset")).toBe("25");
+  await page.getByLabel("租户 ID").fill("tenant-filtered");
+  await page.getByLabel("开始日期（UTC）").fill("2026-06-01");
+  await page.getByLabel("结束日期（UTC）").fill("2026-06-30");
+  await page.getByRole("button", { name: "应用筛选" }).click();
+  await expect(page.getByText("tenant-filtered", { exact: true })).toBeVisible();
+  await expect(usageTotals).toContainText("150");
+  expect(usageRequests.at(-1)?.get("tenant_id")).toBe("tenant-filtered");
+  expect(usageRequests.at(-1)?.get("start_date")).toBe("2026-06-01");
+  expect(usageRequests.at(-1)?.get("end_date")).toBe("2026-06-30");
+  expect(usageRequests.at(-1)?.get("offset")).toBeNull();
 
   await page.getByRole("button", { name: "公告管理" }).click();
   await page.getByLabel("公告标题").fill("系统维护");

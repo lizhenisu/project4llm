@@ -243,6 +243,39 @@ export type AdminIngestionAuditList = {
   offset: number;
 };
 
+export type AdminModelUsageRow = {
+  usage_date: string;
+  tenant_id: string;
+  principal_key: string;
+  workload: string;
+  provider: string;
+  model: string;
+  operation: string;
+  request_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  updated_at: number;
+};
+
+export type AdminModelUsageTotals = {
+  request_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
+
+export type AdminModelUsageList = {
+  rows: AdminModelUsageRow[];
+  totals: AdminModelUsageTotals;
+  total: number;
+  limit: number;
+  offset: number;
+  tenant_id: string;
+  start_date: string;
+  end_date: string;
+};
+
 export type AdminIngestionRedriveResponse = {
   results: Array<{
     tenant_id: string;
