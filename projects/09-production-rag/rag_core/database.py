@@ -382,6 +382,7 @@ CREATE INDEX IF NOT EXISTS idx_announcements_created_at ON announcements(created
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT 'default-workspace',
     title TEXT NOT NULL,
     source_doc_ids TEXT NOT NULL DEFAULT '[]',
     created_at INTEGER NOT NULL,
@@ -615,6 +616,12 @@ CREATE INDEX IF NOT EXISTS idx_current_source_versions_tenant ON current_source_
 
 
 def ensure_sqlite_columns(conn: sqlite3.Connection) -> None:
+    ensure_sqlite_column(
+        conn,
+        table="conversations",
+        column="workspace_id",
+        definition="TEXT NOT NULL DEFAULT 'default-workspace'",
+    )
     ensure_sqlite_column(conn, table="messages", column="request_id", definition="TEXT")
     ensure_sqlite_column(conn, table="messages", column="feedback_rating", definition="INTEGER")
     ensure_sqlite_column(conn, table="messages", column="image_data_url", definition="TEXT")
@@ -639,6 +646,10 @@ def ensure_sqlite_columns(conn: sqlite3.Connection) -> None:
     ensure_sqlite_column(conn, table="source_tasks", column="progress_detail", definition="TEXT NOT NULL DEFAULT ''")
     ensure_sqlite_column(conn, table="source_tasks", column="eta_seconds", definition="INTEGER")
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_tenant_workspace_updated "
+        "ON conversations(tenant_id, workspace_id, updated_at DESC)"
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"
     )
@@ -653,6 +664,12 @@ def ensure_sqlite_columns(conn: sqlite3.Connection) -> None:
 
 
 def ensure_postgres_columns(conn: PostgresConnection) -> None:
+    ensure_postgres_column(
+        conn,
+        table="conversations",
+        column="workspace_id",
+        definition="TEXT NOT NULL DEFAULT 'default-workspace'",
+    )
     ensure_postgres_column(conn, table="messages", column="request_id", definition="TEXT")
     ensure_postgres_column(conn, table="messages", column="feedback_rating", definition="BIGINT")
     ensure_postgres_column(conn, table="messages", column="image_data_url", definition="TEXT")
@@ -676,6 +693,10 @@ def ensure_postgres_columns(conn: PostgresConnection) -> None:
     ensure_postgres_column(conn, table="source_tasks", column="progress_percent", definition="BIGINT NOT NULL DEFAULT 0")
     ensure_postgres_column(conn, table="source_tasks", column="progress_detail", definition="TEXT NOT NULL DEFAULT ''")
     ensure_postgres_column(conn, table="source_tasks", column="eta_seconds", definition="BIGINT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_tenant_workspace_updated "
+        "ON conversations(tenant_id, workspace_id, updated_at DESC)"
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_artifacts_tenant_workspace_updated "
         "ON artifacts(tenant_id, workspace_id, updated_at DESC)"

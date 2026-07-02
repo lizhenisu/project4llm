@@ -43,6 +43,7 @@ from rag_core.conversations import (
     delete_conversation,
     list_conversation_items,
     load_conversation,
+    rename_conversation,
     save_conversation,
 )
 from rag_core.events import append_event, event_log_limits_snapshot, hit_event_summaries
@@ -136,6 +137,7 @@ from rag_core.user_auth import (
     create_announcement,
     delete_announcement,
     ensure_default_test_account,
+    ensure_default_admin_account,
     is_registration_enabled,
     list_announcements,
     list_public_users,
@@ -1339,6 +1341,7 @@ class ConversationMessageRequest(BaseModel):
 class ConversationUpsertRequest(BaseModel):
     id: str | None = None
     tenant_id: str = "team_a"
+    workspace_id: str = Field(default="default-workspace", min_length=1, max_length=200)
     title: str = ""
     messages: list[ConversationMessageRequest]
     source_doc_ids: list[str] = Field(default_factory=list)
@@ -1347,6 +1350,7 @@ class ConversationUpsertRequest(BaseModel):
 class ConversationResponse(BaseModel):
     id: str
     tenant_id: str
+    workspace_id: str
     title: str
     messages: list[ConversationMessageRequest]
     source_doc_ids: list[str]
@@ -1357,6 +1361,7 @@ class ConversationResponse(BaseModel):
 class ConversationListItemResponse(BaseModel):
     id: str
     tenant_id: str
+    workspace_id: str
     title: str
     message_count: int
     source_doc_ids: list[str]
@@ -1371,6 +1376,25 @@ class ConversationListResponse(BaseModel):
 class DeleteConversationResponse(BaseModel):
     status: str
     conversation_id: str
+
+
+class RenameConversationRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("title must not be blank")
+        return normalized
+
+
+class RenameConversationResponse(BaseModel):
+    status: str
+    conversation_id: str
+    title: str
+    updated_at: int
 
 
 class UserResponse(BaseModel):
@@ -1466,7 +1490,9 @@ class UserListResponse(BaseModel):
 
 def create_app():
     app = FastAPI(title="Production RAG", version=app_version())
-    ensure_default_test_account(load_config())
+    config = load_config()
+    ensure_default_test_account(config)
+    ensure_default_admin_account(config)
 
     @app.middleware("http")
     async def record_http_metrics(request, call_next):
@@ -2805,6 +2831,7 @@ def create_app():
     @app.get("/conversations", response_model=ConversationListResponse)
     def conversations(
         tenant_id: str = "team_a",
+        workspace_id: str = Query(default="default-workspace", min_length=1, max_length=200),
         authorization: str | None = Header(default=None),
         x_rag_tenant_id: str | None = Header(default=None),
         x_rag_acl_groups: str | None = Header(default=None),
@@ -2821,7 +2848,11 @@ def create_app():
         return ConversationListResponse(
             conversations=[
                 conversation_item_to_response(item)
-                for item in list_conversation_items(config, tenant_id=auth_context.tenant_id)
+                for item in list_conversation_items(
+                    config,
+                    tenant_id=auth_context.tenant_id,
+                    workspace_id=workspace_id,
+                )
             ]
         )
 
@@ -2846,6 +2877,7 @@ def create_app():
             conversation = save_conversation(
                 config,
                 tenant_id=auth_context.tenant_id,
+                workspace_id=request.workspace_id,
                 conversation_id=request.id,
                 title=request.title,
                 messages=[message_request_to_domain(message) for message in request.messages],
@@ -2859,6 +2891,7 @@ def create_app():
     def get_conversation(
         conversation_id: str,
         tenant_id: str = "team_a",
+        workspace_id: str = Query(default="default-workspace", min_length=1, max_length=200),
         authorization: str | None = Header(default=None),
         x_rag_tenant_id: str | None = Header(default=None),
         x_rag_acl_groups: str | None = Header(default=None),
@@ -2876,6 +2909,7 @@ def create_app():
             config,
             tenant_id=auth_context.tenant_id,
             conversation_id=conversation_id,
+            workspace_id=workspace_id,
         )
         if conversation is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -2885,6 +2919,7 @@ def create_app():
     def remove_conversation(
         conversation_id: str,
         tenant_id: str = "team_a",
+        workspace_id: str = Query(default="default-workspace", min_length=1, max_length=200),
         authorization: str | None = Header(default=None),
         x_rag_tenant_id: str | None = Header(default=None),
         x_rag_acl_groups: str | None = Header(default=None),
@@ -2902,10 +2937,46 @@ def create_app():
             config,
             tenant_id=auth_context.tenant_id,
             conversation_id=conversation_id,
+            workspace_id=workspace_id,
         )
         return DeleteConversationResponse(
             status="deleted" if removed else "not_found",
             conversation_id=conversation_id,
+        )
+
+    @app.patch("/conversations/{conversation_id}", response_model=RenameConversationResponse)
+    def update_conversation_title(
+        conversation_id: str,
+        request: RenameConversationRequest,
+        tenant_id: str = "team_a",
+        workspace_id: str = Query(default="default-workspace", min_length=1, max_length=200),
+        authorization: str | None = Header(default=None),
+        x_rag_tenant_id: str | None = Header(default=None),
+        x_rag_acl_groups: str | None = Header(default=None),
+    ) -> RenameConversationResponse:
+        config = load_config()
+        auth_context = resolve_auth_context_from_values(
+            config=config,
+            authorization=authorization,
+            x_rag_tenant_id=x_rag_tenant_id,
+            x_rag_acl_groups=x_rag_acl_groups,
+            tenant_id=tenant_id,
+            acl_groups=[],
+        )
+        renamed = rename_conversation(
+            config,
+            tenant_id=auth_context.tenant_id,
+            conversation_id=conversation_id,
+            title=request.title,
+            workspace_id=workspace_id,
+        )
+        if renamed is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return RenameConversationResponse(
+            status="renamed",
+            conversation_id=renamed.id,
+            title=renamed.title,
+            updated_at=renamed.updated_at,
         )
 
     @app.get("/artifacts", response_model=ArtifactListResponse)
@@ -3589,6 +3660,7 @@ def conversation_to_response(conversation) -> ConversationResponse:
     return ConversationResponse(
         id=conversation.id,
         tenant_id=conversation.tenant_id,
+        workspace_id=conversation.workspace_id,
         title=conversation.title,
         messages=[
             ConversationMessageRequest(
@@ -3615,6 +3687,7 @@ def conversation_to_list_item(conversation) -> ConversationListItemResponse:
     return ConversationListItemResponse(
         id=conversation.id,
         tenant_id=conversation.tenant_id,
+        workspace_id=conversation.workspace_id,
         title=conversation.title,
         message_count=len(conversation.messages),
         source_doc_ids=conversation.source_doc_ids,
@@ -3627,6 +3700,7 @@ def conversation_item_to_response(item) -> ConversationListItemResponse:
     return ConversationListItemResponse(
         id=item.id,
         tenant_id=item.tenant_id,
+        workspace_id=item.workspace_id,
         title=item.title,
         message_count=item.message_count,
         source_doc_ids=item.source_doc_ids,

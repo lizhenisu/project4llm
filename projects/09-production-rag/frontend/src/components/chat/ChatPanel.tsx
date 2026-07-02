@@ -1,10 +1,11 @@
-import { ArrowDown, ArrowRight, Bot, Check, ChevronRight, Circle, Copy, ImagePlus, Loader2, MoreVertical, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { ArrowDown, ArrowRight, Bot, Check, ChevronRight, Circle, Copy, History, ImagePlus, Loader2, Maximize, Minimize, MoreHorizontal, PencilLine, Plus, ThumbsDown, ThumbsUp, Trash2, X } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
-import type { ChatMessage, Citation, RagProgressStage, SourceItem } from "../../lib/types";
+import type { ChatMessage, Citation, ConversationListItem, RagProgressStage, SourceItem } from "../../lib/types";
 import { EmptyState } from "../ui/EmptyState";
 import { ProtectedImage } from "../ui/ProtectedImage";
 
@@ -18,6 +19,9 @@ const CHAT_IMAGE_JPEG_QUALITY = 0.86;
 
 type Props = {
   messages: ChatMessage[];
+  conversations: ConversationListItem[];
+  activeConversationId: string | null;
+  chromeCollapsed: boolean;
   selectedSources: SourceItem[];
   authenticated: boolean;
   busy: boolean;
@@ -28,11 +32,18 @@ type Props = {
   onTypingComplete: () => void;
   onAsk: (query: string, imageDataUrl?: string | null) => void;
   onFeedback: (message: ChatMessage, rating: 1 | -1) => void;
-  onDeleteConversation: () => void;
+  onNewConversation: () => void;
+  onOpenConversation: (conversationId: string) => Promise<void>;
+  onRenameConversation: (conversationId: string, title: string) => Promise<void>;
+  onDeleteConversation: (conversationId: string) => Promise<void>;
+  onToggleChrome: () => void;
 };
 
 export function ChatPanel({
   messages,
+  conversations,
+  activeConversationId,
+  chromeCollapsed,
   selectedSources,
   authenticated,
   busy,
@@ -43,14 +54,24 @@ export function ChatPanel({
   onTypingComplete,
   onAsk,
   onFeedback,
+  onNewConversation,
+  onOpenConversation,
+  onRenameConversation,
   onDeleteConversation,
+  onToggleChrome,
 }: Props) {
   const [draft, setDraft] = useState("");
   const [attachedImage, setAttachedImage] = useState<string | null>(null);
   const [imageProcessing, setImageProcessing] = useState(false);
   const [imageAttachError, setImageAttachError] = useState("");
   const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [conversationMenuId, setConversationMenuId] = useState<string | null>(null);
+  const [conversationMenuPosition, setConversationMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const [editingConversationId, setEditingConversationId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [historyBusyId, setHistoryBusyId] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState("");
   const [inputHeight, setInputHeight] = useState(46);
   const [showJumpLatest, setShowJumpLatest] = useState(false);
   const [jumpLatestClosing, setJumpLatestClosing] = useState(false);
@@ -62,6 +83,8 @@ export function ChatPanel({
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const renameSubmittingRef = useRef<string | null>(null);
+  const renameCancelledRef = useRef<string | null>(null);
   const onTypingCompleteRef = useLatestRef(onTypingComplete);
   const onFeedbackRef = useLatestRef(onFeedback);
   const canSend = (draft.trim().length > 0 || Boolean(attachedImage)) && !busy && !imageProcessing;
@@ -76,11 +99,26 @@ export function ChatPanel({
 
   useEffect(() => {
     function handleClickOutside() {
-      setMenuOpen(false);
+      setConversationMenuId(null);
+      setConversationMenuPosition(null);
     }
     document.addEventListener("click", handleClickOutside);
     return () => document.removeEventListener("click", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!conversationMenuId) return;
+    const closeFloatingMenu = () => {
+      setConversationMenuId(null);
+      setConversationMenuPosition(null);
+    };
+    window.addEventListener("resize", closeFloatingMenu);
+    document.addEventListener("scroll", closeFloatingMenu, true);
+    return () => {
+      window.removeEventListener("resize", closeFloatingMenu);
+      document.removeEventListener("scroll", closeFloatingMenu, true);
+    };
+  }, [conversationMenuId]);
 
   useEffect(() => {
     return () => {
@@ -158,6 +196,81 @@ export function ChatPanel({
     setImageAttachError("");
   }
 
+  async function openConversation(conversationId: string) {
+    setHistoryError("");
+    setHistoryBusyId(conversationId);
+    try {
+      await onOpenConversation(conversationId);
+      setHistoryOpen(false);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "加载历史对话失败");
+    } finally {
+      setHistoryBusyId(null);
+    }
+  }
+
+  async function submitConversationRename(conversationId: string, currentTitle: string) {
+    if (renameSubmittingRef.current === conversationId) return;
+    const normalizedTitle = editTitle.trim();
+    if (!normalizedTitle || normalizedTitle === currentTitle) {
+      setEditingConversationId(null);
+      setEditTitle("");
+      return;
+    }
+    renameSubmittingRef.current = conversationId;
+    setHistoryError("");
+    setHistoryBusyId(conversationId);
+    try {
+      await onRenameConversation(conversationId, normalizedTitle);
+      setEditingConversationId(null);
+      setEditTitle("");
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "重命名对话失败");
+    } finally {
+      renameSubmittingRef.current = null;
+      setHistoryBusyId(null);
+    }
+  }
+
+  async function removeConversation(conversationId: string) {
+    setHistoryError("");
+    setHistoryBusyId(conversationId);
+    try {
+      await onDeleteConversation(conversationId);
+      setConversationMenuId(null);
+      setConversationMenuPosition(null);
+      setEditingConversationId(null);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "删除对话失败");
+    } finally {
+      setHistoryBusyId(null);
+    }
+  }
+
+  function toggleConversationMenu(event: React.MouseEvent<HTMLButtonElement>, conversationId: string) {
+    event.stopPropagation();
+    if (conversationMenuId === conversationId) {
+      setConversationMenuId(null);
+      setConversationMenuPosition(null);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 132;
+    const menuHeight = 78;
+    const viewportGap = 8;
+    const itemGap = 5;
+    const left = Math.min(
+      window.innerWidth - menuWidth - viewportGap,
+      Math.max(viewportGap, rect.right - menuWidth),
+    );
+    const opensDownward = rect.bottom + itemGap + menuHeight <= window.innerHeight - viewportGap;
+    const top = opensDownward
+      ? rect.bottom + itemGap
+      : Math.max(viewportGap, rect.top - menuHeight - itemGap);
+    setConversationMenuPosition({ left, top });
+    setConversationMenuId(conversationId);
+  }
+
   async function attachImage(file: File | undefined) {
     if (!file || !file.type.startsWith("image/")) return;
     setImageAttachError("");
@@ -198,46 +311,195 @@ export function ChatPanel({
   return (
     <section className="panel chat-panel">
       <div className="panel-header">
-        <h2 title={conversationTitle}>对话</h2>
-        <div className="chat-header-actions">
-          <div className="chat-menu">
-            <button
-              className="icon-button"
-              type="button"
-              aria-label="更多"
-              title="更多"
-              onClick={(e) => {
-                e.stopPropagation();
-                setMenuOpen((open) => !open);
-              }}
-            >
-              <MoreVertical size={18} />
-            </button>
-            {menuOpen ? (
-              <div className="chat-menu-popover">
-                <button
-                  type="button"
-                  disabled={messages.length === 0}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onDeleteConversation();
-                  }}
-                >
-                  删除对话记录
-                </button>
-                <p>只有您自己能看到对话记录。</p>
-              </div>
-            ) : null}
-          </div>
+        <div className="chat-title-row">
+          <h2 title={conversationTitle}>对话</h2>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={historyOpen ? "关闭历史对话" : "打开历史对话"}
+            title={historyOpen ? "关闭历史对话" : "历史对话"}
+            aria-expanded={historyOpen}
+            onClick={() => {
+              setConversationMenuId(null);
+              setConversationMenuPosition(null);
+              setHistoryOpen((open) => !open);
+            }}
+          >
+            <History size={18} />
+          </button>
         </div>
+        <button
+          className="icon-button chat-chrome-toggle"
+          type="button"
+          aria-label={chromeCollapsed ? "展开顶部栏和状态栏" : "折叠顶部栏和状态栏"}
+          title={chromeCollapsed ? "展开顶部栏和状态栏" : "折叠顶部栏和状态栏"}
+          aria-expanded={!chromeCollapsed}
+          onClick={onToggleChrome}
+        >
+          {chromeCollapsed ? (
+            <Minimize size={18} aria-hidden="true" />
+          ) : (
+            <Maximize size={18} aria-hidden="true" />
+          )}
+        </button>
       </div>
+      <button
+        type="button"
+        className={`conversation-history-backdrop ${historyOpen ? "open" : ""}`}
+        aria-label="关闭历史对话"
+        tabIndex={historyOpen ? 0 : -1}
+        onClick={() => {
+          setConversationMenuId(null);
+          setConversationMenuPosition(null);
+          setHistoryOpen(false);
+        }}
+      />
+      <aside className={`conversation-history-drawer ${historyOpen ? "open" : ""}`} aria-label="历史对话">
+        <div className="conversation-history-header">
+          <div>
+            <strong>历史对话</strong>
+            <small>{conversations.length} 条记录</small>
+          </div>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="关闭历史对话"
+            onClick={() => {
+              setConversationMenuId(null);
+              setConversationMenuPosition(null);
+              setHistoryOpen(false);
+            }}
+          >
+            <X size={18} />
+          </button>
+        </div>
+        {historyError ? <p className="conversation-history-error" role="alert">{historyError}</p> : null}
+        <div className="conversation-history-create">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              onNewConversation();
+              setHistoryOpen(false);
+            }}
+          >
+            <Plus size={16} />
+            开启新对话
+          </button>
+        </div>
+        <div className="conversation-history-list">
+          {conversations.length === 0 ? (
+            <div className="conversation-history-empty">还没有历史对话</div>
+          ) : (
+            conversations.map((conversation) => {
+              const editing = editingConversationId === conversation.id;
+              const itemBusy = historyBusyId === conversation.id;
+              return (
+                <article
+                  key={conversation.id}
+                  className={`conversation-history-item ${activeConversationId === conversation.id ? "active" : ""}`}
+                >
+                  {editing ? (
+                    <form
+                      className="conversation-history-rename"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void submitConversationRename(conversation.id, conversation.title);
+                      }}
+                    >
+                      <input
+                        value={editTitle}
+                        aria-label={`重命名${conversation.title}`}
+                        maxLength={200}
+                        autoFocus
+                        disabled={itemBusy}
+                        onChange={(event) => setEditTitle(event.target.value)}
+                        onBlur={() => {
+                          if (renameCancelledRef.current === conversation.id) {
+                            renameCancelledRef.current = null;
+                            return;
+                          }
+                          void submitConversationRename(conversation.id, conversation.title);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") {
+                            renameCancelledRef.current = conversation.id;
+                            setEditingConversationId(null);
+                            setEditTitle("");
+                          }
+                        }}
+                      />
+                    </form>
+                  ) : (
+                    <button
+                      type="button"
+                      className="conversation-history-main"
+                      disabled={itemBusy}
+                      onClick={() => void openConversation(conversation.id)}
+                    >
+                      <strong>{conversation.title}</strong>
+                      <span>{formatConversationTime(conversation.updated_at)} · {conversation.message_count} 条消息</span>
+                    </button>
+                  )}
+                  <div className="conversation-history-menu">
+                    <button
+                      className="row-icon"
+                      type="button"
+                      aria-label={`管理对话：${conversation.title}`}
+                      disabled={itemBusy}
+                      onClick={(event) => toggleConversationMenu(event, conversation.id)}
+                    >
+                      {itemBusy ? <Loader2 className="spin" size={16} /> : <MoreHorizontal size={17} />}
+                    </button>
+                    {conversationMenuId === conversation.id && conversationMenuPosition && typeof document !== "undefined"
+                      ? createPortal(
+                          <div
+                            className="conversation-history-popover"
+                            role="menu"
+                            style={conversationMenuPosition}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                renameCancelledRef.current = null;
+                                setEditingConversationId(conversation.id);
+                                setEditTitle(conversation.title);
+                                setConversationMenuId(null);
+                                setConversationMenuPosition(null);
+                              }}
+                            >
+                              <PencilLine size={15} />
+                              重命名
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="danger"
+                              onClick={() => void removeConversation(conversation.id)}
+                            >
+                              <Trash2 size={15} />
+                              删除
+                            </button>
+                          </div>,
+                          document.body,
+                        )
+                      : null}
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </div>
+      </aside>
       <div className="chat-scroll" ref={scrollRef} onScroll={updateJumpLatestState}>
         {messages.length === 0 ? (
           selectedSources.length === 0 ? (
             <EmptyState
               icon={<Bot size={34} />}
-              title="让我们开始构建知识库..."
-              text="添加来源后，你可以基于资料提问、生成摘要和创建思维导图。"
+              title="直接开始对话"
+              text="无需选择文档也可以提问；选择来源后，回答会结合知识库内容。"
             />
           ) : (
             <Overview sources={selectedSources} onAsk={onAsk} />
@@ -367,6 +629,15 @@ function useLatestRef<T>(value: T) {
     ref.current = value;
   }, [value]);
   return ref;
+}
+
+function formatConversationTime(timestamp: number) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
 }
 
 async function prepareChatImageAttachment(file: File) {

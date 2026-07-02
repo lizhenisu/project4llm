@@ -130,6 +130,7 @@ export type MindMapArtifact = {
 export type ConversationListItem = {
   id: string;
   tenant_id: string;
+  workspace_id: string;
   title: string;
   message_count: number;
   source_doc_ids: string[];
@@ -140,6 +141,7 @@ export type ConversationListItem = {
 export type Conversation = {
   id: string;
   tenant_id: string;
+  workspace_id: string;
   title: string;
   messages: ChatMessage[];
   source_doc_ids: string[];
@@ -241,6 +243,39 @@ export type AdminIngestionAuditList = {
   total: number;
   limit: number;
   offset: number;
+};
+
+export type AdminModelUsageRow = {
+  usage_date: string;
+  tenant_id: string;
+  principal_key: string;
+  workload: string;
+  provider: string;
+  model: string;
+  operation: string;
+  request_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  updated_at: number;
+};
+
+export type AdminModelUsageTotals = {
+  request_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
+
+export type AdminModelUsageList = {
+  rows: AdminModelUsageRow[];
+  totals: AdminModelUsageTotals;
+  total: number;
+  limit: number;
+  offset: number;
+  tenant_id: string;
+  start_date: string;
+  end_date: string;
 };
 
 export type AdminIngestionRedriveResponse = {

@@ -1,8 +1,15 @@
 import { expect, test } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
 
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+
+async function fulfillQueryStream(route: Route, result: Record<string, unknown>) {
+  await route.fulfill({
+    contentType: "application/x-ndjson",
+    body: `${JSON.stringify({ type: "result", ...result })}\n`,
+  });
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -56,6 +63,283 @@ async function mockSourceAssetRoute(page: Page) {
     });
   });
 }
+
+test("sends a normal chat request when no documents are selected", async ({ page }) => {
+  await mockWorkspaceShell(page);
+  let queryPayload: Record<string, unknown> | null = null;
+
+  await page.route("**/conversations**", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON();
+      await route.fulfill({
+        json: {
+          ...body,
+          id: body.id || "conversation-without-sources",
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      });
+      return;
+    }
+    await route.fulfill({ json: { conversations: [] } });
+  });
+  await page.route("**/query/stream", async (route) => {
+    queryPayload = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: "application/x-ndjson",
+      body: `${JSON.stringify({
+        type: "result",
+        request_id: "query-without-sources",
+        answer: "这是不依赖知识库的普通对话回答。",
+        citations: [],
+        trace: {},
+      })}\n`,
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("无需选择文档也可以提问")).toBeVisible();
+  await expect(page.getByText("0 个来源")).toBeVisible();
+  const input = page.getByPlaceholder("提问或创作内容");
+  const sendButton = page.getByRole("button", { name: "发送消息" });
+  await expect(sendButton).toBeDisabled();
+
+  await input.fill("没有文档时也能聊天吗？");
+  await expect(sendButton).toBeEnabled();
+  await input.press("Enter");
+
+  await expect(page.getByText("这是不依赖知识库的普通对话回答。")).toBeVisible();
+  expect(queryPayload).toMatchObject({
+    query: "没有文档时也能聊天吗？",
+    doc_ids: [],
+    query_mode: "text",
+  });
+});
+
+test("collapses and restores the top bar and status bar", async ({ page }) => {
+  await mockWorkspaceShell(page);
+  await page.goto("/");
+
+  const shell = page.locator(".workspace-shell");
+  const topbar = page.locator(".topbar");
+  const statusbar = page.locator(".statusbar");
+  const workspace = page.locator(".workspace-grid");
+  const chatHeader = page.locator(".chat-panel > .panel-header");
+  const collapseButton = chatHeader.getByRole("button", { name: "折叠顶部栏和状态栏" });
+  const expandedWorkspaceHeight = await workspace.evaluate((element) => element.getBoundingClientRect().height);
+
+  await expect(topbar).toBeVisible();
+  await expect(statusbar).toBeVisible();
+  await expect(topbar.getByRole("button", { name: "折叠顶部栏和状态栏" })).toHaveCount(0);
+  await expect(collapseButton.locator("svg")).toHaveClass(/lucide-maximize/);
+  await expect(collapseButton).toHaveAttribute("aria-expanded", "true");
+  await collapseButton.click();
+
+  const expandButton = chatHeader.getByRole("button", { name: "展开顶部栏和状态栏" });
+  await expect(shell).toHaveClass(/chrome-collapsed/);
+  await expect(expandButton).toBeVisible();
+  await expect(expandButton).toHaveAttribute("aria-expanded", "false");
+  await expect(expandButton.locator("svg")).toHaveClass(/lucide-minimize/);
+  await expect.poll(() => topbar.evaluate((element) => element.getBoundingClientRect().height)).toBe(0);
+  await expect.poll(() => statusbar.evaluate((element) => element.getBoundingClientRect().height)).toBe(0);
+  await expect.poll(() => workspace.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(
+    expandedWorkspaceHeight + 70,
+  );
+
+  const expansionFrames = page.evaluate(
+    () =>
+      new Promise<Array<{ clientHeight: number; clientWidth: number; scrollHeight: number }>>((resolve) => {
+        const frames: Array<{ clientHeight: number; clientWidth: number; scrollHeight: number }> = [];
+        const sample = () => {
+          frames.push({
+            clientHeight: document.documentElement.clientHeight,
+            clientWidth: document.documentElement.clientWidth,
+            scrollHeight: document.documentElement.scrollHeight,
+          });
+          if (frames.length < 20) {
+            requestAnimationFrame(sample);
+          } else {
+            resolve(frames);
+          }
+        };
+        requestAnimationFrame(sample);
+      }),
+  );
+  await expandButton.click();
+  const frames = await expansionFrames;
+  await expect(shell).not.toHaveClass(/chrome-collapsed/);
+  const restoredCollapseButton = page.getByRole("button", { name: "折叠顶部栏和状态栏" });
+  await expect(restoredCollapseButton).toBeVisible();
+  await expect(restoredCollapseButton.locator("svg")).toHaveClass(/lucide-maximize/);
+  expect(frames.every((frame) => frame.scrollHeight <= frame.clientHeight)).toBe(true);
+  expect(new Set(frames.map((frame) => frame.clientWidth)).size).toBe(1);
+  await expect.poll(() => topbar.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(50);
+  await expect.poll(() => statusbar.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(20);
+
+  await page.setViewportSize({ width: 700, height: 720 });
+  await expect
+    .poll(() => shell.evaluate((element) => getComputedStyle(element).overflow))
+    .toBe("visible");
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.scrollHeight > document.documentElement.clientHeight),
+    )
+    .toBe(true);
+});
+
+test("manages historical conversations from the sliding chat drawer", async ({ page }) => {
+  await mockWorkspaceShell(page);
+  const now = Date.now();
+  let conversations = [
+    {
+      id: "conv-new",
+      tenant_id: "team_a",
+      workspace_id: "default-workspace",
+      title: "最新对话",
+      message_count: 2,
+      source_doc_ids: [],
+      created_at: now - 2_000,
+      updated_at: now,
+    },
+    {
+      id: "conv-old",
+      tenant_id: "team_a",
+      workspace_id: "default-workspace",
+      title: "旧对话",
+      message_count: 2,
+      source_doc_ids: [],
+      created_at: now - 10_000,
+      updated_at: now - 5_000,
+    },
+    {
+      id: "conv-other-workspace",
+      tenant_id: "team_a",
+      workspace_id: "workspace-other",
+      title: "其他知识库对话",
+      message_count: 2,
+      source_doc_ids: [],
+      created_at: now - 20_000,
+      updated_at: now + 10_000,
+    },
+  ];
+  let renamedTitle = "";
+  let deletedConversationId = "";
+
+  await page.route("**/conversations**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const conversationId = url.pathname.match(/\/conversations\/([^/]+)$/)?.[1];
+    if (!conversationId) {
+      expect(url.searchParams.get("workspace_id")).toBe("default-workspace");
+      await route.fulfill({
+        json: {
+          conversations: conversations.filter(
+            (conversation) => conversation.workspace_id === url.searchParams.get("workspace_id"),
+          ),
+        },
+      });
+      return;
+    }
+    expect(url.searchParams.get("workspace_id")).toBe("default-workspace");
+    if (request.method() === "PATCH") {
+      renamedTitle = request.postDataJSON().title;
+      conversations = conversations.map((item) =>
+        item.id === conversationId ? { ...item, title: renamedTitle, updated_at: now + 1_000 } : item,
+      );
+      await route.fulfill({
+        json: {
+          status: "renamed",
+          conversation_id: conversationId,
+          title: renamedTitle,
+          updated_at: now + 1_000,
+        },
+      });
+      return;
+    }
+    if (request.method() === "DELETE") {
+      deletedConversationId = conversationId;
+      conversations = conversations.filter((item) => item.id !== conversationId);
+      await route.fulfill({ json: { status: "deleted", conversation_id: conversationId } });
+      return;
+    }
+    const item = conversations.find((conversation) => conversation.id === conversationId);
+    await route.fulfill({
+      json: {
+        ...item,
+        messages: [
+          { id: `${conversationId}-user`, role: "user", content: `${item?.title}问题`, status: "done" },
+          { id: `${conversationId}-assistant`, role: "assistant", content: `${item?.title}回答`, status: "done" },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("最新对话回答")).toBeVisible();
+  const chatHeader = page.locator(".chat-panel > .panel-header");
+  await expect(chatHeader.getByRole("button", { name: "更多" })).toHaveCount(0);
+  await chatHeader.getByRole("button", { name: "打开历史对话" }).click();
+
+  const drawer = page.getByRole("complementary", { name: "历史对话" });
+  await expect(drawer).toBeVisible();
+  await expect(drawer).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
+  await expect(drawer.getByText("2 条记录")).toBeVisible();
+  await expect(drawer.getByText("其他知识库对话")).toHaveCount(0);
+  const newConversationButton = drawer.getByRole("button", { name: "开启新对话" });
+  await expect(newConversationButton).toBeVisible();
+  expect(
+    await newConversationButton.evaluate((element) =>
+      element.parentElement?.nextElementSibling?.classList.contains("conversation-history-list"),
+    ),
+  ).toBe(true);
+  await newConversationButton.click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByText("最新对话回答")).toHaveCount(0);
+  await expect(page.getByText("直接开始对话")).toBeVisible();
+
+  await chatHeader.getByRole("button", { name: "打开历史对话" }).click();
+  await drawer.getByRole("button", { name: /旧对话.*2 条消息/ }).click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByText("旧对话回答")).toBeVisible();
+
+  await chatHeader.getByRole("button", { name: "打开历史对话" }).click();
+  await drawer.getByRole("button", { name: "管理对话：旧对话" }).click();
+  const floatingMenu = page.getByRole("menu");
+  await expect(floatingMenu).toBeVisible();
+  expect(await floatingMenu.evaluate((element) => element.closest("aside"))).toBeNull();
+  const menuBox = await floatingMenu.boundingBox();
+  const viewport = page.viewportSize();
+  expect(menuBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(menuBox!.x).toBeGreaterThanOrEqual(0);
+  expect(menuBox!.y).toBeGreaterThanOrEqual(0);
+  expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(viewport!.width);
+  expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(viewport!.height);
+  await floatingMenu.getByRole("menuitem", { name: "重命名" }).click();
+  const renameInput = drawer.getByRole("textbox", { name: "重命名旧对话" });
+  await renameInput.fill("项目复盘");
+  await expect(drawer.getByRole("button", { name: "保存" })).toHaveCount(0);
+  await renameInput.press("Enter");
+  await expect(drawer.getByText("项目复盘", { exact: true })).toBeVisible();
+  expect(renamedTitle).toBe("项目复盘");
+
+  await drawer.getByRole("button", { name: "管理对话：项目复盘" }).click();
+  await page.getByRole("menu").getByRole("menuitem", { name: "重命名" }).click();
+  const blurRenameInput = drawer.getByRole("textbox", { name: "重命名项目复盘" });
+  await blurRenameInput.fill("失焦复盘");
+  await drawer.getByText("历史对话", { exact: true }).click();
+  await expect(drawer.getByText("失焦复盘", { exact: true })).toBeVisible();
+  expect(renamedTitle).toBe("失焦复盘");
+
+  await drawer.getByRole("button", { name: "管理对话：失焦复盘" }).click();
+  await page.getByRole("menu").getByRole("menuitem", { name: "删除" }).click();
+  await expect(drawer.getByText("失焦复盘", { exact: true })).toHaveCount(0);
+  expect(deletedConversationId).toBe("conv-old");
+  await expect(page.getByText("直接开始对话")).toBeVisible();
+
+  await drawer.getByRole("button", { name: "关闭历史对话" }).click();
+  await expect(drawer).toBeHidden();
+});
 
 test("hides database create/rename controls when not authenticated", async ({ page }) => {
   await page.addInitScript(() => {
@@ -632,20 +916,21 @@ test("keeps an in-flight answer scoped to the database where it started", async 
   });
   await page.route("**/query**", async (route) => {
     await queryReleased;
-    await route.fulfill({
-      json: {
-        request_id: "workspace-race",
-        answer: "这段回答只属于 06/15 11:36。",
-        citations: [],
-        trace: {},
-      },
+    await fulfillQueryStream(route, {
+      request_id: "workspace-race",
+      answer: "这段回答只属于 06/15 11:36。",
+      citations: [],
+      trace: {},
     });
   });
 
   await page.goto("/");
+  const queryStarted = page.waitForRequest((request) =>
+    new URL(request.url()).pathname.endsWith("/query/stream"),
+  );
   await page.getByPlaceholder("提问或创作内容").fill("有哪些关键事实值得关注？");
   await page.getByRole("button", { name: "发送消息" }).click();
-  await expect(page.getByText("正在检索资料并生成回答...")).toBeVisible();
+  await queryStarted;
   await page.getByRole("button", { name: "设置" }).click();
   await page.getByRole("button", { name: /Production RAG 知识库 06\/14 23:54/ }).click();
   await page.getByRole("button", { name: "关闭设置" }).click();
@@ -1387,7 +1672,7 @@ test("updates workspace status immediately after login", async ({ page }) => {
   await page.getByRole("button", { name: "登录", exact: true }).click();
 
   await expect(page).toHaveURL(/\/$/);
-  await expect(page.locator(".statusbar")).toHaveText("API 已连接");
+  await expect(page.locator(".statusbar")).toContainText("API 已连接");
 });
 
 test("logs in directly from a hash token", async ({ page }) => {
@@ -2229,6 +2514,7 @@ test("rate limits studio artifact generation across mind map and data table tool
 test("registers an admin user from the avatar menu and publishes an announcement", async ({ page }) => {
   const now = Date.now();
   let registrationEnabled = true;
+  const usageRequests: URLSearchParams[] = [];
   await page.addInitScript(() => {
     localStorage.removeItem("production-rag-auth-session");
   });
@@ -2393,6 +2679,43 @@ test("registers an admin user from the avatar menu and publishes an announcement
       },
     });
   });
+  await page.route("**/admin/model-usage**", async (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    usageRequests.push(new URLSearchParams(params));
+    const offset = Number(params.get("offset") || 0);
+    const tenantId = params.get("tenant_id") || "";
+    const filtered = Boolean(tenantId);
+    const rowTenant = tenantId || (offset > 0 ? "tenant-page-2" : "tenant-reader");
+    await route.fulfill({
+      json: {
+        rows: [
+          {
+            usage_date: filtered ? "2026-06-15" : "2026-07-01",
+            tenant_id: rowTenant,
+            principal_key: filtered ? "user:filtered" : "user:reader",
+            workload: offset > 0 ? "studio_table" : "query",
+            provider: "openai-compatible",
+            model: offset > 0 ? "table-model" : "answer-model",
+            operation: offset > 0 ? "table_generation" : "answer_generation",
+            request_count: filtered ? 3 : offset > 0 ? 1 : 12,
+            prompt_tokens: filtered ? 120 : offset > 0 ? 50 : 1_200,
+            completion_tokens: filtered ? 30 : offset > 0 ? 20 : 300,
+            total_tokens: filtered ? 150 : offset > 0 ? 70 : 1_500,
+            updated_at: now,
+          },
+        ],
+        totals: filtered
+          ? { request_count: 3, prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 }
+          : { request_count: 44, prompt_tokens: 4_000, completion_tokens: 1_000, total_tokens: 5_000 },
+        total: filtered ? 1 : 26,
+        limit: 25,
+        offset,
+        tenant_id: tenantId,
+        start_date: params.get("start_date") || "2026-06-01",
+        end_date: params.get("end_date") || "2026-07-01",
+      },
+    });
+  });
 
   await page.goto("/");
   const guestAvatar = page.getByRole("button", { name: "用户头像" });
@@ -2441,6 +2764,27 @@ test("registers an admin user from the avatar menu and publishes an announcement
   await expect(page.getByText("tenant-reader")).toBeVisible();
   await page.getByRole("button", { name: "封禁", exact: true }).click();
   await expect(page.getByText("已封禁")).toBeVisible();
+
+  await page.getByRole("button", { name: "模型用量" }).click();
+  await expect(page.getByRole("heading", { name: "模型用量" })).toBeVisible();
+  const usageTotals = page.getByLabel("模型用量汇总");
+  await expect(usageTotals).toContainText("44");
+  await expect(usageTotals).toContainText("5,000");
+  await expect(page.getByText("tenant-reader", { exact: true })).toBeVisible();
+  await expect(page.getByText("answer-model", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page.getByText("tenant-page-2", { exact: true })).toBeVisible();
+  expect(usageRequests.at(-1)?.get("offset")).toBe("25");
+  await page.getByLabel("租户 ID").fill("tenant-filtered");
+  await page.getByLabel("开始日期（UTC）").fill("2026-06-01");
+  await page.getByLabel("结束日期（UTC）").fill("2026-06-30");
+  await page.getByRole("button", { name: "应用筛选" }).click();
+  await expect(page.getByText("tenant-filtered", { exact: true })).toBeVisible();
+  await expect(usageTotals).toContainText("150");
+  expect(usageRequests.at(-1)?.get("tenant_id")).toBe("tenant-filtered");
+  expect(usageRequests.at(-1)?.get("start_date")).toBe("2026-06-01");
+  expect(usageRequests.at(-1)?.get("end_date")).toBe("2026-06-30");
+  expect(usageRequests.at(-1)?.get("offset")).toBeNull();
 
   await page.getByRole("button", { name: "公告管理" }).click();
   await page.getByLabel("公告标题").fill("系统维护");
@@ -2764,27 +3108,25 @@ test("renders assistant answers with a typewriter reveal", async ({ page }) => {
     await route.fulfill({ json: { ...body, id: "conversation-typewriter", updated_at: Date.now() } });
   });
   await page.route("**/query**", async (route) => {
-    await route.fulfill({
-      json: {
-        request_id: "typewriter-check",
-        answer,
-        citations: [
-          {
-            doc_id: "自然辩证法/page-1",
-            title: "自然辩证法 p1",
-            source_uri: "/object_store/uploads/team_a/regression/自然辩证法.pdf",
-            source_type: "pdf",
-            chunk_index: 0,
-            score: 0.9,
-            rerank_score: 0.8,
-            acl_groups: ["engineering"],
-            metadata: { page_no: 1, page_start: 1, page_end: 1 },
-            text: "实践案例证据片段第一句。这里是完整 chunk 的中段内容。这里是完整 chunk 的末尾内容。",
-            text_preview: "实践案例证据片段",
-          },
-        ],
-        trace: {},
-      },
+    await fulfillQueryStream(route, {
+      request_id: "typewriter-check",
+      answer,
+      citations: [
+        {
+          doc_id: "自然辩证法/page-1",
+          title: "自然辩证法 p1",
+          source_uri: "/object_store/uploads/team_a/regression/自然辩证法.pdf",
+          source_type: "pdf",
+          chunk_index: 0,
+          score: 0.9,
+          rerank_score: 0.8,
+          acl_groups: ["engineering"],
+          metadata: { page_no: 1, page_start: 1, page_end: 1 },
+          text: "实践案例证据片段第一句。这里是完整 chunk 的中段内容。这里是完整 chunk 的末尾内容。",
+          text_preview: "实践案例证据片段",
+        },
+      ],
+      trace: {},
     });
   });
 
@@ -2899,26 +3241,24 @@ test("persists and resumes a pending answer after browser refresh", async ({ pag
     if (queryCalls === 1) {
       await new Promise((resolve) => setTimeout(resolve, 2_000));
     }
-    await route.fulfill({
-      json: {
-        request_id: `resume-${queryCalls}`,
-        answer: "刷新后继续完成的回答。",
-        citations: [
-          {
-            doc_id: "自然辩证法/page-1",
-            title: "自然辩证法 p1",
-            source_uri: "/uploads/natural.pdf",
-            source_type: "pdf",
-            chunk_index: 0,
-            score: 0.9,
-            rerank_score: 0.8,
-            acl_groups: ["engineering"],
-            metadata: { page_no: 1 },
-            text_preview: "证据片段",
-          },
-        ],
-        trace: {},
-      },
+    await fulfillQueryStream(route, {
+      request_id: `resume-${queryCalls}`,
+      answer: "刷新后继续完成的回答。",
+      citations: [
+        {
+          doc_id: "自然辩证法/page-1",
+          title: "自然辩证法 p1",
+          source_uri: "/uploads/natural.pdf",
+          source_type: "pdf",
+          chunk_index: 0,
+          score: 0.9,
+          rerank_score: 0.8,
+          acl_groups: ["engineering"],
+          metadata: { page_no: 1 },
+          text_preview: "证据片段",
+        },
+      ],
+      trace: {},
     });
   });
 
@@ -2982,20 +3322,21 @@ test("drops an in-flight answer response after logout", async ({ page }) => {
   });
   await page.route("**/query**", async (route) => {
     await queryReleased;
-    await route.fulfill({
-      json: {
-        request_id: "logout-race",
-        answer: "这段回答不应该在登出后的页面显示。",
-        citations: [],
-        trace: {},
-      },
+    await fulfillQueryStream(route, {
+      request_id: "logout-race",
+      answer: "这段回答不应该在登出后的页面显示。",
+      citations: [],
+      trace: {},
     });
   });
 
   await page.goto("/");
+  const queryStarted = page.waitForRequest((request) =>
+    new URL(request.url()).pathname.endsWith("/query/stream"),
+  );
   await page.getByPlaceholder("提问或创作内容").fill("总结当前文章");
   await page.getByRole("button", { name: "发送消息" }).click();
-  await expect(page.getByText("正在检索资料并生成回答...")).toBeVisible();
+  await queryStarted;
   await page.getByRole("button", { name: "用户头像" }).click();
   await page.getByRole("menuitem", { name: /登出/ }).click();
   queryResolve?.();

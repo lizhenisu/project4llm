@@ -63,11 +63,10 @@ def test_admin_usage_api(*, mocked_admin: bool) -> None:
         headers = {"Authorization": "Bearer synthetic-model-usage-admin"}
     else:
         admin = api.post(
-            "/auth/register",
+            "/auth/login",
             json={
-                "username": f"usage_admin_{uuid.uuid4().hex[:6]}",
-                "password": "strong-password",
-                "display_name": "Usage Admin",
+                "username": "admin",
+                "password": "admin",
             },
         )
         assert admin.status_code == 200, admin.text

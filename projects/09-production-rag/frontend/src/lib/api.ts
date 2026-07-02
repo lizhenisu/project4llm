@@ -5,6 +5,7 @@ import type {
   AdminDeadLetterList,
   AdminIngestionAuditList,
   AdminIngestionRedriveResponse,
+  AdminModelUsageList,
   Announcement,
   AuthResponse,
   AuthUser,
@@ -334,17 +335,24 @@ export function sendFeedback(
   });
 }
 
-export async function listConversations(settings: Settings): Promise<ConversationListItem[]> {
+export async function listConversations(
+  settings: Settings,
+  workspaceId: string,
+): Promise<ConversationListItem[]> {
   const payload = await request<{ conversations: ConversationListItem[] }>(
-    `/conversations?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    `/conversations?tenant_id=${encodeURIComponent(settings.tenantId)}&workspace_id=${encodeURIComponent(workspaceId)}`,
     { settings },
   );
   return payload.conversations;
 }
 
-export function getConversation(settings: Settings, conversationId: string): Promise<Conversation> {
+export function getConversation(
+  settings: Settings,
+  conversationId: string,
+  workspaceId: string,
+): Promise<Conversation> {
   return request<ApiConversation>(
-    `/conversations/${encodeURIComponent(conversationId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    `/conversations/${encodeURIComponent(conversationId)}?tenant_id=${encodeURIComponent(settings.tenantId)}&workspace_id=${encodeURIComponent(workspaceId)}`,
     { settings },
   ).then((conversation) => normalizeConversation(settings, conversation));
 }
@@ -356,6 +364,7 @@ export function saveConversation(
     title: string;
     messages: ChatMessage[];
     sourceDocIds: string[];
+    workspaceId: string;
   },
 ): Promise<Conversation> {
   return request<ApiConversation>("/conversations", {
@@ -364,6 +373,7 @@ export function saveConversation(
     json: {
       id: params.id || null,
       tenant_id: settings.tenantId,
+      workspace_id: params.workspaceId,
       title: params.title,
       messages: params.messages.map((message) => ({
         id: message.id,
@@ -382,10 +392,26 @@ export function saveConversation(
   }).then((conversation) => normalizeConversation(settings, conversation));
 }
 
-export function deleteConversation(settings: Settings, conversationId: string) {
+export function deleteConversation(settings: Settings, conversationId: string, workspaceId: string) {
   return request<{ status: string; conversation_id: string }>(
-    `/conversations/${encodeURIComponent(conversationId)}?tenant_id=${encodeURIComponent(settings.tenantId)}`,
+    `/conversations/${encodeURIComponent(conversationId)}?tenant_id=${encodeURIComponent(settings.tenantId)}&workspace_id=${encodeURIComponent(workspaceId)}`,
     { method: "DELETE", settings },
+  );
+}
+
+export function renameConversation(
+  settings: Settings,
+  conversationId: string,
+  title: string,
+  workspaceId: string,
+): Promise<{ status: string; conversation_id: string; title: string; updated_at: number }> {
+  return request<{ status: string; conversation_id: string; title: string; updated_at: number }>(
+    `/conversations/${encodeURIComponent(conversationId)}?tenant_id=${encodeURIComponent(settings.tenantId)}&workspace_id=${encodeURIComponent(workspaceId)}`,
+    {
+      method: "PATCH",
+      settings,
+      json: { title },
+    },
   );
 }
 
@@ -672,6 +698,28 @@ export function listAdminIngestionAudit(
   if (params.offset) query.set("offset", String(params.offset));
   const suffix = query.toString() ? `?${query.toString()}` : "";
   return request<AdminIngestionAuditList>(`/admin/ingestion/audit${suffix}`, {
+    settings,
+  });
+}
+
+export function listAdminModelUsage(
+  settings: Settings,
+  params: {
+    tenantId?: string;
+    startDate?: string;
+    endDate?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<AdminModelUsageList> {
+  const query = new URLSearchParams();
+  if (params.tenantId?.trim()) query.set("tenant_id", params.tenantId.trim());
+  if (params.startDate) query.set("start_date", params.startDate);
+  if (params.endDate) query.set("end_date", params.endDate);
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.offset) query.set("offset", String(params.offset));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<AdminModelUsageList>(`/admin/model-usage${suffix}`, {
     settings,
   });
 }
